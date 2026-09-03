@@ -123,7 +123,12 @@ public class AlipayStrategyHandler implements PayStrategyHandler {
         }
         return true;
     }
-    
+
+    /**
+     * 支付宝
+     * @param outTradeNo 订单号
+     * @return
+     */
     @Override
     public TradeResult queryTrade(String outTradeNo) {
         String successCode = "10000";

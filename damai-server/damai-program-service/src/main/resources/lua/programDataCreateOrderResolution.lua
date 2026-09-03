@@ -105,7 +105,10 @@ if (type == 2) then
         end
     end
 end
+-- 经过以上的验证，说明座位和票档数量是够用的，下面开始真正的锁定座位和扣除票档数量操作
+-- 要注意 seat_id_list数组的索引值是ticket_category_id(票档id)，数组的值是seat_id_array(座位id数组)
 local seat_id_list = {}
+-- 要注意 seat_data_list数组的索引值是ticket_category_id(票档id)，数组的值是seat_data_array(座位数据数组)
 local seat_data_list = {}
 for index,seat in ipairs(purchase_seat_list) do
     local seat_id = seat.id
@@ -122,6 +125,7 @@ for index,seat in ipairs(purchase_seat_list) do
     seat.sellStatus = 2
     table.insert(seat_data_list[ticket_category_id], cjson.encode(seat))
 end
+-- 扣票档数量
 for index,ticket_count in ipairs(ticket_count_list) do
     local ticket_remain_number_hash_key = ticket_count.programTicketRemainNumberHashKey
     local ticket_category_id = ticket_count.ticketCategoryId

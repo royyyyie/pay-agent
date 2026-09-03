@@ -100,14 +100,18 @@ public class ProgramCategoryService extends ServiceImpl<ProgramCategoryMapper, P
         return programCategory;
     }
     
+    //加上分布式的写锁，这是为了防止有其他的实例添加到新的节目类型可能会产生的并发问题
     @ServiceLock(lockType= LockType.Write,name = PROGRAM_CATEGORY_LOCK,keys = {"#all"})
     public Map<String, ProgramCategory> programCategoryRedisDataInit(){
         Map<String, ProgramCategory> programCategoryMap = new HashMap<>(64);
+        //从数据库中查询
         QueryWrapper<ProgramCategory> lambdaQueryWrapper = Wrappers.emptyWrapper();
         List<ProgramCategory> programCategoryList = programCategoryMapper.selectList(lambdaQueryWrapper);
         if (CollectionUtil.isNotEmpty(programCategoryList)) {
+            //1.准换为map,key为id的字符串形式
             programCategoryMap = programCategoryList.stream().collect(
                     Collectors.toMap(p -> String.valueOf(p.getId()), p -> p, (v1, v2) -> v2));
+            //2.存储到redis hush
             redisCache.putHash(RedisKeyBuild.createRedisKey(RedisKeyManage.PROGRAM_CATEGORY_HASH),programCategoryMap);
         }
         return programCategoryMap;

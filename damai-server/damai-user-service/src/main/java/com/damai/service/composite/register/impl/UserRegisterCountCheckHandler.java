@@ -18,7 +18,11 @@ public class UserRegisterCountCheckHandler extends AbstractUserRegisterCheckHand
     
     @Autowired
     private RequestCounter requestCounter;
-    
+
+    /**
+     * 验证每秒用户注册请求是否超过最大限度
+     * @param param 泛型参数，用于业务执行。
+     */
     @Override
     protected void execute(final UserRegisterDto param) {
         boolean result = requestCounter.onRequest();

@@ -54,6 +54,7 @@ public class TicketUserService extends ServiceImpl<TicketUserMapper, TicketUser>
         if (CollectionUtil.isNotEmpty(ticketUserVoList)) {
             return ticketUserVoList;
         }
+        //从数据库中查
         LambdaQueryWrapper<TicketUser> ticketUserLambdaQueryWrapper = Wrappers.lambdaQuery(TicketUser.class)
                 .eq(TicketUser::getUserId, ticketUserListDto.getUserId());
         List<TicketUser> ticketUsers = ticketUserMapper.selectList(ticketUserLambdaQueryWrapper);
@@ -62,31 +63,41 @@ public class TicketUserService extends ServiceImpl<TicketUserMapper, TicketUser>
     
     @Transactional(rollbackFor = Exception.class)
     public void add(TicketUserDto ticketUserDto) {
+        //获取当前用户信息
         User user = userMapper.selectById(ticketUserDto.getUserId());
+        //如果不存在，直接抛出异常
         if (Objects.isNull(user)) {
             throw new DaMaiFrameException(BaseCode.USER_EMPTY);
         }
+        //从数据库中查询该购票人信息
         LambdaQueryWrapper<TicketUser> ticketUserLambdaQueryWrapper = Wrappers.lambdaQuery(TicketUser.class)
                 .eq(TicketUser::getUserId, ticketUserDto.getUserId())
                 .eq(TicketUser::getIdType, ticketUserDto.getIdType())
                 .eq(TicketUser::getIdNumber, ticketUserDto.getIdNumber());
         TicketUser ticketUser = ticketUserMapper.selectOne(ticketUserLambdaQueryWrapper);
+        //存在则抛出异常
         if (Objects.nonNull(ticketUser)) {
             throw new DaMaiFrameException(BaseCode.TICKET_USER_EXIST);
         }
+
         TicketUser addTicketUser = new TicketUser();
         BeanUtil.copyProperties(ticketUserDto,addTicketUser);
-        addTicketUser.setId(uidGenerator.getUid());
+        addTicketUser.setId(uidGenerator.getUid());//分布式id生成器生成id
+
         ticketUserMapper.insert(addTicketUser);
+        //缓存清理，删除该用户的购票人列表缓存，确保下次查询时获得最新的数据，保证缓存与数据库的一致性
         delTicketUserVoListCache(String.valueOf(ticketUserDto.getUserId()));
     }
+    //删除购票人
     @Transactional(rollbackFor = Exception.class)
     public void delete(TicketUserIdDto ticketUserIdDto) {
         TicketUser ticketUser = ticketUserMapper.selectById(ticketUserIdDto.getId());
         if (Objects.isNull(ticketUser)) {
             throw new DaMaiFrameException(BaseCode.TICKET_USER_EMPTY);
         }
+        //删除数据库中的购票人
         ticketUserMapper.deleteById(ticketUserIdDto.getId());
+        //删除缓存中购票人
         delTicketUserVoListCache(String.valueOf(ticketUser.getUserId()));
     }
     

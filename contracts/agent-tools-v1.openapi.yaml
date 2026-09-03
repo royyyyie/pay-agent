@@ -1,0 +1,278 @@
+openapi: 3.0.3
+info:
+  title: Damai Java Agent Tool Gateway
+  version: 1.0.0
+  description: >-
+    Python Agent 调用 Java 购票业务的第一版内部契约。当前只开放节目查询、
+    节目详情和票档余量三个只读工具，不包含下单、锁座和支付。
+servers:
+  - url: http://127.0.0.1:6086
+    description: 本地 Program Service
+security:
+  - AgentKey: []
+paths:
+  /internal/agent/v1/tools/programs/search:
+    post:
+      operationId: searchPrograms
+      summary: 搜索节目
+      parameters:
+        - $ref: '#/components/parameters/ToolCallId'
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/SessionKey'
+        - $ref: '#/components/parameters/TraceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProgramSearchRequest'
+      responses:
+        '200':
+          description: 工具业务结果；success=false 表示业务执行失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgramSearchResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /internal/agent/v1/tools/programs/detail:
+    post:
+      operationId: getProgramDetail
+      summary: 查询节目详情
+      parameters:
+        - $ref: '#/components/parameters/ToolCallId'
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/SessionKey'
+        - $ref: '#/components/parameters/TraceId'
+      requestBody:
+        $ref: '#/components/requestBodies/ProgramIdBody'
+      responses:
+        '200':
+          description: 节目详情工具结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ToolResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProgramDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /internal/agent/v1/tools/programs/ticket-categories:
+    post:
+      operationId: listTicketCategories
+      summary: 查询票档价格与余量
+      parameters:
+        - $ref: '#/components/parameters/ToolCallId'
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/SessionKey'
+        - $ref: '#/components/parameters/TraceId'
+      requestBody:
+        $ref: '#/components/requestBodies/ProgramIdBody'
+      responses:
+        '200':
+          description: 票档工具结果；余量只代表 freshnessAt 对应时刻
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ToolResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/TicketCategory'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  securitySchemes:
+    AgentKey:
+      type: apiKey
+      in: header
+      name: X-Agent-Key
+  parameters:
+    ToolCallId:
+      name: X-Agent-Tool-Call-Id
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Python Agent 生成的单次工具调用 id
+    TurnId:
+      name: X-Agent-Turn-Id
+      in: header
+      required: false
+      schema:
+        type: string
+    SessionKey:
+      name: X-Agent-Session-Key
+      in: header
+      required: false
+      schema:
+        type: string
+    TraceId:
+      name: traceId
+      in: header
+      required: false
+      schema:
+        type: string
+  requestBodies:
+    ProgramIdBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProgramIdRequest'
+  responses:
+    Unauthorized:
+      description: Agent Key 缺失或错误
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ToolResponse'
+  schemas:
+    ProgramSearchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        keyword:
+          type: string
+          maxLength: 100
+        areaId:
+          type: integer
+          format: int64
+        parentProgramCategoryId:
+          type: integer
+          format: int64
+        programCategoryId:
+          type: integer
+          format: int64
+        timeType:
+          type: integer
+          default: 0
+          enum: [0, 1, 2, 3, 4, 5]
+        startDateTime:
+          type: string
+          example: '2026-09-03 00:00:00'
+        endDateTime:
+          type: string
+          example: '2026-09-10 23:59:59'
+        sortType:
+          type: integer
+          default: 1
+          enum: [1, 2, 3, 4]
+        pageNumber:
+          type: integer
+          minimum: 1
+          default: 1
+        pageSize:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 10
+    ProgramIdRequest:
+      type: object
+      required: [programId]
+      additionalProperties: false
+      properties:
+        programId:
+          type: integer
+          format: int64
+    ToolResponse:
+      type: object
+      required: [requestId, success, code, message, retryable, freshnessAt]
+      properties:
+        requestId:
+          type: string
+        success:
+          type: boolean
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          nullable: true
+        retryable:
+          type: boolean
+        freshnessAt:
+          type: string
+          format: date-time
+    ProgramSearchResponse:
+      allOf:
+        - $ref: '#/components/schemas/ToolResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ProgramPage'
+    ProgramPage:
+      type: object
+      properties:
+        pageNum:
+          type: integer
+        pageSize:
+          type: integer
+        totalSize:
+          type: integer
+        list:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProgramSummary'
+    ProgramSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        actor:
+          type: string
+        place:
+          type: string
+        areaName:
+          type: string
+        programCategoryName:
+          type: string
+        showTime:
+          type: string
+        minPrice:
+          type: number
+        maxPrice:
+          type: number
+    ProgramDetail:
+      allOf:
+        - $ref: '#/components/schemas/ProgramSummary'
+        - type: object
+          additionalProperties: true
+          properties:
+            importantNotice:
+              type: string
+            refundTicketRule:
+              type: string
+            entryRule:
+              type: string
+            childPurchase:
+              type: string
+            perOrderLimitPurchaseCount:
+              type: integer
+            permitChooseSeat:
+              type: integer
+    TicketCategory:
+      type: object
+      properties:
+        programId:
+          type: integer
+          format: int64
+        introduce:
+          type: string
+        price:
+          type: number
+        totalNumber:
+          type: integer
+          format: int64
+        remainNumber:
+          type: integer
+          format: int64

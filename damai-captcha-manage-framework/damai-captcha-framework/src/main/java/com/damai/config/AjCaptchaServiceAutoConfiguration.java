@@ -32,7 +32,7 @@ import java.util.Properties;
 public class AjCaptchaServiceAutoConfiguration {
 
     private static Logger logger = LoggerFactory.getLogger(AjCaptchaServiceAutoConfiguration.class);
-
+    // 创建并配置CaptchaService Bean
     @Bean
     @ConditionalOnMissingBean
     public CaptchaService captchaService(AjCaptchaProperties prop) {

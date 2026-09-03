@@ -83,7 +83,11 @@ public class ProgramShowTimeService extends ServiceImpl<ProgramShowTimeMapper, P
         programShowTimeMapper.insert(programShowTime);
         return programShowTime.getId();
     }
-    
+    /**
+     * 查询节目演出时间(结合多级缓存查询)
+     * localCacheProgramShowTime 是查询节目演出时间的本地缓存，本地缓存中存在的话直接返回，如果不存在则执行
+     * selectProgramShowTimeByProgramId(programId) 从数据库查询节目演出时间数据，然后放入Redis缓存中，执行完后，再放入本地缓存中
+     * */
     public ProgramShowTime selectProgramShowTimeByProgramIdMultipleCache(Long programId){
         return localCacheProgramShowTime.getCache(RedisKeyBuild.createRedisKey
                 (RedisKeyManage.PROGRAM_SHOW_TIME, programId).getRelKey(),
@@ -136,6 +140,7 @@ public class ProgramShowTimeService extends ServiceImpl<ProgramShowTimeMapper, P
     @Transactional(rollbackFor = Exception.class)
     public Set<Long> renewal(){
         Set<Long> programIdSet = new HashSet<>();
+        // 查询2天内要过期的演出
         LambdaQueryWrapper<ProgramShowTime> programShowTimeLambdaQueryWrapper =
                 Wrappers.lambdaQuery(ProgramShowTime.class).
                         le(ProgramShowTime::getShowTime, DateUtils.addDay(DateUtils.now(), 2));
@@ -144,14 +149,19 @@ public class ProgramShowTimeService extends ServiceImpl<ProgramShowTimeMapper, P
         List<ProgramShowTime> newProgramShowTimes = new ArrayList<>(programShowTimes.size());
         
         for (ProgramShowTime programShowTime : programShowTimes) {
+            // 1. 收集节目ID
             programIdSet.add(programShowTime.getProgramId());
+            // 2. 计算新的演出时间
             Date oldShowTime = programShowTime.getShowTime();
             Date newShowTime = DateUtils.addMonth(oldShowTime, 1);
             Date nowDateTime = DateUtils.now();
+            // 3. 确保新时间在未来
             while (newShowTime.before(nowDateTime)) {
                 newShowTime = DateUtils.addMonth(newShowTime, 1);
             }
+            //计算相关时间字段
             Date newShowDayTime = DateUtils.parseDateTime(DateUtils.formatDate(newShowTime) + " 00:00:00");
+            // 5. 更新数据库记录
             ProgramShowTime updateProgramShowTime = new ProgramShowTime();
             updateProgramShowTime.setShowTime(newShowTime);
             updateProgramShowTime.setShowDayTime(newShowDayTime);
@@ -162,7 +172,8 @@ public class ProgramShowTimeService extends ServiceImpl<ProgramShowTimeMapper, P
                             .eq(ProgramShowTime::getId,programShowTime.getId());
                     
             programShowTimeMapper.update(updateProgramShowTime,programShowTimeLambdaUpdateWrapper);
-            
+
+            // 6. 保存新的演出时间信息，用于后续更新节目分组
             ProgramShowTime newProgramShowTime = new ProgramShowTime();
             newProgramShowTime.setProgramId(programShowTime.getProgramId());
             newProgramShowTime.setShowTime(newShowTime);

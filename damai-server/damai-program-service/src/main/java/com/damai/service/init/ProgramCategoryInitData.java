@@ -22,9 +22,14 @@ public class ProgramCategoryInitData extends AbstractApplicationPostConstructHan
     public Integer executeOrder() {
         return 1;
     }
-    
+
+    /**
+     * 线程池异步执行
+     * @param context 容器上下文
+     */
     @Override
     public void executeInit(final ConfigurableApplicationContext context) {
+        //使用线程池异步执行
         BusinessThreadPool.execute(() -> {
             programCategoryService.programCategoryRedisDataInit();
         });

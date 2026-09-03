@@ -217,6 +217,7 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
     public PageVo<ProgramListVo> search(ProgramSearchDto programSearchDto) {
         //将入参的参数进行具体的组装
         setQueryTime(programSearchDto);
+        //使用elasticsearch查询
         return programEs.search(programSearchDto);
     }
     
@@ -226,11 +227,12 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
      * @return 执行后的结果
      * */
     public List<ProgramHomeVo> selectHomeList(ProgramListDto programListDto) {
-        
+        //先从elasticsearch中查询
         List<ProgramHomeVo> programHomeVoList = programEs.selectHomeList(programListDto);
         if (CollectionUtil.isNotEmpty(programHomeVoList)) {
             return programHomeVoList;
         }
+        //elasticsearch中查询不到，再去数据库中查询
         return dbSelectHomeList(programListDto);
     }
     
@@ -241,29 +243,35 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
      * */
     private List<ProgramHomeVo> dbSelectHomeList(ProgramListDto programPageListDto){
         List<ProgramHomeVo> programHomeVoList = new ArrayList<>();
+        //根据父节目类型id来查询节目类型map，key：节目类型id，value：节目类型名
         Map<Long, String> programCategoryMap = selectProgramCategoryMap(programPageListDto.getParentProgramCategoryIds());
-        
+        //查询节目列表
         List<Program> programList = programMapper.selectHomeList(programPageListDto);
         if (CollectionUtil.isEmpty(programList)) {
             return programHomeVoList;
         }
-        
+        //节目id集合
         List<Long> programIdList = programList.stream().map(Program::getId).collect(Collectors.toList());
+        //查询出所有的节目相对应的演出时间
         LambdaQueryWrapper<ProgramShowTime> programShowTimeLambdaQueryWrapper = Wrappers.lambdaQuery(ProgramShowTime.class)
                 .in(ProgramShowTime::getProgramId, programIdList);
         List<ProgramShowTime> programShowTimeList = programShowTimeMapper.selectList(programShowTimeLambdaQueryWrapper);
-        Map<Long, List<ProgramShowTime>> programShowTimeMap = 
+        //key:节目id；value:节目演出时间列表
+        Map<Long, List<ProgramShowTime>> programShowTimeMap =
                 programShowTimeList.stream().collect(Collectors.groupingBy(ProgramShowTime::getProgramId));
-        
+        //找出节目相对应的最低最高价
         Map<Long, TicketCategoryAggregate> ticketCategorieMap = selectTicketCategorieMap(programIdList);
-        
+        //将节目结合按照父节目类型id进行分组成map，key：父节目类型id，value：节目集合
         Map<Long, List<Program>> programMap = programList.stream()
                 .collect(Collectors.groupingBy(Program::getParentProgramCategoryId));
-        
+        //遍历所有的父分类
         for (Entry<Long, List<Program>> programEntry : programMap.entrySet()) {
+            //父节目类型id
             Long key = programEntry.getKey();
+            //节目集合
             List<Program> value = programEntry.getValue();
             List<ProgramListVo> programListVoList = new ArrayList<>();
+            //循环节目集合
             for (Program program : value) {
                 ProgramListVo programListVo = new ProgramListVo();
                 BeanUtil.copyProperties(program,programListVo);
@@ -342,8 +350,11 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
      * @return 执行后的结果
      * */
     public PageVo<ProgramListVo> selectPage(ProgramPageListDto programPageListDto) {
+        //处理时间范围参数
         setQueryTime(programPageListDto);
+        //使用elasticsearch查询
         PageVo<ProgramListVo> pageVo = programEs.selectPage(programPageListDto);
+        //elasticsearch查询不到，在数据库中查询
         if (CollectionUtil.isNotEmpty(pageVo.getList())) {
             return pageVo;
         }
@@ -361,23 +372,35 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
     }
     
     /**
+     * 数据库分页查询​：查询节目和演出时间关联数据
+     *
+     * ​批量数据获取​：批量获取分类、票价、地区等关联信息
+     *
+     * ​数据转换​：将数据库实体转换为前端需要的VO对象
+     *
+     * ​微服务调用​：调用基础数据服务获取地区信息
      * 查询分类信息（数据库查询）
      * @param programPageListDto 查询节目数据的入参
      * @return 执行后的结果
      * */
     public PageVo<ProgramListVo> dbSelectPage(ProgramPageListDto programPageListDto) {
-        IPage<ProgramJoinShowTime> iPage = 
+        //需要program和program_show_time连表查询
+        IPage<ProgramJoinShowTime> iPage =
                 programMapper.selectPage(PageUtil.getPageParams(programPageListDto), programPageListDto);
+        //如果查询的节目列表为空，则直接返回pageVo对象
         if (CollectionUtil.isEmpty(iPage.getRecords())) {
             return new PageVo<>(iPage.getCurrent(), iPage.getSize(), iPage.getTotal(), new ArrayList<>());
         }
+        //提取所有节目的分类ID
         Set<Long> programCategoryIdList = 
                 iPage.getRecords().stream().map(Program::getProgramCategoryId).collect(Collectors.toSet());
+        // 批量查询分类信息
         Map<Long, String> programCategoryMap = selectProgramCategoryMap(programCategoryIdList);
-        
+        // 提取所有节目ID
         List<Long> programIdList = iPage.getRecords().stream().map(Program::getId).collect(Collectors.toList());
+        // 批量查询票价信息
         Map<Long, TicketCategoryAggregate> ticketCategorieMap = selectTicketCategorieMap(programIdList);
-        
+        // 提取去重后的地区ID
         Map<Long,String> tempAreaMap = new HashMap<>(64);
         AreaSelectDto areaSelectDto = new AreaSelectDto();
         areaSelectDto.setIdList(iPage.getRecords().stream().map(Program::getAreaId).distinct().collect(Collectors.toList()));
@@ -393,13 +416,17 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
         Map<Long,String> areaMap = tempAreaMap;
         
         return PageUtil.convertPage(iPage, programJoinShowTime -> {
+            // 对每个记录进行转换
             ProgramListVo programListVo = new ProgramListVo();
             BeanUtil.copyProperties(programJoinShowTime, programListVo);
-            
+            // 设置地区名称
             programListVo.setAreaName(areaMap.get(programJoinShowTime.getAreaId()));
+            // 设置分类名称
             programListVo.setProgramCategoryName(programCategoryMap.get(programJoinShowTime.getProgramCategoryId()));
+            // 设置最低价
             programListVo.setMinPrice(Optional.ofNullable(ticketCategorieMap.get(programJoinShowTime.getId()))
                     .map(TicketCategoryAggregate::getMinPrice).orElse(null));
+            // 设置最高价
             programListVo.setMaxPrice(Optional.ofNullable(ticketCategorieMap.get(programJoinShowTime.getId()))
                     .map(TicketCategoryAggregate::getMaxPrice).orElse(null));
             return programListVo;
@@ -442,24 +469,27 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
      * @return 执行后的结果
      * */
     public ProgramVo getDetail(ProgramGetDto programGetDto) {
+        //获取演出时间  都是先从缓存中查取，如果没有则拆线呢数据库
         ProgramShowTime programShowTime = programShowTimeService.selectProgramShowTimeByProgramId(programGetDto.getId());
+        //获取节目信息
         ProgramVo programVo = programService.getById(programGetDto.getId(),DateUtils.countBetweenSecond(DateUtils.now(),
                 programShowTime.getShowTime()), TimeUnit.SECONDS);
         programVo.setShowTime(programShowTime.getShowTime());
         programVo.setShowDayTime(programShowTime.getShowDayTime());
         programVo.setShowWeekTime(programShowTime.getShowWeekTime());
-        
+        //获取节目相关组信息
         ProgramGroupVo programGroupVo = programService.getProgramGroup(programVo.getProgramGroupId());
         programVo.setProgramGroupVo(programGroupVo);
-        
+        //预加载购票人信息
         preloadTicketUserList(programVo.getHighHeat());
-        
+        // 预加载账户订单
         preloadAccountOrderCount(programVo.getId());
-        
+        // 加载节目分类信息
         ProgramCategory programCategory = getProgramCategory(programVo.getProgramCategoryId());
         if (Objects.nonNull(programCategory)) {
             programVo.setProgramCategoryName(programCategory.getName());
         }
+        //父分类信息
         ProgramCategory parentProgramCategory = getProgramCategory(programVo.getParentProgramCategoryId());
         if (Objects.nonNull(parentProgramCategory)) {
             programVo.setParentProgramCategoryName(parentProgramCategory.getName());
@@ -474,27 +504,32 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
     }
     
     /**
-     * 查询节目详情V2执行
+     * 查询节目详情V2执行  多级缓存的版本
      * @param programGetDto 查询节目数据的入参
      * @return 执行后的结果
      * */
     public ProgramVo getDetailV2(ProgramGetDto programGetDto) {
+        //查询节目演出时间
         ProgramShowTime programShowTime =
                 programShowTimeService.selectProgramShowTimeByProgramIdMultipleCache(programGetDto.getId());
-        
+
+        //从节目表获取数据，以及区域信息
         ProgramVo programVo = programService.getByIdMultipleCache(programGetDto.getId(),programShowTime.getShowTime());
         
         programVo.setShowTime(programShowTime.getShowTime());
         programVo.setShowDayTime(programShowTime.getShowDayTime());
         programVo.setShowWeekTime(programShowTime.getShowWeekTime());
-        
+        //从节目分组表获取数据
         ProgramGroupVo programGroupVo = programService.getProgramGroupMultipleCache(programVo.getProgramGroupId());
         programVo.setProgramGroupVo(programGroupVo);
-        
+
+        //预先加载用户购票人
         preloadTicketUserList(programVo.getHighHeat());
-        
+
+        //预先加载用户下节目订单数量
         preloadAccountOrderCount(programVo.getId());
-        
+
+        //设置节目类型相关信息
         ProgramCategory programCategory = getProgramCategoryMultipleCache(programVo.getProgramCategoryId());
         if (Objects.nonNull(programCategory)) {
             programVo.setProgramCategoryName(programCategory.getName());
@@ -503,7 +538,8 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
         if (Objects.nonNull(parentProgramCategory)) {
             programVo.setParentProgramCategoryName(parentProgramCategory.getName());
         }
-        
+
+        //查询节目票档
         List<TicketCategoryVo> ticketCategoryVoList = ticketCategoryService
                 .selectTicketCategoryListByProgramIdMultipleCache(programVo.getId(),programShowTime.getShowTime());
         programVo.setTicketCategoryVoList(ticketCategoryVoList);
@@ -518,6 +554,9 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
      * @return 执行后的结果
      * */
     public ProgramVo getByIdMultipleCache(Long programId, Date showTime){
+        /**
+         * 查询节目(结合多级缓存查询)
+         * */
         return localCacheProgram.getCache(RedisKeyBuild.createRedisKey(RedisKeyManage.PROGRAM, programId).getRelKey(),
                 key -> {
                     log.info("查询节目详情 从本地缓存没有查询到 节目id : {}",programId);
@@ -558,21 +597,27 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
     
     @ServiceLock(lockType= LockType.Read,name = PROGRAM_LOCK,keys = {"#programId"})
     public ProgramVo getById(Long programId,Long expireTime,TimeUnit timeUnit) {
-        ProgramVo programVo = 
+        //先从缓存中查询
+        ProgramVo programVo =
                 redisCache.get(RedisKeyBuild.createRedisKey(RedisKeyManage.PROGRAM, programId), ProgramVo.class);
+        //如果存在直接返回数据
         if (Objects.nonNull(programVo)) {
             return programVo;
         }
+        //加锁
         log.info("查询节目详情 从Redis缓存没有查询到 节目id : {}",programId);
         RLock lock = serviceLockTool.getLock(LockType.Reentrant, GET_PROGRAM_LOCK, new String[]{String.valueOf(programId)});
         lock.lock();
         try {
+            //再从缓存中查询，如果缓存不存在则从数据库中查询再放入到缓存中
             return redisCache.get(RedisKeyBuild.createRedisKey(RedisKeyManage.PROGRAM,programId)
                     ,ProgramVo.class,
                     () -> createProgramVo(programId)
+                    //缓存的过期时间设置到节目的演出时间
                     ,expireTime,
                     timeUnit);
         }finally {
+            //解锁
             lock.unlock();
         }
     }
@@ -613,7 +658,12 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
                 .stream()
                 .collect(Collectors.toMap(ProgramCategory::getId, ProgramCategory::getName, (v1, v2) -> v2));
     }
-    
+
+    /**
+     * 遍历找出每个节目的最低最高价
+     * @param programIdList
+     * @return
+     */
     public Map<Long, TicketCategoryAggregate> selectTicketCategorieMap(List<Long> programIdList){
         List<TicketCategoryAggregate> ticketCategorieList = ticketCategoryMapper.selectAggregateList(programIdList);
         return ticketCategorieList
@@ -626,32 +676,38 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
     @Transactional(rollbackFor = Exception.class)
     public void operateProgramData(ProgramOperateDataDto programOperateDataDto){
         List<TicketCategoryCountDto> ticketCategoryCountDtoList = programOperateDataDto.getTicketCategoryCountDtoList();
+        //从库中查询座位集合
         List<Long> seatIdList = programOperateDataDto.getSeatIdList();
         LambdaQueryWrapper<Seat> seatLambdaQueryWrapper = 
                 Wrappers.lambdaQuery(Seat.class)
                         .eq(Seat::getProgramId,programOperateDataDto.getProgramId())
                         .in(Seat::getId, seatIdList);
         List<Seat> seatList = seatMapper.selectList(seatLambdaQueryWrapper);
+        //如果库中的座位集合为空，则抛出异常
         if (CollectionUtil.isEmpty(seatList)) {
             throw new DaMaiFrameException(BaseCode.SEAT_NOT_EXIST);
         }
+        //如果库中的座位集合数量和传入的座位数量不相同，则抛出异常
         if (seatList.size() != seatIdList.size()) {
             throw new DaMaiFrameException(BaseCode.SEAT_UPDATE_REL_COUNT_NOT_EQUAL_PRESET_COUNT);
         }
         for (Seat seat : seatList) {
+            //如果库中的座位有一个已经是已售卖的状态，则抛出异常
             if (Objects.equals(seat.getSellStatus(), SellStatus.SOLD.getCode())) {
                 throw new DaMaiFrameException(BaseCode.SEAT_SOLD);
             }
         }
-        LambdaUpdateWrapper<Seat> seatLambdaUpdateWrapper = 
+        //将库中的座位集合批量更新为售卖状态
+        LambdaUpdateWrapper<Seat> seatLambdaUpdateWrapper =
                 Wrappers.lambdaUpdate(Seat.class)
                         .eq(Seat::getProgramId,programOperateDataDto.getProgramId())
                         .in(Seat::getId, seatIdList);
         Seat updateSeat = new Seat();
         updateSeat.setSellStatus(SellStatus.SOLD.getCode());
         seatMapper.update(updateSeat,seatLambdaUpdateWrapper);
-        
-        int updateRemainNumberCount = 
+
+        //将库中的对应票档进行更新库存
+        int updateRemainNumberCount =
                 ticketCategoryMapper.batchUpdateRemainNumber(ticketCategoryCountDtoList,programOperateDataDto.getProgramId());
         if (updateRemainNumberCount != ticketCategoryCountDtoList.size()) {
             throw new DaMaiFrameException(BaseCode.UPDATE_TICKET_CATEGORY_COUNT_NOT_CORRECT);
@@ -719,7 +775,11 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
         
         return programVo;
     }
-    
+
+    /**
+     * 预加载购票人信息
+     * @param highHeat
+     */
     private void preloadTicketUserList(Integer highHeat){
         if (Objects.equals(highHeat, BusinessStatus.NO.getCode())) {
             return;
@@ -754,7 +814,11 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
             }
         });
     }
-    
+
+    /**
+     * 预加载账户订单
+     * @param programId
+     */
     private void preloadAccountOrderCount(Long programId){
         String userId = BaseParameterHolder.getParameter(USER_ID);
         String code = BaseParameterHolder.getParameter(CODE);
@@ -854,11 +918,15 @@ public class ProgramService extends ServiceImpl<ProgramMapper, Program> {
     public Boolean invalid(final ProgramInvalidDto programInvalidDto) {
         Program program = new Program();
         program.setId(programInvalidDto.getId());
+        //修改数据库中的节目状态为下线状态
         program.setProgramStatus(BusinessStatus.NO.getCode());
         int result = programMapper.updateById(program);
         if (result > 0) {
+            //删除Redis的缓存
             delRedisData(programInvalidDto.getId());
+            //向RedisStream发送消息
             redisStreamPushHandler.push(String.valueOf(programInvalidDto.getId()));
+            //删除elasticsearch中的数据
             programEs.deleteByProgramId(programInvalidDto.getId());
             return true;
         }else {

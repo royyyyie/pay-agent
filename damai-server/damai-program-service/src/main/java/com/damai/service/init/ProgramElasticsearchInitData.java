@@ -39,7 +39,11 @@ public class ProgramElasticsearchInitData extends AbstractApplicationPostConstru
     public Integer executeOrder() {
         return 3;
     }
-    
+    /**
+     * 执行顺序第3执行
+     * 项目启动后，异步将program的数据更新到Elasticsearch中，当数据量特别大时，生产环境绝对不会这么做
+     * 会每个一个节目到数据库后，就会添加到Elasticsearch中，以及用定时任务来更新到Elasticsearch中
+     * */
     @Override
     public void executeInit(final ConfigurableApplicationContext context) {
         BusinessThreadPool.execute(() -> {
@@ -52,10 +56,13 @@ public class ProgramElasticsearchInitData extends AbstractApplicationPostConstru
     }
     
     public void initElasticsearchData(){
+        //创建索引
         if (!indexAdd()) {
-            return;
+            return;//索引创建失败则返回
         }
+        //获取所有节目id
         List<Long> allProgramIdList = programService.getAllProgramIdList();
+        //批量获取票价分类聚合信息
         Map<Long, TicketCategoryAggregate> ticketCategorieMap = programService.selectTicketCategorieMap(allProgramIdList);
         
         for (Long programId : allProgramIdList) {
@@ -79,24 +86,29 @@ public class ProgramElasticsearchInitData extends AbstractApplicationPostConstru
             map.put(ProgramDocumentParamName.SHOW_TIME, programVo.getShowTime());
             map.put(ProgramDocumentParamName.SHOW_DAY_TIME,programVo.getShowDayTime());
             map.put(ProgramDocumentParamName.SHOW_WEEK_TIME,programVo.getShowWeekTime());
+            //设置票价范围（较难理解的代码）
             map.put(ProgramDocumentParamName.MIN_PRICE,
                     Optional.ofNullable(ticketCategorieMap.get(programVo.getId()))
                             .map(TicketCategoryAggregate::getMinPrice).orElse(null));
             map.put(ProgramDocumentParamName.MAX_PRICE,
                     Optional.ofNullable(ticketCategorieMap.get(programVo.getId()))
                             .map(TicketCategoryAggregate::getMaxPrice).orElse(null));
-            businessEsHandle.add(SpringUtil.getPrefixDistinctionName() + "-" + 
+            //导入到ES
+            businessEsHandle.add(SpringUtil.getPrefixDistinctionName() + "-" +
                     ProgramDocumentParamName.INDEX_NAME, ProgramDocumentParamName.INDEX_TYPE,map);
         }
     }
     
     public boolean indexAdd(){
+        //检查索引是否存在
         boolean result = businessEsHandle.checkIndex(SpringUtil.getPrefixDistinctionName() + "-" +
                 ProgramDocumentParamName.INDEX_NAME, ProgramDocumentParamName.INDEX_TYPE);
+        //如果存在则删除
         if (result) {
             businessEsHandle.deleteIndex(SpringUtil.getPrefixDistinctionName() + "-" +
                     ProgramDocumentParamName.INDEX_NAME);
         }
+        //重新创建索引
         try {
             businessEsHandle.createIndex(SpringUtil.getPrefixDistinctionName() + "-" +
                     ProgramDocumentParamName.INDEX_NAME, ProgramDocumentParamName.INDEX_TYPE,getEsMapping());

@@ -98,21 +98,28 @@ public class SeatService extends ServiceImpl<SeatMapper, Seat> {
         seatMapper.insert(seat);
         return seat.getId();
     }
-    
+    //防止在座位信息更新时并发读取，该锁允许多个线程同时获得锁，当前线程下该id智能获得一把锁，并且只读用于保护读操作的并发安全
     @ServiceLock(lockType= LockType.Read,name = SEAT_LOCK,keys = {"#programId","#ticketCategoryId"})
     public List<SeatVo> selectSeatResolution(Long programId,Long ticketCategoryId,Long expireTime,TimeUnit timeUnit) {
+        //查询当前票档座位信息
         List<SeatVo> seatVoList = getSeatVoListByCacheResolution(programId,ticketCategoryId);
         if (CollectionUtil.isNotEmpty(seatVoList)) {
             return seatVoList;
         }
+        //**如果不存在的情况下，预热座位信息，将其装入redis**
+        //获取互斥锁，同一时间只允许一个线程获取锁；用于保护临界区代码的互斥访问；防止缓存击穿  双重检查的目的：防止多个线程同时查询数据库
         RLock lock = serviceLockTool.getLock(LockType.Reentrant, GET_SEAT_LOCK, new String[]{String.valueOf(programId),
                 String.valueOf(ticketCategoryId)});
         lock.lock();
         try {
+
+            //第二次缓存检查，如果没有第二次检查其他线程任然会再次查询数据库
             seatVoList = getSeatVoListByCacheResolution(programId,ticketCategoryId);
             if (CollectionUtil.isNotEmpty(seatVoList)) {
                 return seatVoList;
             }
+
+            //从数据库中查询，该演出下的指定票档
             LambdaQueryWrapper<Seat> seatLambdaQueryWrapper =
                     Wrappers.lambdaQuery(Seat.class).eq(Seat::getProgramId, programId)
                             .eq(Seat::getTicketCategoryId,ticketCategoryId);
@@ -123,10 +130,12 @@ public class SeatService extends ServiceImpl<SeatMapper, Seat> {
                 seatVo.setSeatTypeName(SeatType.getMsg(seat.getSeatType()));
                 seatVoList.add(seatVo);
             }
+            //分别获取不同状态下的座位
             Map<Integer, List<SeatVo>> seatMap = seatVoList.stream().collect(Collectors.groupingBy(SeatVo::getSellStatus));
             List<SeatVo> noSoldSeatVoList = seatMap.get(SellStatus.NO_SOLD.getCode());
             List<SeatVo> lockSeatVoList = seatMap.get(SellStatus.LOCK.getCode());
             List<SeatVo> soldSeatVoList = seatMap.get(SellStatus.SOLD.getCode());
+            //将不同状态下的座位信息按照key: seatStatus+programId+ticketCategoryId 进行存储
             if (CollectionUtil.isNotEmpty(noSoldSeatVoList)) {
                 redisCache.putHash(RedisKeyBuild.createRedisKey(RedisKeyManage.PROGRAM_SEAT_NO_SOLD_RESOLUTION_HASH, 
                                 programId,ticketCategoryId),noSoldSeatVoList.stream()
@@ -153,7 +162,13 @@ public class SeatService extends ServiceImpl<SeatMapper, Seat> {
             lock.unlock();
         }
     }
-    
+
+    /**
+     * 使用lua脚本编写从redis中获取座位信息
+     * @param programId
+     * @param ticketCategoryId
+     * @return
+     */
     public List<SeatVo> getSeatVoListByCacheResolution(Long programId,Long ticketCategoryId){
         List<String> keys = new ArrayList<>(4);
         keys.add(RedisKeyBuild.createRedisKey(RedisKeyManage.PROGRAM_SEAT_NO_SOLD_RESOLUTION_HASH,
@@ -164,20 +179,29 @@ public class SeatService extends ServiceImpl<SeatMapper, Seat> {
                 programId, ticketCategoryId).getRelKey());
         return programSeatCacheData.getData(keys, new String[]{});
     }
-    
+
+    /**
+     * 查询座位相关信息
+     * @param seatListDto
+     * @return
+     */
     public SeatRelateInfoVo relateInfo(SeatListDto seatListDto) {
         SeatRelateInfoVo seatRelateInfoVo = new SeatRelateInfoVo();
-        ProgramVo programVo = 
+
+        //查询节目详情信息
+        ProgramVo programVo =
                 redisCache.get(RedisKeyBuild.createRedisKey(RedisKeyManage.PROGRAM,seatListDto.getProgramId()),ProgramVo.class);
+        //如果查询不到，则去数据库中查询，再放入redis中
         if (Objects.isNull(programVo)){
             ProgramGetDto programGetDto = new ProgramGetDto();
             programGetDto.setId(seatListDto.getProgramId());
             programVo = programService.detail(programGetDto);
         }
+        //查询介绍和价格分类
         ProgramShowTime programShowTime = programShowTimeService.selectProgramShowTimeByProgramId(seatListDto.getProgramId());
         List<TicketCategoryVo> ticketCategoryVoList = ticketCategoryService
                 .selectTicketCategoryListByProgramIdMultipleCache(programVo.getId(),programShowTime.getShowTime());
-        
+        //查询座位信息  原理：通过分类后的票档查询该票档下的座位信息
         List<SeatVo> seatVos = new ArrayList<>();
         for (TicketCategoryVo ticketCategoryVo : ticketCategoryVoList) {
             seatVos.addAll(selectSeatResolution(seatListDto.getProgramId(),ticketCategoryVo.getId(),

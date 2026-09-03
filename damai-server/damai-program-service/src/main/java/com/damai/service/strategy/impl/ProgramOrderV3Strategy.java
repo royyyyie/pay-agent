@@ -32,7 +32,10 @@ public class ProgramOrderV3Strategy implements ProgramOrderStrategy {
     
     @Autowired
     private CompositeContainer compositeContainer;
-    
+    /**
+     * 订单创建，进行优化，一开始直接利用lua执行判断要购买的座位和票的数量是足够，不足够直接返回，足够的话进行相应扣除，
+     * 这样既能将大量无用的抢购请求直接返回掉，又可以实现无锁化
+     * */
     @RepeatExecuteLimit(
             name = RepeatExecuteLimitConstants.CREATE_PROGRAM_ORDER,
             keys = {"#programOrderCreateDto.userId","#programOrderCreateDto.programId"})

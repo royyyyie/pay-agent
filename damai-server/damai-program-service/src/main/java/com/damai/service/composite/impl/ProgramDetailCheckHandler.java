@@ -29,16 +29,21 @@ public class ProgramDetailCheckHandler extends AbstractProgramCheckHandler {
     
     @Override
     protected void execute(final ProgramOrderCreateDto programOrderCreateDto) {
+        //查询要购买的节目
         ProgramGetDto programGetDto = new ProgramGetDto();
         programGetDto.setId(programOrderCreateDto.getProgramId());
         ProgramVo programVo = programService.detailV2(programGetDto);
+        //如果节目不允许选择座位，但传入的了手动座位，则抛出异常
         if (programVo.getPermitChooseSeat().equals(BusinessStatus.NO.getCode())) {
             if (Objects.nonNull(programOrderCreateDto.getSeatDtoList())) {
                 throw new DaMaiFrameException(BaseCode.PROGRAM_NOT_ALLOW_CHOOSE_SEAT);
             }
         }
+        //手动选择座位时，选择座位的数量
         Integer seatCount = Optional.ofNullable(programOrderCreateDto.getSeatDtoList()).map(List::size).orElse(0);
+        //自动匹配座位时，选择票档的数量
         Integer ticketCount = Optional.ofNullable(programOrderCreateDto.getTicketCount()).orElse(0);
+        //只要有一个超过了规定的数量，那么就直接拒绝
         if (seatCount > programVo.getPerOrderLimitPurchaseCount() || ticketCount > programVo.getPerOrderLimitPurchaseCount()) {
             throw new DaMaiFrameException(BaseCode.PER_ORDER_PURCHASE_COUNT_OVER_LIMIT);
         }

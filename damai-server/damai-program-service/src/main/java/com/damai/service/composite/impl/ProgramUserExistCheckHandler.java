@@ -57,8 +57,11 @@ public class ProgramUserExistCheckHandler extends AbstractProgramCheckHandler {
     
     @Override
     protected void execute(ProgramOrderCreateDto programOrderCreateDto) {
+        //验证用户和购票人信息正确性
+        //先从缓存中查询
         List<TicketUserVo> ticketUserVoList = redisCache.getValueIsList(RedisKeyBuild.createRedisKey(
                 RedisKeyManage.TICKET_USER_LIST, programOrderCreateDto.getUserId()), TicketUserVo.class);
+        //缓存不存在，再调用用户服务查询
         if (CollectionUtil.isEmpty(ticketUserVoList)) {
             TicketUserListDto ticketUserListDto = new TicketUserListDto();
             ticketUserListDto.setUserId(programOrderCreateDto.getUserId());
@@ -70,28 +73,33 @@ public class ProgramUserExistCheckHandler extends AbstractProgramCheckHandler {
                 throw new DaMaiFrameException(apiResponse);
             }
         }
+        //如果没有购票人则抛出异常
         if (CollectionUtil.isEmpty(ticketUserVoList)) {
             throw new DaMaiFrameException(BaseCode.TICKET_USER_EMPTY);
         }
         Map<Long, TicketUserVo> ticketUserVoMap = ticketUserVoList.stream()
                 .collect(Collectors.toMap(TicketUserVo::getId, ticketUserVo -> ticketUserVo, (v1, v2) -> v2));
+        //如果传入的购票人在查询出的购票人中不存在，则抛出异常
         for (Long ticketUserId : programOrderCreateDto.getTicketUserIdList()) {
             if (Objects.isNull(ticketUserVoMap.get(ticketUserId))) {
                 throw new DaMaiFrameException(BaseCode.TICKET_USER_EMPTY);
             }
         }
+        //查询节目信息
         ProgramGetDto programGetDto = new ProgramGetDto();
         programGetDto.setId(programOrderCreateDto.getProgramId());
         ProgramVo programVo = programService.detailV2(programGetDto);
         if (Objects.isNull(programVo)) {
             throw new DaMaiFrameException(BaseCode.PROGRAM_NOT_EXIST);
         }
+        //如果redis中存在账户节目订单数量，则直接从redis中查询
         Integer count = 0;
         if (redisCache.hasKey(RedisKeyBuild.createRedisKey(RedisKeyManage.ACCOUNT_ORDER_COUNT,
                 programOrderCreateDto.getUserId(),programOrderCreateDto.getProgramId()))) {
             count = redisCache.get(RedisKeyBuild.createRedisKey(RedisKeyManage.ACCOUNT_ORDER_COUNT,
                     programOrderCreateDto.getUserId(),programOrderCreateDto.getProgramId()), Integer.class);
         }else {
+            //如果redis不存在，则调用订单服务查询，然后再放入redis中
             AccountOrderCountDto accountOrderCountDto = new AccountOrderCountDto();
             accountOrderCountDto.setUserId(programOrderCreateDto.getUserId());
             accountOrderCountDto.setProgramId(programOrderCreateDto.getProgramId());
@@ -108,9 +116,11 @@ public class ProgramUserExistCheckHandler extends AbstractProgramCheckHandler {
         Integer seatCount = Optional.ofNullable(programOrderCreateDto.getSeatDtoList()).map(List::size).orElse(0);
         
         Integer ticketCount = Optional.ofNullable(programOrderCreateDto.getTicketCount()).orElse(0);
+        //如果手动选择座位，那么就累加手动座位的数量
         if (seatCount != 0) {
             count = count + seatCount;
         }else if (ticketCount != 0) {
+            //如果自动选择座位，那么就累加票档的数量
             count = count + ticketCount;
         }
 //        if (count > programVo.getPerAccountLimitPurchaseCount()) {

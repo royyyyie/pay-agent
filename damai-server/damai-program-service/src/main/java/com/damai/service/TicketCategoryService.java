@@ -91,16 +91,20 @@ public class TicketCategoryService extends ServiceImpl<TicketCategoryMapper, Tic
     
     @ServiceLock(lockType= LockType.Read,name = TICKET_CATEGORY_LOCK,keys = {"#programId"})
     public List<TicketCategoryVo> selectTicketCategoryListByProgramId(Long programId,Long expireTime,TimeUnit timeUnit){
-        List<TicketCategoryVo> ticketCategoryVoList = 
+        //从缓存中查询
+        List<TicketCategoryVo> ticketCategoryVoList =
                 redisCache.getValueIsList(RedisKeyBuild.createRedisKey(RedisKeyManage.PROGRAM_TICKET_CATEGORY_LIST, 
                         programId), TicketCategoryVo.class);
+        //如果缓存中存在直接返回数据
         if (CollectionUtil.isNotEmpty(ticketCategoryVoList)) {
             return ticketCategoryVoList;
         }
-        RLock lock = serviceLockTool.getLock(LockType.Reentrant, GET_TICKET_CATEGORY_LOCK, 
+        //加锁
+        RLock lock = serviceLockTool.getLock(LockType.Reentrant, GET_TICKET_CATEGORY_LOCK,
                 new String[]{String.valueOf(programId)});
         lock.lock();
         try {
+            //再从缓存中查询，如果缓存不存在则从数据库中查询再放入到缓存中
             return redisCache.getValueIsList(
                     RedisKeyBuild.createRedisKey(RedisKeyManage.PROGRAM_TICKET_CATEGORY_LIST, programId),
                     TicketCategoryVo.class,
@@ -117,12 +121,21 @@ public class TicketCategoryService extends ServiceImpl<TicketCategoryMapper, Tic
                         }).collect(Collectors.toList());
                     }, expireTime, timeUnit);
         }finally {
+            //解锁
             lock.unlock();
         }
     }
-    
+
+    /**
+     * 票务库存余量查询的缓存实现
+     * @param programId
+     * @param ticketCategoryId
+     * @return
+     */
+    //依旧是读写锁，防止在查询库存时，库存被修改导致数据不一致，但允许多个读操作并发执行，阻塞写操作
     @ServiceLock(lockType= LockType.Read,name = REMAIN_NUMBER_LOCK,keys = {"#programId","#ticketCategoryId"})
     public Map<String, Long> getRedisRemainNumberResolution(Long programId,Long ticketCategoryId){
+        //第一此检查缓存是否存在
         Map<String, Long> ticketCategoryRemainNumber =
                 redisCache.getAllMapForHash(RedisKeyBuild.createRedisKey(RedisKeyManage.PROGRAM_TICKET_REMAIN_NUMBER_HASH_RESOLUTION,
                         programId,ticketCategoryId), Long.class);
@@ -130,19 +143,24 @@ public class TicketCategoryService extends ServiceImpl<TicketCategoryMapper, Tic
         if (CollectionUtil.isNotEmpty(ticketCategoryRemainNumber)) {
             return ticketCategoryRemainNumber;
         }
+        //如果不存在上锁进入数据库查询
+        //获取互斥锁 防止多个线程同时查询数据库加载库存 避免缓存击穿问题 保证库存数据的一致性
         RLock lock = serviceLockTool.getLock(LockType.Reentrant, GET_REMAIN_NUMBER_LOCK,
                 new String[]{String.valueOf(programId),String.valueOf(ticketCategoryId)});
         lock.lock();
         try {
+            //第二次缓存检查
             ticketCategoryRemainNumber =
                     redisCache.getAllMapForHash(RedisKeyBuild.createRedisKey(
                             RedisKeyManage.PROGRAM_TICKET_REMAIN_NUMBER_HASH_RESOLUTION, programId,ticketCategoryId), Long.class);
             if (CollectionUtil.isNotEmpty(ticketCategoryRemainNumber)) {
                 return ticketCategoryRemainNumber;
             }
+            //继续查询数据库 查询该节目下的该票档的信息
             LambdaQueryWrapper<TicketCategory> ticketCategoryLambdaQueryWrapper = Wrappers.lambdaQuery(TicketCategory.class)
                     .eq(TicketCategory::getProgramId, programId).eq(TicketCategory::getId,ticketCategoryId);
             List<TicketCategory> ticketCategoryList = ticketCategoryMapper.selectList(ticketCategoryLambdaQueryWrapper);
+            //数据转换和缓存
             Map<String, Long> map = ticketCategoryList.stream().collect(Collectors.toMap(t -> String.valueOf(t.getId()),
                     TicketCategory::getRemainNumber, (v1, v2) -> v2));
             redisCache.putHash(RedisKeyBuild.createRedisKey(RedisKeyManage.PROGRAM_TICKET_REMAIN_NUMBER_HASH_RESOLUTION,

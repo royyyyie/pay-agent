@@ -19,7 +19,7 @@ public class PayStrategyContext {
     public void put(String channel,PayStrategyHandler payStrategyHandler){
         payStrategyHandlerMap.put(channel,payStrategyHandler);
     }
-    
+    //获取支付策略
     public PayStrategyHandler get(String channel){
         return Optional.ofNullable(payStrategyHandlerMap.get(channel)).orElseThrow(
                 () -> new DaMaiFrameException(BaseCode.PAY_STRATEGY_NOT_EXIST));

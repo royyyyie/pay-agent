@@ -23,7 +23,10 @@ public class ProgramOrderCreateParamCheckHandler extends AbstractProgramCheckHan
     
     @Override
     protected void execute(final ProgramOrderCreateDto programOrderCreateDto) {
+
+        //验证手动选择座位和自动分配座位的参数是否正确
         List<SeatDto> seatDtoList = programOrderCreateDto.getSeatDtoList();
+        //验证传入的购票人id是否重复
         List<Long> ticketUserIdList = programOrderCreateDto.getTicketUserIdList();
         Map<Long, List<Long>> ticketUserIdMap = 
                 ticketUserIdList.stream().collect(Collectors.groupingBy(ticketUserId -> ticketUserId));
@@ -32,6 +35,7 @@ public class ProgramOrderCreateParamCheckHandler extends AbstractProgramCheckHan
                 throw new DaMaiFrameException(BaseCode.TICKET_USER_ID_REPEAT);
             }
         }
+        //手动选座
         if (CollectionUtil.isNotEmpty(seatDtoList)) {
             if (seatDtoList.size() != programOrderCreateDto.getTicketUserIdList().size()) {
                 throw new DaMaiFrameException(BaseCode.TICKET_USER_COUNT_UNEQUAL_SEAT_COUNT);
@@ -54,6 +58,7 @@ public class ProgramOrderCreateParamCheckHandler extends AbstractProgramCheckHan
                 }
             }
         }else {
+            //自动匹配选择
             if (Objects.isNull(programOrderCreateDto.getTicketCategoryId())) {
                 throw new DaMaiFrameException(BaseCode.TICKET_CATEGORY_NOT_EXIST);
             }

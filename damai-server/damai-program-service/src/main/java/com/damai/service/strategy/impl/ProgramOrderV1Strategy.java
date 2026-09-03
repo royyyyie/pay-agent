@@ -27,14 +27,19 @@ public class ProgramOrderV1Strategy implements ProgramOrderStrategy {
     
     @Autowired
     private CompositeContainer compositeContainer;
-    
-    
+
+    /**
+     * 订单创建，使用节目id作为锁
+     * */
+
+    //幂等性保护：为了防止用户多次提交，前端的解决办法是将按钮置灰，但这种不靠谱。如果前端没有控制住、网络延迟、或者有人刷号直接调用接口来多次请求就会出现问题了，所以说后端也要做好幂等保护
     @RepeatExecuteLimit(
             name = RepeatExecuteLimitConstants.CREATE_PROGRAM_ORDER,
             keys = {"#programOrderCreateDto.userId","#programOrderCreateDto.programId"})
     @ServiceLock(name = PROGRAM_ORDER_CREATE_V1,keys = {"#programOrderCreateDto.programId"})
     @Override
     public String createOrder(final ProgramOrderCreateDto programOrderCreateDto) {
+        //进行业务验证：此验证是使用了组合模式和树形结构来将业务的验证逻辑进行复用并且串联起来按照树形结构执行
         compositeContainer.execute(CompositeCheckType.PROGRAM_ORDER_CREATE_CHECK.getValue(),programOrderCreateDto);
         return programOrderService.create(programOrderCreateDto);
     }

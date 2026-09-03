@@ -22,18 +22,18 @@ public class ProgramCategory extends BaseTableData implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * 区域id
+     * 类型id
      */
     @TableId(value = "id", type = IdType.AUTO)
     private Long id;
 
     /**
-     * 父区域id
+     * 父类型id
      */
     private Long parentId;
 
     /**
-     * 区域名字
+     * 名字
      */
     private String name;
 

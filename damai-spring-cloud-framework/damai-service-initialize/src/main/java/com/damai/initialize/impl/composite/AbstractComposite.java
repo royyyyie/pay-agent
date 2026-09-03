@@ -63,21 +63,21 @@ public abstract class AbstractComposite<T> {
      */
     public void allExecute(T param) {
         Queue<AbstractComposite<T>> queue = new LinkedList<>();
-        
+        //将当前对象加入队列
         queue.add(this); 
         
         while (!queue.isEmpty()) {
-           
+           //当前层的大小
             int levelSize = queue.size(); 
             
             for (int i = 0; i < levelSize; i++) {
-               
+               //从队列中取出一个元素
                 AbstractComposite<T> current = queue.poll(); 
                 
-                
+                //执行当前元素的业务逻辑
                 assert current != null;
                 current.execute(param);
-                
+                //将当前元素的子元素加入队列，以便在下一次迭代中处理
                 queue.addAll(current.list);
             }
         }

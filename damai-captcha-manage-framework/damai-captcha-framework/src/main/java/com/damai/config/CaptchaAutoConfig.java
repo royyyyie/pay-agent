@@ -16,14 +16,14 @@ import org.springframework.data.redis.core.StringRedisTemplate;
  * @author: 阿星不是程序员
  **/
 public class CaptchaAutoConfig {
-    
+    // 创建验证码处理器Bean
     @Bean
     public CaptchaHandle captchaHandle(CaptchaService captchaService){
         return new CaptchaHandle(captchaService);
     }
-    
+    // 创建并配置验证码缓存服务Bean
     @Bean(name = "AjCaptchaCacheService")
-    @Primary
+    @Primary  //首选的缓存服务实现
     public CaptchaCacheService captchaCacheService(AjCaptchaProperties config, StringRedisTemplate redisTemplate){
         //缓存类型redis/local/....
         CaptchaCacheService ret = CaptchaServiceFactory.getCache(config.getCacheType().name());

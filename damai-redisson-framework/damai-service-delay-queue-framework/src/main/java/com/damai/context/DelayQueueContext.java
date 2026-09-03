@@ -20,7 +20,19 @@ public class DelayQueueContext {
     public DelayQueueContext(DelayQueueBasePart delayQueueBasePart){
         this.delayQueueBasePart = delayQueueBasePart;
     }
-    
+
+
+    /**
+     * 这是一个延时队列的上下文管理器，用于发送延时消息。
+     * 延时消息发送：支持发送延时执行的消息
+     * 主题管理：按主题管理不同的延时队列处理器
+     * 延迟处理：消息在指定延迟时间后才会被消费
+     * 线程安全：使用ConcurrentHashMap保证并发安全
+     * @param topic
+     * @param content
+     * @param delayTime
+     * @param timeUnit
+     */
     public void sendMessage(String topic,String content,long delayTime, TimeUnit timeUnit) {
         DelayQueueProduceCombine delayQueueProduceCombine = delayQueueProduceCombineMap.computeIfAbsent(
                 topic, k -> new DelayQueueProduceCombine(delayQueueBasePart,topic));

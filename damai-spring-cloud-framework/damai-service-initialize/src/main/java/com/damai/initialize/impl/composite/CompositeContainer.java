@@ -20,19 +20,22 @@ import java.util.stream.Collectors;
 public class CompositeContainer<T> {
     
     private final Map<String, AbstractComposite> allCompositeInterfaceMap = new HashMap<>();
-    
+    //这是一个初始方法，用于获取容器中的所有的bean
     public void init(ConfigurableApplicationContext applicationEvent){
+        //获取所有组合组件 从Spring容器中获取所有类型为AbstractComposite的Bean 返回Map格式：{beanName: beanInstance}
         Map<String, AbstractComposite> compositeInterfaceMap = applicationEvent.getBeansOfType(AbstractComposite.class);
-        
+        //将获取到的所有组件按type()方法分组
         Map<String, List<AbstractComposite>> collect = compositeInterfaceMap.values().stream().collect(Collectors.groupingBy(AbstractComposite::type));
         collect.forEach((k,v) -> {
+            //构建组件树结构
             AbstractComposite root = build(v);
+            //如果根节点存在，则执行业务逻辑
             if (Objects.nonNull(root)) {
                 allCompositeInterfaceMap.put(k, root);
             }
         });
     }
-    
+    //执行树中的节点
     public void execute(String type,T param){
         AbstractComposite compositeInterface = Optional.ofNullable(allCompositeInterfaceMap.get(type))
                 .orElseThrow(() -> new DaMaiFrameException(BaseCode.COMPOSITE_NOT_EXIST));
@@ -49,6 +52,7 @@ public class CompositeContainer<T> {
         Map<Integer, AbstractComposite> nextLevelComponents = groupedByTier.get(currentTier + 1);
         
         if (currentLevelComponents == null) {
+            //当前层级没有组件时，直接返回
             return;
         }
         
@@ -73,6 +77,7 @@ public class CompositeContainer<T> {
      * @return 根节点。
      */
     private static AbstractComposite build(Collection<AbstractComposite> components) {
+        //按层级和执行顺序组织组件
         Map<Integer, Map<Integer, AbstractComposite>> groupedByTier = new TreeMap<>();
         
         for (AbstractComposite component : components) {

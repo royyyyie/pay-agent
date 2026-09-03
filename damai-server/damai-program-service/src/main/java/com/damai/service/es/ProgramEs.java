@@ -144,29 +144,34 @@ public class ProgramEs {
         try {
             List<EsDataQueryDto> esDataQueryDtoList = new ArrayList<>();
             if (Objects.nonNull(programPageListDto.getAreaId())) {
+                //地区id条件
                 EsDataQueryDto areaIdQueryDto = new EsDataQueryDto();
                 areaIdQueryDto.setParamName(ProgramDocumentParamName.AREA_ID);
                 areaIdQueryDto.setParamValue(programPageListDto.getAreaId());
                 esDataQueryDtoList.add(areaIdQueryDto);
             }else {
+                //如果查全部地区，那么需要指定同一个节目分组内的主要节目
                 EsDataQueryDto primeQueryDto = new EsDataQueryDto();
                 primeQueryDto.setParamName(ProgramDocumentParamName.PRIME);
                 primeQueryDto.setParamValue(BusinessStatus.YES.getCode());
                 esDataQueryDtoList.add(primeQueryDto);
             }
+            //父节目类型条件
             if (Objects.nonNull(programPageListDto.getParentProgramCategoryId())) {
                 EsDataQueryDto parentProgramCategoryIdQueryDto = new EsDataQueryDto();
                 parentProgramCategoryIdQueryDto.setParamName(ProgramDocumentParamName.PARENT_PROGRAM_CATEGORY_ID);
                 parentProgramCategoryIdQueryDto.setParamValue(programPageListDto.getParentProgramCategoryId());
                 esDataQueryDtoList.add(parentProgramCategoryIdQueryDto);
             }
+            //节目类型条件
             if (Objects.nonNull(programPageListDto.getProgramCategoryId())) {
                 EsDataQueryDto programCategoryIdQueryDto = new EsDataQueryDto();
                 programCategoryIdQueryDto.setParamName(ProgramDocumentParamName.PROGRAM_CATEGORY_ID);
                 programCategoryIdQueryDto.setParamValue(programPageListDto.getProgramCategoryId());
                 esDataQueryDtoList.add(programCategoryIdQueryDto);
             }
-            if (Objects.nonNull(programPageListDto.getStartDateTime()) && 
+            //开始日期和结束日期条件
+            if (Objects.nonNull(programPageListDto.getStartDateTime()) &&
                     Objects.nonNull(programPageListDto.getEndDateTime())) {
                 EsDataQueryDto showDayTimeQueryDto = new EsDataQueryDto();
                 showDayTimeQueryDto.setParamName(ProgramDocumentParamName.SHOW_DAY_TIME);
@@ -174,7 +179,7 @@ public class ProgramEs {
                 showDayTimeQueryDto.setEndTime(programPageListDto.getEndDateTime());
                 esDataQueryDtoList.add(showDayTimeQueryDto);
             }
-            
+            //构建排序信息
             ProgramPageOrder programPageOrder = getProgramPageOrder(programPageListDto);
             
             PageInfo<ProgramListVo> programListVoPageInfo = businessEsHandle.queryPage(
@@ -214,34 +219,57 @@ public class ProgramEs {
         }
         return programPageOrder;
     }
-    
+
+    /**
+     * 基于Elasticsearch的节目搜索实现
+     * 多条件搜索：支持多种筛选条件的组合查询
+     * 全文检索：支持标题和演员的模糊搜索
+     * 分页查询：支持分页和排序
+     * 高亮显示：搜索关键词高亮
+     * 结果转换：将ES文档转换为业务VO
+     * 异常处理：捕获并记录异常
+     * @param programSearchDto
+     * @return
+     */
     public PageVo<ProgramListVo> search(ProgramSearchDto programSearchDto) {
         PageVo<ProgramListVo> pageVo = new PageVo<>();
         try {
+            //创建最外层的 BoolQueryBuilder
             BoolQueryBuilder boolQuery = QueryBuilders.boolQuery();
+            //areaId条件查询
             if (Objects.nonNull(programSearchDto.getAreaId())) {
                 QueryBuilder builds = QueryBuilders.termQuery(ProgramDocumentParamName.AREA_ID, programSearchDto.getAreaId());
                 boolQuery.must(builds);
             }
+            //父节目类型id条件查询
             if (Objects.nonNull(programSearchDto.getParentProgramCategoryId())) {
                 QueryBuilder builds = QueryBuilders.termQuery(ProgramDocumentParamName.PARENT_PROGRAM_CATEGORY_ID, programSearchDto.getParentProgramCategoryId());
                 boolQuery.must(builds);
             }
+            //时间范围条件查询
             if (Objects.nonNull(programSearchDto.getStartDateTime()) &&
                     Objects.nonNull(programSearchDto.getEndDateTime())) {
                 QueryBuilder builds = QueryBuilders.rangeQuery(ProgramDocumentParamName.SHOW_DAY_TIME)
                         .from(programSearchDto.getStartDateTime()).to(programSearchDto.getEndDateTime()).includeLower(true);
                 boolQuery.must(builds);
             }
+            //输入内容条件查询
             if (StringUtil.isNotEmpty(programSearchDto.getContent())) {
+                // 创建内层的 BoolQueryBuilder 用于处理 title 或 actor 的 OR 查询
                 BoolQueryBuilder innerBoolQuery = QueryBuilders.boolQuery();
+                //按节目标题搜索
                 innerBoolQuery.should(QueryBuilders.matchQuery(ProgramDocumentParamName.TITLE, programSearchDto.getContent()));
+                //按艺人名字搜索
                 innerBoolQuery.should(QueryBuilders.matchQuery(ProgramDocumentParamName.ACTOR, programSearchDto.getContent()));
+                // 确保至少有一个 should 条件匹配
                 innerBoolQuery.minimumShouldMatch(1);
+                // 将内层的 BoolQueryBuilder 添加到最外层的查询中
                 boolQuery.must(innerBoolQuery);
             }
-            
+
+            //使用 SearchSourceBuilder 构建最终的查询
             SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
+            //构建排序信息
             ProgramPageOrder programPageOrder = getProgramPageOrder(programSearchDto);
             if (Objects.nonNull(programPageOrder.sortParam) && Objects.nonNull(programPageOrder.sortOrder)) {
                 FieldSortBuilder sort = SortBuilders.fieldSort(programPageOrder.sortParam);
@@ -249,15 +277,21 @@ public class ProgramEs {
                 searchSourceBuilder.sort(sort);
             }
             searchSourceBuilder.query(boolQuery);
+            //设置是否计算总命中数
             searchSourceBuilder.trackTotalHits(true);
+            //页码
             searchSourceBuilder.from((programSearchDto.getPageNumber() - 1) * programSearchDto.getPageSize());
+            //页大小
             searchSourceBuilder.size(programSearchDto.getPageSize());
+            //设置高亮显示字段
             searchSourceBuilder.highlighter(getHighlightBuilder(Arrays.asList(ProgramDocumentParamName.TITLE,
                     ProgramDocumentParamName.ACTOR)));
+            //构建分页对象
             List<ProgramListVo> list = new ArrayList<>();
             PageInfo<ProgramListVo> pageInfo = new PageInfo<>(list);
             pageInfo.setPageNum(programSearchDto.getPageNumber());
             pageInfo.setPageSize(programSearchDto.getPageSize());
+            //执行查询
             businessEsHandle.executeQuery(SpringUtil.getPrefixDistinctionName() + "-" + ProgramDocumentParamName.INDEX_NAME,
                     ProgramDocumentParamName.INDEX_TYPE,list,pageInfo,ProgramListVo.class,
                     searchSourceBuilder,Arrays.asList(ProgramDocumentParamName.TITLE,ProgramDocumentParamName.ACTOR));

@@ -108,15 +108,17 @@ public class UserService extends ServiceImpl<UserMapper, User> {
     private static final Integer ERROR_COUNT_THRESHOLD = 5;
     
     @Transactional(rollbackFor = Exception.class)
-    @ServiceLock(lockType= LockType.Write,name = REGISTER_USER_LOCK,keys = {"#userRegisterDto.mobile"})
+    @ServiceLock(lockType= LockType.Write,name = REGISTER_USER_LOCK,keys = {"#userRegisterDto.mobile"}) //分布式锁
     public Boolean register(UserRegisterDto userRegisterDto) {
+
+        //验证参数业务
         compositeContainer.execute(CompositeCheckType.USER_REGISTER_CHECK.getValue(),userRegisterDto);
         log.info("注册手机号:{}",userRegisterDto.getMobile());
         //用户表添加
         User user = new User();
         BeanUtils.copyProperties(userRegisterDto,user);
-        user.setId(uidGenerator.getUid());
-        userMapper.insert(user);
+        user.setId(uidGenerator.getUid());//分布式id生成器生成id
+        userMapper.insert(user);//插入用户
         //用户手机表添加
         UserMobile userMobile = new UserMobile();
         userMobile.setId(uidGenerator.getUid());
@@ -150,15 +152,18 @@ public class UserService extends ServiceImpl<UserMapper, User> {
      * @return 用户信息
      * */
     public UserLoginVo login(UserLoginDto userLoginDto) {
+        //获取用户信息
         UserLoginVo userLoginVo = new UserLoginVo();
         String code = userLoginDto.getCode();
         String mobile = userLoginDto.getMobile();
         String email = userLoginDto.getEmail();
         String password = userLoginDto.getPassword();
+        //手机号和邮箱不为空
         if (StringUtil.isEmpty(mobile) && StringUtil.isEmpty(email)) {
             throw new DaMaiFrameException(BaseCode.USER_MOBILE_AND_EMAIL_NOT_EXIST);
         }
         Long userId;
+        //手机不为空的情况下，通过手机查询id
         if (StringUtil.isNotEmpty(mobile)) {
             String errorCountStr = 
                     redisCache.get(RedisKeyBuild.createRedisKey(RedisKeyManage.LOGIN_USER_MOBILE_ERROR, mobile), String.class);
@@ -169,12 +174,13 @@ public class UserService extends ServiceImpl<UserMapper, User> {
                     .eq(UserMobile::getMobile, mobile);
             UserMobile userMobile = userMobileMapper.selectOne(queryWrapper);
             if (Objects.isNull(userMobile)) {
+                //记录错误次数
                 redisCache.incrBy(RedisKeyBuild.createRedisKey(RedisKeyManage.LOGIN_USER_MOBILE_ERROR,mobile),1);
                 redisCache.expire(RedisKeyBuild.createRedisKey(RedisKeyManage.LOGIN_USER_MOBILE_ERROR,mobile),1,TimeUnit.MINUTES);
                 throw new DaMaiFrameException(BaseCode.USER_MOBILE_EMPTY);
             }
             userId = userMobile.getUserId();
-        }else {
+        }else {  //同理 查询id
             String errorCountStr = 
                     redisCache.get(RedisKeyBuild.createRedisKey(RedisKeyManage.LOGIN_USER_EMAIL_ERROR, email), String.class);
             if (StringUtil.isNotEmpty(errorCountStr) && Integer.parseInt(errorCountStr) >= ERROR_COUNT_THRESHOLD) {
@@ -190,23 +196,44 @@ public class UserService extends ServiceImpl<UserMapper, User> {
             }
             userId = userEmail.getUserId();
         }
+        //通过id查询用户信息
         LambdaQueryWrapper<User> queryUserWrapper = Wrappers.lambdaQuery(User.class)
                 .eq(User::getId, userId).eq(User::getPassword, password);
         User user = userMapper.selectOne(queryUserWrapper);
         if (Objects.isNull(user)) {
             throw new DaMaiFrameException(BaseCode.NAME_PASSWORD_ERROR);
         }
+        //将用户信息放入redis中
         redisCache.set(RedisKeyBuild.createRedisKey(RedisKeyManage.USER_LOGIN,code,user.getId()),user,
                 tokenExpireTime,TimeUnit.MINUTES);
+        //返回用户的id 和 token
         userLoginVo.setUserId(userId);
         userLoginVo.setToken(createToken(user.getId(),getChannelDataByCode(code).getTokenSecret()));
         return userLoginVo;
     }
-    
+
+    /**
+     * 从Redis缓存中获取渠道数据
+     *
+     * 避免每次请求都调用远程服务
+     *
+     * 降低网络延迟和服务负载
+     * @param code
+     * @return
+     */
     private GetChannelDataVo getChannelDataByRedis(String code){
         return redisCache.get(RedisKeyBuild.createRedisKey(RedisKeyManage.CHANNEL_DATA,code),GetChannelDataVo.class);
     }
-    
+
+    /**
+     * 调用基础数据微服务获取最新的渠道配置
+     *
+     * 处理远程调用结果
+     *
+     * 返回反序列化后的数据对象
+     * @param code
+     * @return
+     */
     private GetChannelDataVo getChannelDataByClient(String code){
         GetChannelDataByCodeDto getChannelDataByCodeDto = new GetChannelDataByCodeDto();
         getChannelDataByCodeDto.setCode(code);
@@ -237,6 +264,7 @@ public class UserService extends ServiceImpl<UserMapper, User> {
     public GetChannelDataVo getChannelDataByCode(String code){
         GetChannelDataVo channelDataVo = getChannelDataByRedis(code);
         if (Objects.isNull(channelDataVo)) {
+            //调用base-data服务查询
             channelDataVo = getChannelDataByClient(code);
         }
         return channelDataVo;
