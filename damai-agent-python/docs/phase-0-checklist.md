@@ -35,10 +35,10 @@
 
 - [x] GitHub Actions 首次绿色构建（PR #1，`quality`、`java-contract`）
 - [x] 2026-09-15 完成真实 Java/Python 健康检查与 Trace 贯通演示（`search_programs`）
-- [ ] 推送最终 Trace 验收自动化变更，并确认 PR #1 的 `quality`、`java-contract` 再次全绿
+- [x] 最终 Trace 验收自动化变更已推送；PR #1 在提交 `6d6f4d57` 上的 `quality`、`java-contract` 再次全绿
 
 真实链路验收结果：Java `UP`、Agent `UP`，Turn `turn-d5f0b2a5-e1c0-44f1-8b73-ddfa11a6cfdf`，Trace `96d40dbd5aa04dd7b8e224cc92d74b9b`，Java 日志关联成功。
 
 ## 退出标准
 
-阶段 0 完成需要 CI 全绿、生成文件无漂移、生产弱配置无法启动，并形成 Java/Python 契约测试闭环。本地退出标准已达成；最终变更推送并再次全绿后进入阶段 1：只读运行时内核。
+阶段 0 的本地与外部退出标准均已达成，后续开发进入阶段 1：只读运行时内核。
