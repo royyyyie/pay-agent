@@ -9,7 +9,6 @@ from .config import Settings
 
 def run() -> None:
     settings = Settings.from_env()
-    settings.validate()
     uvicorn.run(
         "damai_agent.api:app",
         host=settings.host,
@@ -20,4 +19,3 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
-

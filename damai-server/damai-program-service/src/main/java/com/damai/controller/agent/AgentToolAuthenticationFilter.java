@@ -8,6 +8,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -21,6 +23,7 @@ import java.util.UUID;
  * 保护内部 Agent 工具接口，避免它们被当作普通公开业务接口调用。
  */
 @Component
+@Order(Ordered.HIGHEST_PRECEDENCE)
 public class AgentToolAuthenticationFilter extends OncePerRequestFilter {
 
     private static final String TOOL_PATH_PREFIX = "/internal/agent/";

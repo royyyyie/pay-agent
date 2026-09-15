@@ -24,7 +24,7 @@ flowchart LR
 - 多轮 Agent 执行：模型可以连续选择工具，并根据工具结果组织回答。
 - `sessionKey`：在同一进程中保留最近的对话和工具上下文。
 - 普通 JSON 与 SSE 两种调用方式。
-- Tool Gateway 独立密钥、每轮 `turnId`、每次 `toolCallId` 和链路 `traceId`。
+- Tool Gateway 独立密钥、每轮 `turnId`、每次 `toolCallId` 和 W3C `traceparent`。
 
 第一版不包含下单、锁座、支付、退票，也不会尝试绕过排队、验证码或平台限制。
 
@@ -37,9 +37,8 @@ flowchart LR
 ```powershell
 cd D:\QLDownload\code_402\damai\damai-agent-python
 Copy-Item .env.example .env
-py -3.9 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m damai_agent.main
+uv sync --frozen --extra dev --python 3.11
+uv run --frozen python -m damai_agent.main
 ```
 
 默认使用 `demo` provider，无需模型密钥，但仍会真实调用 Java 查询接口。接入支持 Chat Completions Tool Calling 的模型服务时，在 `.env` 中修改：
@@ -83,7 +82,16 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9010/api/v1/chat `
 核心测试不依赖数据库和外部模型：
 
 ```powershell
-py -3.9 -m unittest discover -s tests -v
+uv run --frozen pytest --cov=damai_agent
 ```
 
 内存会话仅适用于第一版单实例。后续多实例部署时应把 Session/Checkpoint 替换为 Redis 或数据库实现；Runner 和 ToolRegistry 不需要因此改写。
+
+## 企业级演进
+
+- [企业级开发设计与实施计划](docs/enterprise-agent-development.md)
+- [阶段 0 检查清单](docs/phase-0-checklist.md)
+- [阶段 0 真实链路一键验收](docs/phase-0-live-acceptance.md)
+- [Architecture Decision Records](docs/adr/README.md)
+
+阶段 0 将 Python 运行基线提升到 3.11，并建立配置 Profile、生产启动保护、OpenAPI 单一来源、Tool Schema 生成与 CI 质量门禁。

@@ -29,9 +29,7 @@ class FakeSearchTool(AgentTool):
             parameters={"type": "object", "properties": {}},
         )
 
-    async def execute(
-        self, arguments: Dict[str, Any], context: ToolContext
-    ) -> ToolResult:
+    async def execute(self, arguments: Dict[str, Any], context: ToolContext) -> ToolResult:
         self.arguments = arguments
         return ToolResult(
             success=True,
@@ -64,9 +62,7 @@ class ScriptedProvider(ModelProvider):
 
     def assert_tool_observation(self, messages: Sequence[ChatMessage]) -> None:
         tool_message = messages[-1]
-        if tool_message.role != "tool" or '"success":true' not in (
-            tool_message.content or ""
-        ):
+        if tool_message.role != "tool" or '"success":true' not in (tool_message.content or ""):
             raise AssertionError("tool observation was not returned to the model")
 
 
@@ -87,9 +83,11 @@ class AgentRunnerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.answer, "找到：测试演唱会（ID 1001）")
         self.assertEqual(result.tool_calls, ["search_programs"])
+        self.assertRegex(result.trace_id, r"^[0-9a-f]{32}$")
         self.assertEqual(tool.arguments, {"keyword": "测试"})
         self.assertEqual(provider.calls, 2)
         self.assertEqual(events[0]["type"], "turn.started")
+        self.assertEqual(events[0]["traceId"], result.trace_id)
         self.assertEqual(events[-1]["type"], "turn.completed")
 
     async def test_unknown_tool_is_a_safe_observation(self) -> None:
@@ -107,4 +105,3 @@ class AgentRunnerTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

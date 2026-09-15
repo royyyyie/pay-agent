@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import urllib.error
 import urllib.request
+import uuid
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Iterable, List
 
+from .generated.tool_schemas import TOOL_DEFINITIONS
 from .models import ToolContext, ToolResult, ToolSpec
 
 
@@ -19,9 +22,7 @@ class AgentTool(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def execute(
-        self, arguments: Dict[str, Any], context: ToolContext
-    ) -> ToolResult:
+    async def execute(self, arguments: Dict[str, Any], context: ToolContext) -> ToolResult:
         raise NotImplementedError
 
 
@@ -61,9 +62,7 @@ class ToolRegistry:
                 retryable=False,
             )
         try:
-            return await asyncio.wait_for(
-                tool.execute(arguments, context), timeout=timeout_seconds
-            )
+            return await asyncio.wait_for(tool.execute(arguments, context), timeout=timeout_seconds)
         except asyncio.TimeoutError:
             return ToolResult(
                 success=False,
@@ -86,14 +85,11 @@ class JavaToolClient:
         self._api_key = api_key
         self._timeout_seconds = timeout_seconds
 
-    async def post(
-        self, path: str, payload: Dict[str, Any], context: ToolContext
-    ) -> ToolResult:
+    async def post(self, path: str, payload: Dict[str, Any], context: ToolContext) -> ToolResult:
         return await asyncio.to_thread(self._post_sync, path, payload, context)
 
-    def _post_sync(
-        self, path: str, payload: Dict[str, Any], context: ToolContext
-    ) -> ToolResult:
+    def _post_sync(self, path: str, payload: Dict[str, Any], context: ToolContext) -> ToolResult:
+        traceparent = f"00-{context.trace_id}-{uuid.uuid4().hex[:16]}-01"
         request = urllib.request.Request(
             f"{self._base_url}{path}",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -103,25 +99,35 @@ class JavaToolClient:
                 "X-Agent-Session-Key": context.session_key,
                 "X-Agent-Turn-Id": context.turn_id,
                 "X-Agent-Tool-Call-Id": context.tool_call_id,
-                "traceId": context.trace_id,
+                "traceparent": traceparent,
             },
             method="POST",
         )
         status = 200
+        response_traceparent = None
         try:
-            with urllib.request.urlopen(
-                request, timeout=self._timeout_seconds
-            ) as response:
+            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
                 status = response.status
+                response_traceparent = response.headers.get("traceparent")
                 body = response.read().decode("utf-8")
         except urllib.error.HTTPError as error:
             status = error.code
+            response_traceparent = error.headers.get("traceparent")
             body = error.read().decode("utf-8", errors="replace")
         except (urllib.error.URLError, TimeoutError) as error:
+            detail = error.reason if hasattr(error, "reason") else error
             return ToolResult(
                 success=False,
                 code=503,
-                message=f"Java 业务服务不可用: {error.reason if hasattr(error, 'reason') else error}",
+                message=f"Java 业务服务不可用: {detail}",
+                retryable=True,
+            )
+
+        if status < 400 and response_traceparent != traceparent:
+            return ToolResult(
+                success=False,
+                code=502,
+                message="Java 业务服务未正确回传 Trace 上下文",
                 retryable=True,
             )
 
@@ -166,70 +172,26 @@ class JavaReadTool(AgentTool):
     def spec(self) -> ToolSpec:
         return self._spec
 
-    async def execute(
-        self, arguments: Dict[str, Any], context: ToolContext
-    ) -> ToolResult:
+    async def execute(self, arguments: Dict[str, Any], context: ToolContext) -> ToolResult:
         return await self._client.post(self._path, arguments, context)
 
 
 def build_java_tools(client: JavaToolClient) -> List[AgentTool]:
-    program_id_parameters = {
-        "type": "object",
-        "properties": {
-            "programId": {
-                "type": "integer",
-                "description": "从节目搜索结果获得的节目 ID",
-            }
-        },
-        "required": ["programId"],
-        "additionalProperties": False,
-    }
-    return [
-        JavaReadTool(
-            client,
-            ToolSpec(
-                name="search_programs",
-                description="按节目名、艺人、城市、分类和时间范围搜索演出。未知节目 ID 时先调用此工具。",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "keyword": {"type": "string", "description": "节目名或艺人关键词"},
-                        "areaId": {"type": "integer", "description": "城市区域 ID"},
-                        "parentProgramCategoryId": {"type": "integer"},
-                        "programCategoryId": {"type": "integer"},
-                        "timeType": {
-                            "type": "integer",
-                            "enum": [0, 1, 2, 3, 4, 5],
-                            "description": "0 全部、1 今天、2 明天、3 一周内、4 一月内、5 自定义",
-                        },
-                        "startDateTime": {"type": "string", "description": "yyyy-MM-dd HH:mm:ss"},
-                        "endDateTime": {"type": "string", "description": "yyyy-MM-dd HH:mm:ss"},
-                        "sortType": {"type": "integer", "enum": [1, 2, 3, 4]},
-                        "pageNumber": {"type": "integer", "minimum": 1},
-                        "pageSize": {"type": "integer", "minimum": 1, "maximum": 20},
-                    },
-                    "additionalProperties": False,
-                },
-            ),
-            "/internal/agent/v1/tools/programs/search",
-        ),
-        JavaReadTool(
-            client,
-            ToolSpec(
-                name="get_program_detail",
-                description="根据节目 ID 查询演出详情、购票规则和入场说明。",
-                parameters=program_id_parameters,
-            ),
-            "/internal/agent/v1/tools/programs/detail",
-        ),
-        JavaReadTool(
-            client,
-            ToolSpec(
-                name="list_ticket_categories",
-                description="根据节目 ID 查询票档、价格与当前剩余数量。余量只代表查询时刻。",
-                parameters=program_id_parameters,
-            ),
-            "/internal/agent/v1/tools/programs/ticket-categories",
-        ),
-    ]
-
+    tools: List[AgentTool] = []
+    for definition in TOOL_DEFINITIONS:
+        tools.append(
+            JavaReadTool(
+                client,
+                ToolSpec(
+                    name=str(definition["name"]),
+                    version=str(definition["version"]),
+                    description=str(definition["description"]),
+                    parameters=copy.deepcopy(definition["parameters"]),
+                    risk=str(definition["risk"]),
+                    required_scope=str(definition["required_scope"]),
+                    timeout_ms=int(definition["timeout_ms"]),
+                ),
+                str(definition["path"]),
+            )
+        )
+    return tools

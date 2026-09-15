@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 from typing import Any, AsyncIterator, Dict, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
-from .providers import DemoProvider, OpenAICompatibleProvider, ProviderError
+from .providers import DemoProvider, ModelProvider, OpenAICompatibleProvider, ProviderError
 from .runner import AgentRunner
 from .session import InMemorySessionStore
 from .tools import JavaToolClient, ToolRegistry, build_java_tools
@@ -25,12 +26,13 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     sessionKey: str
     turnId: str
+    traceId: str
     answer: str
     toolCalls: list[str]
 
 
 def build_runner(settings: Settings) -> AgentRunner:
-    settings.validate()
+    provider: ModelProvider
     if settings.provider == "openai_compatible":
         provider = OpenAICompatibleProvider(
             base_url=settings.llm_base_url,
@@ -67,16 +69,32 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.state.runner = runner
     app.state.settings = resolved_settings
 
+    async def require_internal_api_key(
+        supplied_key: Optional[str] = Header(default=None, alias="X-Agent-Internal-Key"),
+    ) -> None:
+        if not resolved_settings.requires_internal_auth:
+            return
+        expected_key = resolved_settings.internal_api_key
+        if supplied_key is None or not hmac.compare_digest(expected_key, supplied_key):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Agent API 鉴权失败",
+            )
+
     @app.get("/health")
     async def health() -> Dict[str, Any]:
         return {
             "status": "UP",
+            "environment": resolved_settings.environment.value,
             "provider": resolved_settings.provider,
-            "javaBaseUrl": resolved_settings.java_base_url,
             "tools": runner.tool_names,
         }
 
-    @app.post("/api/v1/chat", response_model=ChatResponse)
+    @app.post(
+        "/api/v1/chat",
+        response_model=ChatResponse,
+        dependencies=[Depends(require_internal_api_key)],
+    )
     async def chat(request: ChatRequest) -> ChatResponse:
         try:
             result = await runner.run(request.message, request.sessionKey)
@@ -85,11 +103,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return ChatResponse(
             sessionKey=result.session_key,
             turnId=result.turn_id,
+            traceId=result.trace_id,
             answer=result.answer,
             toolCalls=result.tool_calls,
         )
 
-    @app.post("/api/v1/chat/stream")
+    @app.post(
+        "/api/v1/chat/stream",
+        dependencies=[Depends(require_internal_api_key)],
+    )
     async def stream_chat(request: ChatRequest) -> StreamingResponse:
         async def event_stream() -> AsyncIterator[str]:
             queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue()
@@ -101,9 +123,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 try:
                     await runner.run(request.message, request.sessionKey, sink)
                 except Exception as error:
-                    await queue.put(
-                        {"type": "turn.failed", "message": str(error)[:500]}
-                    )
+                    await queue.put({"type": "turn.failed", "message": str(error)[:500]})
                 finally:
                     await queue.put(None)
 

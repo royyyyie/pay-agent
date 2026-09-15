@@ -1,0 +1,9 @@
+{
+  "requestId": "call_example_002",
+  "success": false,
+  "code": 400,
+  "message": "Agent 工具参数不合法",
+  "data": null,
+  "retryable": false,
+  "freshnessAt": "2026-09-06T03:00:00Z"
+}

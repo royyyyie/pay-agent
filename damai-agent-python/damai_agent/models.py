@@ -56,6 +56,10 @@ class ToolSpec:
     name: str
     description: str
     parameters: Dict[str, Any]
+    version: str = "1.0.0"
+    risk: str = "READ_ONLY"
+    required_scope: str = ""
+    timeout_ms: int = 8000
 
     def to_provider_dict(self) -> Dict[str, Any]:
         return {
@@ -105,6 +109,6 @@ class ToolResult:
 class RunResult:
     session_key: str
     turn_id: str
+    trace_id: str
     answer: str
     tool_calls: List[str]
-
