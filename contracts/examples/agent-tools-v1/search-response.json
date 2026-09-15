@@ -1,0 +1,24 @@
+{
+  "requestId": "call_example_001",
+  "success": true,
+  "code": 0,
+  "message": "success",
+  "data": {
+    "pageNum": 1,
+    "pageSize": 5,
+    "totalSize": 1,
+    "list": [
+      {
+        "id": 1001,
+        "title": "周杰伦嘉年华演唱会",
+        "place": "测试体育场",
+        "areaName": "上海",
+        "showTime": "2026-10-01 19:30:00",
+        "minPrice": 380,
+        "maxPrice": 1880
+      }
+    ]
+  },
+  "retryable": false,
+  "freshnessAt": "2026-09-06T03:00:00Z"
+}

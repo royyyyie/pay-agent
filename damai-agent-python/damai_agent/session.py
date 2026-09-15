@@ -32,4 +32,3 @@ class InMemorySessionStore:
             lock = self._locks.setdefault(session_key, asyncio.Lock())
         async with lock:
             yield
-

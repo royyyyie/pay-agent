@@ -12,7 +12,7 @@ import re
 import urllib.error
 import urllib.request
 import uuid
-from typing import Any, Dict, List, Optional, Protocol, Sequence
+from typing import Any, Dict, Optional, Protocol, Sequence
 
 from .models import ChatMessage, ProviderResponse, ToolCall, ToolSpec
 
@@ -20,8 +20,7 @@ from .models import ChatMessage, ProviderResponse, ToolCall, ToolSpec
 class ModelProvider(Protocol):
     async def complete(
         self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]
-    ) -> ProviderResponse:
-        ...
+    ) -> ProviderResponse: ...
 
 
 class ProviderError(RuntimeError):
@@ -29,9 +28,7 @@ class ProviderError(RuntimeError):
 
 
 class OpenAICompatibleProvider:
-    def __init__(
-        self, base_url: str, api_key: str, model: str, timeout_seconds: float
-    ) -> None:
+    def __init__(self, base_url: str, api_key: str, model: str, timeout_seconds: float) -> None:
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._api_key = api_key
         self._model = model
@@ -62,35 +59,25 @@ class OpenAICompatibleProvider:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(
-                request, timeout=self._timeout_seconds
-            ) as response:
+            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")[:500]
-            raise ProviderError(
-                f"模型服务返回 HTTP {error.code}: {detail}"
-            ) from error
+            raise ProviderError(f"模型服务返回 HTTP {error.code}: {detail}") from error
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
             raise ProviderError(f"模型服务调用失败: {error}") from error
 
         try:
             message = body["choices"][0]["message"]
             tool_calls = [self._parse_tool_call(item) for item in message.get("tool_calls", [])]
-            return ProviderResponse(
-                content=message.get("content"), tool_calls=tool_calls
-            )
+            return ProviderResponse(content=message.get("content"), tool_calls=tool_calls)
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise ProviderError("模型服务返回了无法识别的数据结构") from error
 
     def _parse_tool_call(self, item: Dict[str, Any]) -> ToolCall:
         function = item["function"]
         raw_arguments = function.get("arguments") or "{}"
-        arguments = (
-            json.loads(raw_arguments)
-            if isinstance(raw_arguments, str)
-            else raw_arguments
-        )
+        arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
         if not isinstance(arguments, dict):
             raise ValueError("tool arguments must be an object")
         return ToolCall(

@@ -29,9 +29,7 @@ class FakeSearchTool(AgentTool):
             parameters={"type": "object", "properties": {}},
         )
 
-    async def execute(
-        self, arguments: Dict[str, Any], context: ToolContext
-    ) -> ToolResult:
+    async def execute(self, arguments: Dict[str, Any], context: ToolContext) -> ToolResult:
         self.arguments = arguments
         return ToolResult(
             success=True,
@@ -64,9 +62,7 @@ class ScriptedProvider(ModelProvider):
 
     def assert_tool_observation(self, messages: Sequence[ChatMessage]) -> None:
         tool_message = messages[-1]
-        if tool_message.role != "tool" or '"success":true' not in (
-            tool_message.content or ""
-        ):
+        if tool_message.role != "tool" or '"success":true' not in (tool_message.content or ""):
             raise AssertionError("tool observation was not returned to the model")
 
 
@@ -107,4 +103,3 @@ class AgentRunnerTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

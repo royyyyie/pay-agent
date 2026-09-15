@@ -24,7 +24,7 @@ class StubJavaHandler(BaseHTTPRequestHandler):
             "api_key": self.headers.get("X-Agent-Key"),
             "turn_id": self.headers.get("X-Agent-Turn-Id"),
             "tool_call_id": self.headers.get("X-Agent-Tool-Call-Id"),
-            "trace_id": self.headers.get("traceId"),
+            "traceparent": self.headers.get("traceparent"),
         }
         response = {
             "requestId": self.headers.get("X-Agent-Tool-Call-Id"),
@@ -96,7 +96,8 @@ class JavaToolIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(StubJavaHandler.received["body"]["keyword"], "周杰伦")
         self.assertTrue(StubJavaHandler.received["turn_id"].startswith("turn-"))
         self.assertTrue(StubJavaHandler.received["tool_call_id"].startswith("demo-"))
-        self.assertEqual(len(StubJavaHandler.received["trace_id"]), 32)
+        traceparent = StubJavaHandler.received["traceparent"]
+        self.assertRegex(traceparent, r"^00-[0-9a-f]{32}-[0-9a-f]{16}-01$")
 
 
 if __name__ == "__main__":

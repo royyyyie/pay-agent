@@ -16,7 +16,6 @@ from .providers import ModelProvider
 from .session import InMemorySessionStore
 from .tools import ToolRegistry
 
-
 EventSink = Callable[[Dict[str, Any]], Optional[Awaitable[None]]]
 
 
@@ -56,9 +55,7 @@ class AgentRunner:
     ) -> RunResult:
         normalized_session_key = session_key or f"session-{uuid.uuid4()}"
         async with self._sessions.turn_lock(normalized_session_key):
-            return await self._run_locked(
-                user_text, normalized_session_key, event_sink
-            )
+            return await self._run_locked(user_text, normalized_session_key, event_sink)
 
     async def _run_locked(
         self,
@@ -95,7 +92,7 @@ class AgentRunner:
             if not response.tool_calls:
                 answer = (response.content or "暂时无法生成回答，请稍后重试。").strip()
                 await self._sessions.append(session_key, turn_messages)
-                result = RunResult(
+                run_result = RunResult(
                     session_key=session_key,
                     turn_id=turn_id,
                     answer=answer,
@@ -111,7 +108,7 @@ class AgentRunner:
                         "toolCalls": executed_tools,
                     },
                 )
-                return result
+                return run_result
 
             for call in response.tool_calls:
                 executed_tools.append(call.name)
@@ -130,7 +127,7 @@ class AgentRunner:
                     tool_call_id=call.id,
                     trace_id=trace_id,
                 )
-                result = await self._registry.execute(
+                tool_result = await self._registry.execute(
                     call.name,
                     call.arguments,
                     context,
@@ -138,7 +135,7 @@ class AgentRunner:
                 )
                 tool_message = ChatMessage(
                     role="tool",
-                    content=result.to_model_content(),
+                    content=tool_result.to_model_content(),
                     name=call.name,
                     tool_call_id=call.id,
                 )
@@ -151,9 +148,9 @@ class AgentRunner:
                         "turnId": turn_id,
                         "toolCallId": call.id,
                         "tool": call.name,
-                        "success": result.success,
-                        "code": result.code,
-                        "retryable": result.retryable,
+                        "success": tool_result.success,
+                        "code": tool_result.code,
+                        "retryable": tool_result.retryable,
                     },
                 )
 
@@ -180,9 +177,7 @@ class AgentRunner:
             tool_calls=response.tool_calls,
         )
 
-    async def _emit(
-        self, sink: Optional[EventSink], event: Dict[str, Any]
-    ) -> None:
+    async def _emit(self, sink: Optional[EventSink], event: Dict[str, Any]) -> None:
         if sink is None:
             return
         possible_awaitable = sink(event)
