@@ -20,6 +20,9 @@ paths:
       x-agent-risk: READ_ONLY
       x-agent-scope: programs:read
       x-agent-timeout-ms: 8000
+      x-agent-max-calls-per-turn: 3
+      x-agent-concurrency-safe: true
+      x-agent-exclusive: false
       parameters:
         - $ref: '#/components/parameters/ToolCallId'
         - $ref: '#/components/parameters/TurnId'
@@ -52,6 +55,9 @@ paths:
       x-agent-risk: READ_ONLY
       x-agent-scope: programs:read
       x-agent-timeout-ms: 8000
+      x-agent-max-calls-per-turn: 3
+      x-agent-concurrency-safe: true
+      x-agent-exclusive: false
       parameters:
         - $ref: '#/components/parameters/ToolCallId'
         - $ref: '#/components/parameters/TurnId'
@@ -85,6 +91,9 @@ paths:
       x-agent-risk: READ_ONLY
       x-agent-scope: programs:read
       x-agent-timeout-ms: 8000
+      x-agent-max-calls-per-turn: 3
+      x-agent-concurrency-safe: true
+      x-agent-exclusive: false
       parameters:
         - $ref: '#/components/parameters/ToolCallId'
         - $ref: '#/components/parameters/TurnId'

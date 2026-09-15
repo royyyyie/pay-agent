@@ -35,6 +35,9 @@ class ContractGenerationTest(unittest.TestCase):
             self.assertEqual(spec.risk, "READ_ONLY")
             self.assertEqual(spec.required_scope, "programs:read")
             self.assertFalse(spec.parameters["additionalProperties"])
+            self.assertEqual(spec.max_calls_per_turn, 3)
+            self.assertTrue(spec.concurrency_safe)
+            self.assertFalse(spec.exclusive)
 
 
 if __name__ == "__main__":

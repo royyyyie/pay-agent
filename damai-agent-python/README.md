@@ -5,9 +5,10 @@
 ```mermaid
 flowchart LR
     U[用户或 Web 前端] -->|HTTP / SSE| A[Python FastAPI]
-    A --> R[AgentRunner]
+    A --> L[TicketAgentLoop]
+    L --> R[ToolCallingRunner]
     R --> M[Demo 或 OpenAI 兼容模型]
-    R --> T[ToolRegistry]
+    R --> T[Policy-aware ToolRegistry]
     T -->|X-Agent-Key| J[Java Program Tool Gateway]
     J --> P[ProgramService]
     J --> C[TicketCategoryService]
@@ -25,6 +26,9 @@ flowchart LR
 - `sessionKey`：在同一进程中保留最近的对话和工具上下文。
 - 普通 JSON 与 SSE 两种调用方式。
 - Tool Gateway 独立密钥、每轮 `turnId`、每次 `toolCallId` 和 W3C `traceparent`。
+- 受信 `TicketTurnContext`、版本化 `AgentRunSpec/Result` 与连续编号的 Agent Event。
+- Tool 参数 JSON Schema 校验、Scope/风险策略和单轮调用预算。
+- Provider 结束原因、模型路由和 Token Usage 汇总。
 
 第一版不包含下单、锁座、支付、退票，也不会尝试绕过排队、验证码或平台限制。
 
@@ -92,6 +96,9 @@ uv run --frozen pytest --cov=damai_agent
 - [企业级开发设计与实施计划](docs/enterprise-agent-development.md)
 - [阶段 0 检查清单](docs/phase-0-checklist.md)
 - [阶段 0 真实链路一键验收](docs/phase-0-live-acceptance.md)
+- [阶段 1 检查清单](docs/phase-1-checklist.md)
 - [Architecture Decision Records](docs/adr/README.md)
 
 阶段 0 将 Python 运行基线提升到 3.11，并建立配置 Profile、生产启动保护、OpenAPI 单一来源、Tool Schema 生成与 CI 质量门禁。
+
+阶段 1 正在把最小闭环拆分为 `TicketAgentLoop`、`ToolCallingRunner` 和策略化 `ToolRegistry`，当前已完成运行契约与 Tool 输入安全第一批能力。

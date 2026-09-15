@@ -21,6 +21,9 @@ REQUIRED_EXTENSIONS = (
     "x-agent-risk",
     "x-agent-scope",
     "x-agent-timeout-ms",
+    "x-agent-max-calls-per-turn",
+    "x-agent-concurrency-safe",
+    "x-agent-exclusive",
 )
 ALLOWED_RISKS = {"READ_ONLY", "REVERSIBLE_WRITE", "ORDER_WRITE", "PROHIBITED"}
 
@@ -111,6 +114,15 @@ def build_definitions(document: Dict[str, Any]) -> list[Dict[str, Any]]:
         timeout_ms = operation["x-agent-timeout-ms"]
         if not isinstance(timeout_ms, int) or timeout_ms <= 0:
             raise ContractError(f"{name} 的 timeout 必须是正整数毫秒")
+        max_calls_per_turn = operation["x-agent-max-calls-per-turn"]
+        if not isinstance(max_calls_per_turn, int) or max_calls_per_turn <= 0:
+            raise ContractError(f"{name} 的单轮调用上限必须是正整数")
+        concurrency_safe = operation["x-agent-concurrency-safe"]
+        exclusive = operation["x-agent-exclusive"]
+        if not isinstance(concurrency_safe, bool) or not isinstance(exclusive, bool):
+            raise ContractError(f"{name} 的并发与独占元数据必须是布尔值")
+        if concurrency_safe and exclusive:
+            raise ContractError(f"{name} 不能同时声明并发安全和独占执行")
 
         definitions.append(
             {
@@ -122,6 +134,9 @@ def build_definitions(document: Dict[str, Any]) -> list[Dict[str, Any]]:
                 "risk": risk,
                 "required_scope": str(operation["x-agent-scope"]),
                 "timeout_ms": timeout_ms,
+                "max_calls_per_turn": max_calls_per_turn,
+                "concurrency_safe": concurrency_safe,
+                "exclusive": exclusive,
             }
         )
     if not definitions:

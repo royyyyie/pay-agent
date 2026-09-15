@@ -14,7 +14,7 @@ import urllib.request
 import uuid
 from typing import Any, Dict, Optional, Protocol, Sequence
 
-from .models import ChatMessage, ProviderResponse, ToolCall, ToolSpec
+from .models import ChatMessage, ProviderResponse, ProviderUsage, ToolCall, ToolSpec
 
 
 class ModelProvider(Protocol):
@@ -33,6 +33,10 @@ class OpenAICompatibleProvider:
         self._api_key = api_key
         self._model = model
         self._timeout_seconds = timeout_seconds
+
+    @property
+    def route_name(self) -> str:
+        return f"openai-compatible/{self._model}"
 
     async def complete(
         self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]
@@ -68,9 +72,17 @@ class OpenAICompatibleProvider:
             raise ProviderError(f"模型服务调用失败: {error}") from error
 
         try:
-            message = body["choices"][0]["message"]
+            choice = body["choices"][0]
+            message = choice["message"]
             tool_calls = [self._parse_tool_call(item) for item in message.get("tool_calls", [])]
-            return ProviderResponse(content=message.get("content"), tool_calls=tool_calls)
+            return ProviderResponse(
+                content=message.get("content"),
+                tool_calls=tool_calls,
+                usage=self._parse_usage(body.get("usage")),
+                finish_reason=str(choice.get("finish_reason") or "stop"),
+                model_route=f"openai-compatible/{body.get('model') or self._model}",
+                refusal=message.get("refusal"),
+            )
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise ProviderError("模型服务返回了无法识别的数据结构") from error
 
@@ -86,6 +98,26 @@ class OpenAICompatibleProvider:
             arguments=arguments,
         )
 
+    def _parse_usage(self, value: Any) -> ProviderUsage:
+        if not isinstance(value, dict):
+            return ProviderUsage()
+        prompt_details = value.get("prompt_tokens_details")
+        completion_details = value.get("completion_tokens_details")
+        return ProviderUsage(
+            prompt_tokens=int(value.get("prompt_tokens") or 0),
+            completion_tokens=int(value.get("completion_tokens") or 0),
+            cached_tokens=(
+                int(prompt_details.get("cached_tokens") or 0)
+                if isinstance(prompt_details, dict)
+                else 0
+            ),
+            reasoning_tokens=(
+                int(completion_details.get("reasoning_tokens") or 0)
+                if isinstance(completion_details, dict)
+                else 0
+            ),
+        )
+
 
 class DemoProvider:
     """A deterministic provider for local integration before an LLM is configured.
@@ -93,6 +125,10 @@ class DemoProvider:
     It still travels through the same Agent loop and Java tools, making it useful
     for verifying the boundary between Python and Java.
     """
+
+    @property
+    def route_name(self) -> str:
+        return "demo/deterministic"
 
     async def complete(
         self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]

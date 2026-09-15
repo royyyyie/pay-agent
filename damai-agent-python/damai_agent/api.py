@@ -29,6 +29,10 @@ class ChatResponse(BaseModel):
     traceId: str
     answer: str
     toolCalls: list[str]
+    usage: Dict[str, int]
+    stopReason: str
+    errorCode: Optional[str]
+    modelRoute: str
 
 
 def build_runner(settings: Settings) -> AgentRunner:
@@ -99,13 +103,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         try:
             result = await runner.run(request.message, request.sessionKey)
         except ProviderError as error:
-            raise HTTPException(status_code=502, detail=str(error)) from error
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": "PROVIDER_UNAVAILABLE",
+                    "message": "模型服务暂时不可用，请稍后重试",
+                },
+            ) from error
         return ChatResponse(
             sessionKey=result.session_key,
             turnId=result.turn_id,
             traceId=result.trace_id,
             answer=result.answer,
             toolCalls=result.tool_calls,
+            usage=result.usage.to_dict(),
+            stopReason=result.stop_reason,
+            errorCode=result.error_code.value if result.error_code else None,
+            modelRoute=result.model_route,
         )
 
     @app.post(
@@ -122,8 +136,22 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             async def execute() -> None:
                 try:
                     await runner.run(request.message, request.sessionKey, sink)
-                except Exception as error:
-                    await queue.put({"type": "turn.failed", "message": str(error)[:500]})
+                except ProviderError:
+                    await queue.put(
+                        {
+                            "type": "turn.failed",
+                            "code": "PROVIDER_UNAVAILABLE",
+                            "message": "模型服务暂时不可用，请稍后重试",
+                        }
+                    )
+                except Exception:
+                    await queue.put(
+                        {
+                            "type": "turn.failed",
+                            "code": "INTERNAL_ERROR",
+                            "message": "Agent 执行失败，请稍后重试",
+                        }
+                    )
                 finally:
                     await queue.put(None)
 
