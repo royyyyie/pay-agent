@@ -6,6 +6,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict
 
+from damai_agent.models import ToolContext
 from damai_agent.providers import DemoProvider
 from damai_agent.runner import AgentRunner
 from damai_agent.session import InMemorySessionStore
@@ -14,6 +15,7 @@ from damai_agent.tools import JavaToolClient, ToolRegistry, build_java_tools
 
 class StubJavaHandler(BaseHTTPRequestHandler):
     received: Dict[str, Any] = {}
+    echo_traceparent = True
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -53,6 +55,8 @@ class StubJavaHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
+        if type(self).echo_traceparent:
+            self.send_header("traceparent", self.headers.get("traceparent"))
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -62,6 +66,8 @@ class StubJavaHandler(BaseHTTPRequestHandler):
 
 class JavaToolIntegrationTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
+        StubJavaHandler.received = {}
+        StubJavaHandler.echo_traceparent = True
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), StubJavaHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -98,6 +104,31 @@ class JavaToolIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(StubJavaHandler.received["tool_call_id"].startswith("demo-"))
         traceparent = StubJavaHandler.received["traceparent"]
         self.assertRegex(traceparent, r"^00-[0-9a-f]{32}-[0-9a-f]{16}-01$")
+        self.assertEqual(result.trace_id, traceparent.split("-")[1])
+
+    async def test_success_response_without_trace_echo_is_rejected(self) -> None:
+        StubJavaHandler.echo_traceparent = False
+        host, port = self.server.server_address
+        client = JavaToolClient(
+            base_url=f"http://{host}:{port}",
+            api_key="integration-key",
+            timeout_seconds=2,
+        )
+
+        result = await client.post(
+            "/internal/agent/v1/tools/programs/search",
+            {"keyword": "周杰伦"},
+            ToolContext(
+                session_key="session-integration",
+                turn_id="turn-integration",
+                tool_call_id="call-integration",
+                trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
+            ),
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.code, 502)
+        self.assertIn("Trace", result.message)
 
 
 if __name__ == "__main__":

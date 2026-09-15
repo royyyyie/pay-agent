@@ -71,7 +71,12 @@ class AgentRunner:
         executed_tools: List[str] = []
         await self._emit(
             event_sink,
-            {"type": "turn.started", "turnId": turn_id, "sessionKey": session_key},
+            {
+                "type": "turn.started",
+                "turnId": turn_id,
+                "traceId": trace_id,
+                "sessionKey": session_key,
+            },
         )
 
         for round_number in range(1, self._max_tool_rounds + 1):
@@ -95,6 +100,7 @@ class AgentRunner:
                 run_result = RunResult(
                     session_key=session_key,
                     turn_id=turn_id,
+                    trace_id=trace_id,
                     answer=answer,
                     tool_calls=executed_tools,
                 )
@@ -103,6 +109,7 @@ class AgentRunner:
                     {
                         "type": "turn.completed",
                         "turnId": turn_id,
+                        "traceId": trace_id,
                         "sessionKey": session_key,
                         "answer": answer,
                         "toolCalls": executed_tools,
@@ -163,12 +170,13 @@ class AgentRunner:
             {
                 "type": "turn.completed",
                 "turnId": turn_id,
+                "traceId": trace_id,
                 "sessionKey": session_key,
                 "answer": answer,
                 "toolCalls": executed_tools,
             },
         )
-        return RunResult(session_key, turn_id, answer, executed_tools)
+        return RunResult(session_key, turn_id, trace_id, answer, executed_tools)
 
     def _assistant_message(self, response: ProviderResponse) -> ChatMessage:
         return ChatMessage(

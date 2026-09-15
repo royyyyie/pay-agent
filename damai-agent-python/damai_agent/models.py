@@ -109,5 +109,6 @@ class ToolResult:
 class RunResult:
     session_key: str
     turn_id: str
+    trace_id: str
     answer: str
     tool_calls: List[str]

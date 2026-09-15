@@ -34,6 +34,9 @@ paths:
       responses:
         '200':
           description: 工具业务结果；success=false 表示业务执行失败
+          headers:
+            traceparent:
+              $ref: '#/components/headers/TraceParent'
           content:
             application/json:
               schema:
@@ -59,6 +62,9 @@ paths:
       responses:
         '200':
           description: 节目详情工具结果
+          headers:
+            traceparent:
+              $ref: '#/components/headers/TraceParent'
           content:
             application/json:
               schema:
@@ -89,6 +95,9 @@ paths:
       responses:
         '200':
           description: 票档工具结果；余量只代表 freshnessAt 对应时刻
+          headers:
+            traceparent:
+              $ref: '#/components/headers/TraceParent'
           content:
             application/json:
               schema:
@@ -103,6 +112,13 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 components:
+  headers:
+    TraceParent:
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$'
+      description: 回传请求中的 W3C Trace Context，供调用方验证链路连续性
   securitySchemes:
     AgentKey:
       type: apiKey

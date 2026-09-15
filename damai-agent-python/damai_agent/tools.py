@@ -104,12 +104,15 @@ class JavaToolClient:
             method="POST",
         )
         status = 200
+        response_traceparent = None
         try:
             with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
                 status = response.status
+                response_traceparent = response.headers.get("traceparent")
                 body = response.read().decode("utf-8")
         except urllib.error.HTTPError as error:
             status = error.code
+            response_traceparent = error.headers.get("traceparent")
             body = error.read().decode("utf-8", errors="replace")
         except (urllib.error.URLError, TimeoutError) as error:
             detail = error.reason if hasattr(error, "reason") else error
@@ -117,6 +120,14 @@ class JavaToolClient:
                 success=False,
                 code=503,
                 message=f"Java 业务服务不可用: {detail}",
+                retryable=True,
+            )
+
+        if status < 400 and response_traceparent != traceparent:
+            return ToolResult(
+                success=False,
+                code=502,
+                message="Java 业务服务未正确回传 Trace 上下文",
                 retryable=True,
             )
 

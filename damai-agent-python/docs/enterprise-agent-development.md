@@ -9,7 +9,7 @@
 
 ## 1. 结论
 
-`damai-agent-python` 已完成第一阶段最小闭环和阶段 0 本地工程基线：FastAPI 接入、模型—工具—模型循环、三项 Java 只读工具、进程内会话、普通 JSON/SSE 接口和 W3C Trace 上下文。现有 17 项 Python 测试与 6 项 Java 契约/Trace 测试全部通过，可以作为后续演进的可运行基线。
+`damai-agent-python` 已完成第一阶段最小闭环和阶段 0 本地工程基线：FastAPI 接入、模型—工具—模型循环、三项 Java 只读工具、进程内会话、普通 JSON/SSE 接口和 W3C Trace 上下文。现有 18 项 Python 测试与 6 项 Java 契约/Trace 测试全部通过，可以作为后续演进的可运行基线。
 
 下一阶段不应直接复制 `nanobot`，也不应急于增加下单、支付或大量通用工具。建议吸收 `nanobot` 已验证的运行时分层思想，构建“领域受限、默认拒绝、可恢复、可观测”的购票 Agent：
 
@@ -32,7 +32,7 @@
 | Session | `InMemorySessionStore`，同 Session 串行 | 适合单实例测试，不可跨进程恢复，锁和历史没有 TTL |
 | 契约 | `contracts/agent-tools-v1.openapi.yaml` | 已有良好起点，但 Python ToolSpec 仍为手写副本 |
 | Java 网关 | API Key、统一响应、必填 Tool/Turn/Session Header、W3C `traceparent` | 具备内部调用基线，仍缺少租户和用户委托身份 |
-| 测试 | Python 单元/集成/契约测试与 Java 契约/Trace 测试 | Python 17 项、Java 6 项通过；仍需持续提升核心覆盖率和故障测试 |
+| 测试 | Python 单元/集成/契约测试与 Java 契约/Trace 测试 | Python 18 项、Java 6 项通过；仍需持续提升核心覆盖率和故障测试 |
 
 ### 2.2 主要缺口
 

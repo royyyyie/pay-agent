@@ -91,6 +91,7 @@ uv run --frozen pytest --cov=damai_agent
 
 - [企业级开发设计与实施计划](docs/enterprise-agent-development.md)
 - [阶段 0 检查清单](docs/phase-0-checklist.md)
+- [阶段 0 真实链路一键验收](docs/phase-0-live-acceptance.md)
 - [Architecture Decision Records](docs/adr/README.md)
 
 阶段 0 将 Python 运行基线提升到 3.11，并建立配置 Profile、生产启动保护、OpenAPI 单一来源、Tool Schema 生成与 CI 质量门禁。

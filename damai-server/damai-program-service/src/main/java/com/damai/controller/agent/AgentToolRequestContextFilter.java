@@ -6,6 +6,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -25,6 +26,7 @@ import java.util.regex.Pattern;
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 1)
+@Slf4j
 public class AgentToolRequestContextFilter extends OncePerRequestFilter {
 
     static final String TOOL_PATH_PREFIX = "/internal/agent/";
@@ -70,9 +72,17 @@ public class AgentToolRequestContextFilter extends OncePerRequestFilter {
         MDC.put("agentTurnId", turnId);
         MDC.put("agentToolCallId", toolCallId);
         response.setHeader(TRACEPARENT_HEADER, traceparent);
+        long startedAt = System.nanoTime();
         try {
             filterChain.doFilter(request, response);
         } finally {
+            long durationMs = (System.nanoTime() - startedAt) / 1_000_000;
+            log.info(
+                    "Agent tool request completed, method={}, path={}, status={}, durationMs={}",
+                    request.getMethod(),
+                    request.getRequestURI(),
+                    response.getStatus(),
+                    durationMs);
             MDC.remove("traceId");
             MDC.remove("agentTurnId");
             MDC.remove("agentToolCallId");

@@ -18,6 +18,7 @@
 - [x] Java 共享样例契约测试
 - [x] v1 Tool 契约 Breaking Change 检查
 - [x] W3C `traceparent` Python/Java 传播与 Java MDC 清理
+- [x] Java/Python 健康与 Trace 一键验收脚本
 
 ## 本轮本地验收
 
@@ -25,16 +26,19 @@
 - [x] Tool Schema 生成文件无漂移
 - [x] Ruff 格式与规则检查通过
 - [x] Mypy 严格模式通过（11 个源码文件）
-- [x] Pytest 在 Python 3.11.16 下通过（17 项），分支覆盖率 72.66%（门槛 70%）
+- [x] Pytest 在 Python 3.11.16 下通过（18 项），分支覆盖率 72.88%（门槛 70%）
 - [x] Java Maven Reactor 构建通过（目标 Java 17，本地 JDK 18，30 个模块），Agent 契约与 Trace 测试 6 项通过
 
-本地已通过 uv 隔离安装 Python 3.11.16 完成验收；权威发布门禁仍以首次 GitHub Actions 绿色构建为准。
+本地已通过 uv 隔离安装 Python 3.11.16 完成验收；PR #1 的首轮 GitHub Actions 也已全绿。
 
-## 阶段 0 剩余验证
+## 阶段 0 最终验收
 
-- [ ] 在 GitHub Actions 的 Python 3.11 环境完成首次绿色构建
-- [ ] 在本地或测试环境完成 Java/Python 健康检查与 Trace 贯通演示
+- [x] GitHub Actions 首次绿色构建（PR #1，`quality`、`java-contract`）
+- [x] 2026-09-15 完成真实 Java/Python 健康检查与 Trace 贯通演示（`search_programs`）
+- [ ] 推送最终 Trace 验收自动化变更，并确认 PR #1 的 `quality`、`java-contract` 再次全绿
+
+真实链路验收结果：Java `UP`、Agent `UP`，Turn `turn-d5f0b2a5-e1c0-44f1-8b73-ddfa11a6cfdf`，Trace `96d40dbd5aa04dd7b8e224cc92d74b9b`，Java 日志关联成功。
 
 ## 退出标准
 
-阶段 0 完成需要 CI 全绿、生成文件无漂移、生产弱配置无法启动，并形成 Java/Python 契约测试闭环。完成后进入阶段 1：只读运行时内核。
+阶段 0 完成需要 CI 全绿、生成文件无漂移、生产弱配置无法启动，并形成 Java/Python 契约测试闭环。本地退出标准已达成；最终变更推送并再次全绿后进入阶段 1：只读运行时内核。

@@ -83,9 +83,11 @@ class AgentRunnerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.answer, "找到：测试演唱会（ID 1001）")
         self.assertEqual(result.tool_calls, ["search_programs"])
+        self.assertRegex(result.trace_id, r"^[0-9a-f]{32}$")
         self.assertEqual(tool.arguments, {"keyword": "测试"})
         self.assertEqual(provider.calls, 2)
         self.assertEqual(events[0]["type"], "turn.started")
+        self.assertEqual(events[0]["traceId"], result.trace_id)
         self.assertEqual(events[-1]["type"], "turn.completed")
 
     async def test_unknown_tool_is_a_safe_observation(self) -> None:

@@ -26,6 +26,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     sessionKey: str
     turnId: str
+    traceId: str
     answer: str
     toolCalls: list[str]
 
@@ -102,6 +103,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return ChatResponse(
             sessionKey=result.session_key,
             turnId=result.turn_id,
+            traceId=result.trace_id,
             answer=result.answer,
             toolCalls=result.tool_calls,
         )
