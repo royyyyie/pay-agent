@@ -19,11 +19,14 @@
 - [x] Provider 拒绝或内容过滤时禁止执行夹带的 Tool Call
 - [x] JSON/SSE 外部错误使用稳定错误码，不暴露原始异常文本
 
+## 第二批：生成模型与真实流式
+
+- [x] 从 OpenAPI 生成 Python 请求/响应模型，并校验 Java Tool Result
+- [x] Provider 支持文本 Delta、Tool Call Delta、Usage 和标准结束事件
+- [x] SSE 输出真实模型文本流，并增加流空闲超时
+
 ## 后续批次
 
-- [ ] 从 OpenAPI 生成 Python 请求/响应模型，并校验 Java Tool Result
-- [ ] Provider 支持文本 Delta、Tool Call Delta、Usage 和标准结束事件
-- [ ] SSE 输出真实模型文本流，并增加流空闲超时
 - [ ] 并发执行标记为安全的只读 Tool，独占 Tool 保持串行
 - [ ] 增加 Hook 链：Trace、Policy、Audit、Usage
 - [ ] 增加上下文预算、Tool Result 限长和协议配对治理
@@ -37,10 +40,22 @@
 - [x] 同一 Session 并发 Turn 严格串行
 - [x] 每个事件具有连续 `eventSeq` 和一致 `traceId`
 - [x] 多轮 Provider Usage 正确累计到 `AgentRunResult`
+- [x] 分片 Tool 参数可安全拼装，畸形 JSON 不进入执行器
+- [x] Java 成功响应缺少契约字段或 `requestId` 不匹配时默认拒绝
+- [x] SSE 连续无事件达到阈值后以稳定 `STREAM_IDLE_TIMEOUT` 终止
 - [x] 阶段 0 的 3 个 Java Tool 行为保持兼容
-- [x] Python 3.11：29 项测试通过，分支覆盖率 82.77%（门槛 70%）
+- [x] Python 3.11：38 项测试通过，分支覆盖率 84.98%（门槛 70%）
 - [x] OpenAPI、生成文件漂移和 v1 向后兼容检查通过
 - [x] Java Maven Reactor 30 模块通过，Agent 契约/Trace 测试 6 项通过
+
+## 第二批自动验收记录
+
+- 日期：2026-09-16
+- 生成契约：3 个 Tool 的请求/响应 Pydantic 模型与 ToolSpec 绑定成功
+- Provider：文本 Delta、Tool Call Delta、Usage、结束原因均可聚合与透传
+- Java 响应防线：缺失 Envelope 字段和 Tool Call ID 串单均返回 `TOOL_RESULT_INVALID`
+- SSE：真实文本 Delta 保持连续事件序号，空闲超时不暴露内部异常
+- 质量门禁：Ruff、Mypy strict、38 项 Pytest、84.98% 分支覆盖率全部通过
 
 ## 第一批真实回归记录
 

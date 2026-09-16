@@ -8,13 +8,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
 import re
 import urllib.error
 import urllib.request
 import uuid
-from typing import Any, Dict, Optional, Protocol, Sequence
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Dict, Iterator, Optional, Protocol, Sequence
 
-from .models import ChatMessage, ProviderResponse, ProviderUsage, ToolCall, ToolSpec
+from .models import (
+    ChatMessage,
+    ProviderResponse,
+    ProviderStreamEvent,
+    ProviderStreamEventType,
+    ProviderUsage,
+    ToolCall,
+    ToolSpec,
+)
 
 
 class ModelProvider(Protocol):
@@ -27,12 +38,89 @@ class ProviderError(RuntimeError):
     """Raised when the configured model endpoint cannot return a valid reply."""
 
 
+@dataclass(slots=True)
+class _ToolCallAccumulator:
+    tool_call_id: str = ""
+    name: str = ""
+    arguments: str = ""
+
+
+class ProviderStreamAccumulator:
+    """Build one provider response from standardized streaming events."""
+
+    def __init__(self) -> None:
+        self._text: list[str] = []
+        self._refusal: list[str] = []
+        self._tool_calls: Dict[int, _ToolCallAccumulator] = {}
+        self._usage = ProviderUsage()
+        self._finish_reason = "stop"
+        self._model_route = ""
+
+    def add(self, event: ProviderStreamEvent) -> None:
+        if event.event_type is ProviderStreamEventType.TEXT_DELTA:
+            self._text.append(event.text_delta)
+        elif event.event_type is ProviderStreamEventType.TOOL_CALL_DELTA:
+            state = self._tool_calls.setdefault(event.tool_call_index, _ToolCallAccumulator())
+            state.tool_call_id = event.tool_call_id or state.tool_call_id
+            state.name = event.tool_name or state.name
+            state.arguments += event.arguments_delta
+        elif event.event_type is ProviderStreamEventType.USAGE:
+            self._usage = event.usage
+        elif event.event_type is ProviderStreamEventType.COMPLETED:
+            self._finish_reason = event.finish_reason or self._finish_reason
+        if event.refusal:
+            self._refusal.append(event.refusal)
+        if event.model_route:
+            self._model_route = event.model_route
+
+    def build(self) -> ProviderResponse:
+        tool_calls = []
+        for index in sorted(self._tool_calls):
+            state = self._tool_calls[index]
+            try:
+                arguments = json.loads(state.arguments or "{}")
+            except json.JSONDecodeError as error:
+                raise ProviderError("模型流式 Tool 参数不是合法 JSON") from error
+            if not isinstance(arguments, dict) or not state.name:
+                raise ProviderError("模型流式 Tool Call 结构不完整")
+            tool_calls.append(
+                ToolCall(
+                    id=state.tool_call_id or str(uuid.uuid4()),
+                    name=state.name,
+                    arguments=arguments,
+                )
+            )
+        content = "".join(self._text) or None
+        refusal = "".join(self._refusal) or None
+        return ProviderResponse(
+            content=content,
+            tool_calls=tool_calls,
+            usage=self._usage,
+            finish_reason=self._finish_reason,
+            model_route=self._model_route,
+            refusal=refusal,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _StreamFailure:
+    error: BaseException
+
+
 class OpenAICompatibleProvider:
-    def __init__(self, base_url: str, api_key: str, model: str, timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout_seconds: float,
+        stream_idle_timeout_seconds: float = 15.0,
+    ) -> None:
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._api_key = api_key
         self._model = model
         self._timeout_seconds = timeout_seconds
+        self._stream_idle_timeout_seconds = stream_idle_timeout_seconds
 
     @property
     def route_name(self) -> str:
@@ -43,25 +131,159 @@ class OpenAICompatibleProvider:
     ) -> ProviderResponse:
         return await asyncio.to_thread(self._complete_sync, messages, tools)
 
+    async def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec],
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        event_queue: queue.Queue[object] = queue.Queue()
+        sentinel = object()
+
+        def produce() -> None:
+            try:
+                for event in self._stream_sync(messages, tools):
+                    event_queue.put(event)
+            except BaseException as error:
+                event_queue.put(_StreamFailure(error))
+            finally:
+                event_queue.put(sentinel)
+
+        producer = asyncio.create_task(asyncio.to_thread(produce))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._timeout_seconds
+        try:
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise ProviderError("模型流式响应超过总超时")
+                wait_seconds = min(self._stream_idle_timeout_seconds, remaining)
+                try:
+                    item = await asyncio.wait_for(
+                        asyncio.to_thread(event_queue.get),
+                        timeout=wait_seconds,
+                    )
+                except asyncio.TimeoutError as error:
+                    raise ProviderError("模型流式响应空闲超时") from error
+                if item is sentinel:
+                    break
+                if isinstance(item, _StreamFailure):
+                    if isinstance(item.error, ProviderError):
+                        raise item.error
+                    raise ProviderError("模型流式响应读取失败") from item.error
+                if isinstance(item, ProviderStreamEvent):
+                    yield item
+        finally:
+            if producer.done():
+                await producer
+            else:
+                producer.cancel()
+                with suppress(asyncio.CancelledError):
+                    await producer
+
+    def _stream_sync(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec],
+    ) -> Iterator[ProviderStreamEvent]:
+        payload = self._payload(messages, tools)
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+        request = self._request(payload)
+        saw_completed = False
+        socket_timeout = min(self._timeout_seconds, self._stream_idle_timeout_seconds)
+        try:
+            with urllib.request.urlopen(request, timeout=socket_timeout) as response:
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="strict").strip()
+                    if not line or line.startswith(":") or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError as error:
+                        raise ProviderError("模型流式响应包含非法 JSON") from error
+                    for event in self._events_from_chunk(chunk):
+                        if event.event_type is ProviderStreamEventType.COMPLETED:
+                            saw_completed = True
+                        yield event
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")[:500]
+            raise ProviderError(f"模型服务返回 HTTP {error.code}: {detail}") from error
+        except (urllib.error.URLError, TimeoutError, UnicodeDecodeError) as error:
+            raise ProviderError(f"模型流式调用失败: {error}") from error
+        if not saw_completed:
+            yield ProviderStreamEvent(
+                event_type=ProviderStreamEventType.COMPLETED,
+                finish_reason="stop",
+                model_route=self.route_name,
+            )
+
+    def _events_from_chunk(self, chunk: Any) -> Iterator[ProviderStreamEvent]:
+        if not isinstance(chunk, dict):
+            raise ProviderError("模型流式响应结构无法识别")
+        model_route = f"openai-compatible/{chunk.get('model') or self._model}"
+        choices = chunk.get("choices", [])
+        if not isinstance(choices, list):
+            raise ProviderError("模型流式 choices 结构无法识别")
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta") or {}
+            if not isinstance(delta, dict):
+                raise ProviderError("模型流式 delta 结构无法识别")
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                yield ProviderStreamEvent(
+                    event_type=ProviderStreamEventType.TEXT_DELTA,
+                    text_delta=content,
+                    model_route=model_route,
+                )
+            refusal = delta.get("refusal")
+            tool_calls = delta.get("tool_calls") or []
+            if not isinstance(tool_calls, list):
+                raise ProviderError("模型流式 Tool Call 结构无法识别")
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function") or {}
+                if not isinstance(function, dict):
+                    function = {}
+                yield ProviderStreamEvent(
+                    event_type=ProviderStreamEventType.TOOL_CALL_DELTA,
+                    tool_call_index=int(tool_call.get("index") or 0),
+                    tool_call_id=str(tool_call.get("id") or ""),
+                    tool_name=str(function.get("name") or ""),
+                    arguments_delta=str(function.get("arguments") or ""),
+                    model_route=model_route,
+                    refusal=str(refusal) if refusal else None,
+                )
+            finish_reason = choice.get("finish_reason")
+            if finish_reason:
+                yield ProviderStreamEvent(
+                    event_type=ProviderStreamEventType.COMPLETED,
+                    finish_reason=str(finish_reason),
+                    model_route=model_route,
+                    refusal=str(refusal) if refusal else None,
+                )
+            elif refusal and not tool_calls:
+                yield ProviderStreamEvent(
+                    event_type=ProviderStreamEventType.TEXT_DELTA,
+                    model_route=model_route,
+                    refusal=str(refusal),
+                )
+        if chunk.get("usage") is not None:
+            yield ProviderStreamEvent(
+                event_type=ProviderStreamEventType.USAGE,
+                usage=self._parse_usage(chunk.get("usage")),
+                model_route=model_route,
+            )
+
     def _complete_sync(
         self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]
     ) -> ProviderResponse:
-        payload = {
-            "model": self._model,
-            "messages": [message.to_provider_dict() for message in messages],
-            "tools": [tool.to_provider_dict() for tool in tools],
-            "tool_choice": "auto",
-            "temperature": 0.1,
-        }
-        request = urllib.request.Request(
-            self._url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
+        request = self._request(self._payload(messages, tools))
         try:
             with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
                 body = json.loads(response.read().decode("utf-8"))
@@ -85,6 +307,30 @@ class OpenAICompatibleProvider:
             )
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise ProviderError("模型服务返回了无法识别的数据结构") from error
+
+    def _payload(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec],
+    ) -> Dict[str, Any]:
+        return {
+            "model": self._model,
+            "messages": [message.to_provider_dict() for message in messages],
+            "tools": [tool.to_provider_dict() for tool in tools],
+            "tool_choice": "auto",
+            "temperature": 0.1,
+        }
+
+    def _request(self, payload: Dict[str, Any]) -> urllib.request.Request:
+        return urllib.request.Request(
+            self._url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
 
     def _parse_tool_call(self, item: Dict[str, Any]) -> ToolCall:
         function = item["function"]
@@ -156,11 +402,52 @@ class DemoProvider:
             {"keyword": keyword, "pageNumber": 1, "pageSize": 5, "timeType": 0},
         )
 
+    async def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec],
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        response = await self.complete(messages, tools)
+        if response.content:
+            for start in range(0, len(response.content), 24):
+                await asyncio.sleep(0)
+                yield ProviderStreamEvent(
+                    event_type=ProviderStreamEventType.TEXT_DELTA,
+                    text_delta=response.content[start : start + 24],
+                    model_route=self.route_name,
+                )
+        for index, tool_call in enumerate(response.tool_calls):
+            yield ProviderStreamEvent(
+                event_type=ProviderStreamEventType.TOOL_CALL_DELTA,
+                tool_call_index=index,
+                tool_call_id=tool_call.id,
+                tool_name=tool_call.name,
+                arguments_delta=json.dumps(
+                    tool_call.arguments,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                model_route=self.route_name,
+            )
+        yield ProviderStreamEvent(
+            event_type=ProviderStreamEventType.USAGE,
+            usage=response.usage,
+            model_route=self.route_name,
+        )
+        yield ProviderStreamEvent(
+            event_type=ProviderStreamEventType.COMPLETED,
+            finish_reason=response.finish_reason,
+            model_route=self.route_name,
+            refusal=response.refusal,
+        )
+
     def _call(self, name: str, arguments: Dict[str, Any]) -> ProviderResponse:
         return ProviderResponse(
             tool_calls=[
                 ToolCall(id=f"demo-{uuid.uuid4().hex[:12]}", name=name, arguments=arguments)
-            ]
+            ],
+            finish_reason="tool_calls",
+            model_route=self.route_name,
         )
 
     def _extract_program_id(self, text: str) -> Optional[int]:

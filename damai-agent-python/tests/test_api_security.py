@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 import urllib.error
 from unittest.mock import patch
@@ -76,6 +77,37 @@ class ApiSecurityTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("PROVIDER_UNAVAILABLE", body)
         self.assertNotIn("secret upstream detail", body)
+
+    def test_sse_idle_timeout_returns_stable_failure_event(self) -> None:
+        class IdleRunner:
+            tool_names: list[str] = []
+
+            async def run(self, *_: object, **__: object) -> None:
+                await asyncio.sleep(1)
+
+        settings = Settings(
+            environment="production",
+            provider="openai_compatible",
+            llm_api_key="l" * 32,
+            llm_model="model-a",
+            internal_api_key=self.internal_key,
+            java_tool_api_key="j" * 32,
+            stream_idle_timeout_seconds=0.02,
+        )
+        with patch("damai_agent.api.build_runner", return_value=IdleRunner()):
+            client = TestClient(create_app(settings))
+
+        with client.stream(
+            "POST",
+            "/api/v1/chat/stream",
+            headers={"X-Agent-Internal-Key": self.internal_key},
+            json={"message": "hello"},
+        ) as response:
+            body = "".join(response.iter_text())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("STREAM_IDLE_TIMEOUT", body)
+        self.assertNotIn("CancelledError", body)
 
 
 if __name__ == "__main__":

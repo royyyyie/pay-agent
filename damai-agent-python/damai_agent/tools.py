@@ -15,7 +15,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List
 
 from jsonschema import Draft7Validator, FormatChecker
+from pydantic import BaseModel, ValidationError
 
+from .generated.tool_models import REQUEST_MODELS, RESPONSE_MODELS
 from .generated.tool_schemas import TOOL_DEFINITIONS
 from .models import (
     TOOL_RISK_ORDER,
@@ -100,7 +102,11 @@ class ToolRegistry:
             )
 
         try:
-            normalized_arguments = self._normalize_arguments(tool.spec.parameters, arguments)
+            normalized_arguments = self._normalize_arguments(
+                tool.spec.parameters,
+                arguments,
+                tool.spec.request_model,
+            )
         except ValueError as error:
             return ToolResult(
                 success=False,
@@ -170,20 +176,35 @@ class ToolRegistry:
         return risk is not ToolRisk.PROHIBITED and TOOL_RISK_ORDER[risk] <= TOOL_RISK_ORDER[ceiling]
 
     def _normalize_arguments(
-        self, schema: Dict[str, Any], arguments: Dict[str, Any]
+        self,
+        schema: Dict[str, Any],
+        arguments: Dict[str, Any],
+        request_model: type[BaseModel] | None = None,
     ) -> Dict[str, Any]:
         normalized = self._coerce_value(schema, copy.deepcopy(arguments))
         if not isinstance(normalized, dict):
             raise ValueError("工具参数必须是 JSON 对象")
+        if request_model is not None:
+            try:
+                validated = request_model.model_validate(normalized)
+            except ValidationError as error:
+                first_error = error.errors(include_input=False)[0]
+                field_name = ".".join(str(item) for item in first_error["loc"]) or "$"
+                raise ValueError(
+                    f"工具参数校验失败: {field_name} 不符合 {first_error['type']} 约束"
+                ) from error
+            return validated.model_dump(mode="json", by_alias=True, exclude_none=True)
         validator = Draft7Validator(schema, format_checker=FormatChecker())
-        errors = sorted(
+        validation_errors = sorted(
             validator.iter_errors(normalized),
-            key=lambda error: ".".join(str(item) for item in error.absolute_path),
+            key=lambda item: ".".join(str(part) for part in item.absolute_path),
         )
-        if errors:
-            error = errors[0]
-            field_name = ".".join(str(item) for item in error.absolute_path) or "$"
-            raise ValueError(f"工具参数校验失败: {field_name} 不符合 {error.validator} 约束")
+        if validation_errors:
+            validation_error = validation_errors[0]
+            field_name = ".".join(str(item) for item in validation_error.absolute_path) or "$"
+            raise ValueError(
+                f"工具参数校验失败: {field_name} 不符合 {validation_error.validator} 约束"
+            )
         return normalized
 
     def _coerce_value(self, schema: Dict[str, Any], value: Any) -> Any:
@@ -232,10 +253,28 @@ class JavaToolClient:
         self._api_key = api_key
         self._timeout_seconds = timeout_seconds
 
-    async def post(self, path: str, payload: Dict[str, Any], context: ToolContext) -> ToolResult:
-        return await asyncio.to_thread(self._post_sync, path, payload, context)
+    async def post(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        context: ToolContext,
+        response_model: type[BaseModel] | None = None,
+    ) -> ToolResult:
+        return await asyncio.to_thread(
+            self._post_sync,
+            path,
+            payload,
+            context,
+            response_model,
+        )
 
-    def _post_sync(self, path: str, payload: Dict[str, Any], context: ToolContext) -> ToolResult:
+    def _post_sync(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        context: ToolContext,
+        response_model: type[BaseModel] | None,
+    ) -> ToolResult:
         traceparent = f"00-{context.trace_id}-{uuid.uuid4().hex[:16]}-01"
         request = urllib.request.Request(
             f"{self._base_url}{path}",
@@ -288,6 +327,36 @@ class JavaToolClient:
                 retryable=status >= 500,
             )
 
+        if not isinstance(decoded, dict):
+            return ToolResult(
+                success=False,
+                code=502,
+                message="Java 业务服务响应结构不符合 Tool 契约",
+                retryable=True,
+                error_code=AgentErrorCode.TOOL_RESULT_INVALID,
+            )
+
+        if status < 400 and response_model is not None:
+            try:
+                validated_response = response_model.model_validate(decoded)
+            except ValidationError:
+                return ToolResult(
+                    success=False,
+                    code=502,
+                    message="Java 业务服务响应结构不符合 Tool 契约",
+                    retryable=True,
+                    error_code=AgentErrorCode.TOOL_RESULT_INVALID,
+                )
+            decoded = validated_response.model_dump(mode="json", by_alias=True)
+            if decoded.get("requestId") != context.tool_call_id:
+                return ToolResult(
+                    success=False,
+                    code=502,
+                    message="Java 业务服务响应关联标识不匹配",
+                    retryable=True,
+                    error_code=AgentErrorCode.TOOL_RESULT_INVALID,
+                )
+
         if "success" in decoded:
             return ToolResult(
                 success=bool(decoded.get("success")),
@@ -320,7 +389,12 @@ class JavaReadTool(AgentTool):
         return self._spec
 
     async def execute(self, arguments: Dict[str, Any], context: ToolContext) -> ToolResult:
-        return await self._client.post(self._path, arguments, context)
+        return await self._client.post(
+            self._path,
+            arguments,
+            context,
+            self._spec.response_model,
+        )
 
 
 def build_java_tools(client: JavaToolClient) -> List[AgentTool]:
@@ -340,6 +414,8 @@ def build_java_tools(client: JavaToolClient) -> List[AgentTool]:
                     max_calls_per_turn=int(definition["max_calls_per_turn"]),
                     concurrency_safe=bool(definition["concurrency_safe"]),
                     exclusive=bool(definition["exclusive"]),
+                    request_model=REQUEST_MODELS[str(definition["name"])],
+                    response_model=RESPONSE_MODELS[str(definition["name"])],
                 ),
                 str(definition["path"]),
             )

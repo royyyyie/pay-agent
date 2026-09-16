@@ -31,6 +31,7 @@ _ENV_FIELDS = {
     "llm_api_key": "DAMAI_LLM_API_KEY",
     "llm_model": "DAMAI_LLM_MODEL",
     "llm_timeout_seconds": "DAMAI_LLM_TIMEOUT_SECONDS",
+    "stream_idle_timeout_seconds": "DAMAI_AGENT_STREAM_IDLE_TIMEOUT_SECONDS",
     "max_tool_rounds": "DAMAI_AGENT_MAX_TOOL_ROUNDS",
     "tool_timeout_seconds": "DAMAI_AGENT_TOOL_TIMEOUT_SECONDS",
 }
@@ -79,6 +80,7 @@ class Settings(BaseModel):
     llm_api_key: str = Field(default="", repr=False, max_length=4096)
     llm_model: str = ""
     llm_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    stream_idle_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     max_tool_rounds: int = Field(default=6, ge=1, le=20)
     tool_timeout_seconds: float = Field(default=8.0, gt=0, le=120)
 

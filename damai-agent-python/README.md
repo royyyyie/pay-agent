@@ -29,6 +29,8 @@ flowchart LR
 - 受信 `TicketTurnContext`、版本化 `AgentRunSpec/Result` 与连续编号的 Agent Event。
 - Tool 参数 JSON Schema 校验、Scope/风险策略和单轮调用预算。
 - Provider 结束原因、模型路由和 Token Usage 汇总。
+- OpenAPI 自动生成 Pydantic 请求/响应模型，Java Tool Result 缺字段或串单时默认拒绝。
+- Provider 文本与 Tool Call 分片流、Usage/结束事件，以及 SSE 空闲超时保护。
 
 第一版不包含下单、锁座、支付、退票，也不会尝试绕过排队、验证码或平台限制。
 
@@ -101,4 +103,4 @@ uv run --frozen pytest --cov=damai_agent
 
 阶段 0 将 Python 运行基线提升到 3.11，并建立配置 Profile、生产启动保护、OpenAPI 单一来源、Tool Schema 生成与 CI 质量门禁。
 
-阶段 1 正在把最小闭环拆分为 `TicketAgentLoop`、`ToolCallingRunner` 和策略化 `ToolRegistry`，当前已完成运行契约与 Tool 输入安全第一批能力。
+阶段 1 已完成运行契约、Tool 输入/输出边界和 Provider 真实流式第二批能力；下一批将实现安全只读 Tool 并发、Hook 链与上下文治理。

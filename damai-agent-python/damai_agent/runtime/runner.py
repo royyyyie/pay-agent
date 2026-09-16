@@ -11,12 +11,13 @@ from ..models import (
     AgentRunSpec,
     ChatMessage,
     ProviderResponse,
+    ProviderStreamEventType,
     ProviderUsage,
     ToolContext,
     ToolResult,
     ToolSpec,
 )
-from ..providers import ModelProvider
+from ..providers import ModelProvider, ProviderStreamAccumulator
 from ..tools import ToolCallLedger, ToolRegistry
 from .events import TurnEventEmitter
 
@@ -69,7 +70,12 @@ class ToolCallingRunner:
         ledger = ToolCallLedger(max_calls=spec.max_tool_calls)
 
         for round_number in range(1, spec.max_tool_rounds + 1):
-            response = await self._provider.complete(messages, available_specs)
+            response = await self._invoke_provider(
+                messages,
+                available_specs,
+                emitter,
+                round_number,
+            )
             usage = usage + response.usage
             model_route = response.model_route or model_route
             await emitter.emit(
@@ -174,6 +180,43 @@ class ToolCallingRunner:
             tool_events=tuple(tool_events),
             model_route=model_route,
         )
+
+    async def _invoke_provider(
+        self,
+        messages: List[ChatMessage],
+        available_specs: List[ToolSpec],
+        emitter: TurnEventEmitter,
+        round_number: int,
+    ) -> ProviderResponse:
+        stream = getattr(self._provider, "stream", None)
+        if not callable(stream):
+            return await self._provider.complete(messages, available_specs)
+
+        accumulator = ProviderStreamAccumulator()
+        async for event in stream(messages, available_specs):
+            accumulator.add(event)
+            if event.event_type is ProviderStreamEventType.TEXT_DELTA and event.text_delta:
+                await emitter.emit(
+                    "model.text.delta",
+                    {"round": round_number, "delta": event.text_delta},
+                )
+            elif event.event_type is ProviderStreamEventType.TOOL_CALL_DELTA:
+                await emitter.emit(
+                    "model.tool_call.delta",
+                    {
+                        "round": round_number,
+                        "index": event.tool_call_index,
+                        "toolCallId": event.tool_call_id,
+                        "tool": event.tool_name,
+                        "argumentsDelta": event.arguments_delta,
+                    },
+                )
+            elif event.event_type is ProviderStreamEventType.USAGE:
+                await emitter.emit(
+                    "model.usage",
+                    {"round": round_number, "usage": event.usage.to_dict()},
+                )
+        return accumulator.build()
 
     def _assistant_message(self, response: ProviderResponse) -> ChatMessage:
         return ChatMessage(

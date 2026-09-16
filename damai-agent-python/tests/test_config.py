@@ -68,6 +68,11 @@ class SettingsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "用户名或密码"):
             Settings(java_base_url="https://user:password@example.com")
 
+    def test_stream_idle_timeout_loads_from_environment(self) -> None:
+        settings = Settings.from_env(env={"DAMAI_AGENT_STREAM_IDLE_TIMEOUT_SECONDS": "2.5"})
+
+        self.assertEqual(settings.stream_idle_timeout_seconds, 2.5)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+from contextlib import suppress
 from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
@@ -43,6 +44,7 @@ def build_runner(settings: Settings) -> AgentRunner:
             api_key=settings.llm_api_key,
             model=settings.llm_model,
             timeout_seconds=settings.llm_timeout_seconds,
+            stream_idle_timeout_seconds=settings.stream_idle_timeout_seconds,
         )
     else:
         provider = DemoProvider()
@@ -158,7 +160,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             task = asyncio.create_task(execute())
             try:
                 while True:
-                    event = await queue.get()
+                    try:
+                        event = await asyncio.wait_for(
+                            queue.get(),
+                            timeout=resolved_settings.stream_idle_timeout_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        timeout_event = {
+                            "type": "turn.failed",
+                            "code": "STREAM_IDLE_TIMEOUT",
+                            "message": "Agent 流式响应超时，请稍后重试",
+                        }
+                        data = json.dumps(timeout_event, ensure_ascii=False)
+                        yield f"event: turn.failed\ndata: {data}\n\n"
+                        break
                     if event is None:
                         break
                     event_name = event.get("type", "message")
@@ -167,6 +182,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             finally:
                 if not task.done():
                     task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 

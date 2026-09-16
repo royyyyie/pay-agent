@@ -7,7 +7,9 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Type
+
+from pydantic import BaseModel
 
 
 class ToolRisk(str, Enum):
@@ -33,6 +35,7 @@ class AgentErrorCode(str, Enum):
     TOOL_CALL_LIMIT_EXCEEDED = "TOOL_CALL_LIMIT_EXCEEDED"
     TOOL_TIMEOUT = "TOOL_TIMEOUT"
     TOOL_EXECUTION_FAILED = "TOOL_EXECUTION_FAILED"
+    TOOL_RESULT_INVALID = "TOOL_RESULT_INVALID"
     PROVIDER_FINISH_REJECTED = "PROVIDER_FINISH_REJECTED"
 
 
@@ -113,6 +116,27 @@ class ProviderResponse:
     refusal: Optional[str] = None
 
 
+class ProviderStreamEventType(str, Enum):
+    TEXT_DELTA = "text.delta"
+    TOOL_CALL_DELTA = "tool_call.delta"
+    USAGE = "usage"
+    COMPLETED = "completed"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderStreamEvent:
+    event_type: ProviderStreamEventType
+    text_delta: str = ""
+    tool_call_index: int = 0
+    tool_call_id: str = ""
+    tool_name: str = ""
+    arguments_delta: str = ""
+    usage: ProviderUsage = field(default_factory=ProviderUsage)
+    finish_reason: str = ""
+    model_route: str = ""
+    refusal: Optional[str] = None
+
+
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
     name: str
@@ -125,6 +149,8 @@ class ToolSpec:
     max_calls_per_turn: int = 3
     concurrency_safe: bool = False
     exclusive: bool = False
+    request_model: Optional[Type[BaseModel]] = None
+    response_model: Optional[Type[BaseModel]] = None
 
     def __post_init__(self) -> None:
         if isinstance(self.risk, str):
