@@ -32,6 +32,7 @@ flowchart LR
 - OpenAPI 自动生成 Pydantic 请求/响应模型，Java Tool Result 缺字段或串单时默认拒绝。
 - Provider 文本与 Tool Call 分片流、Usage/结束事件，以及 SSE 空闲超时保护。
 - 相邻且授权的只读 Tool 可限量并发；独占和非只读 Tool 是串行屏障，结果与事件保持原顺序。
+- 每轮独立的 Policy、Trace、Audit、Usage Hook 链；默认审计只写元数据日志，不包含 Tool 参数或返回内容。
 
 第一版不包含下单、锁座、支付、退票，也不会尝试绕过排队、验证码或平台限制。
 
@@ -106,4 +107,4 @@ uv run --frozen pytest --cov=damai_agent
 
 阶段 0 将 Python 运行基线提升到 3.11，并建立配置 Profile、生产启动保护、OpenAPI 单一来源、Tool Schema 生成与 CI 质量门禁。
 
-阶段 1 已完成运行契约、Tool 输入/输出边界、Provider 真实流式和受控只读 Tool 并发；后续批次将实现 Hook 链与上下文治理。
+阶段 1 已完成运行契约、Tool 输入/输出边界、Provider 真实流式、受控只读 Tool 并发及基础 Hook 链。审计当前仅为进程日志或由部署方提供的 Sink，尚无持久化、不可篡改和跨服务关联保证；上下文治理与真实链路故障验收仍在后续批次。

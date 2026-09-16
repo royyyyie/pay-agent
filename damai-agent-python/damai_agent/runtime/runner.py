@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import List, Sequence
+import time
+from typing import List, Optional, Sequence
 
 from ..models import (
     AgentErrorCode,
@@ -23,6 +24,16 @@ from ..models import (
 from ..providers import ModelProvider, ProviderStreamAccumulator
 from ..tools import ToolCallLedger, ToolRegistry
 from .events import TurnEventEmitter
+from .hooks import (
+    AuditSink,
+    HookChain,
+    HookFactory,
+    ModelHookContext,
+    ToolHookContext,
+    ToolOutcome,
+    elapsed_ms,
+    safe_tool_call_id,
+)
 
 REJECTED_FINISH_REASONS = frozenset({"content_filter", "error", "refusal"})
 
@@ -34,6 +45,8 @@ class ToolCallingRunner:
         registry: ToolRegistry,
         tool_timeout_seconds: float = 8.0,
         max_concurrent_read_tools: int = 4,
+        audit_sink: Optional[AuditSink] = None,
+        hook_factories: Sequence[HookFactory] = (),
     ) -> None:
         if not 1 <= max_concurrent_read_tools <= 12:
             raise ValueError("max_concurrent_read_tools must be between 1 and 12")
@@ -41,6 +54,8 @@ class ToolCallingRunner:
         self._registry = registry
         self._tool_timeout_seconds = tool_timeout_seconds
         self._max_concurrent_read_tools = max_concurrent_read_tools
+        self._audit_sink = audit_sink
+        self._hook_factories = tuple(hook_factories)
 
     @property
     def tool_names(self) -> List[str]:
@@ -73,23 +88,46 @@ class ToolCallingRunner:
 
         available_specs = self.available_specs(spec)
         allowed_tool_names = {tool_spec.name for tool_spec in available_specs}
+        risk_by_name = {item.name: item.risk for item in available_specs}
+        hooks = HookChain(
+            frozenset(allowed_tool_names),
+            audit_sink=self._audit_sink,
+            extra_factories=self._hook_factories,
+        )
         messages = [ChatMessage(role="system", content=spec.system_prompt), *spec.messages]
         turn_messages: List[ChatMessage] = [spec.messages[-1]]
         tools_used: List[str] = []
         tool_events: List[AgentEvent] = []
-        usage = ProviderUsage()
         model_route = spec.model_route
         ledger = ToolCallLedger(max_calls=spec.max_tool_calls)
 
         for round_number in range(1, spec.max_tool_rounds + 1):
+            model_context = ModelHookContext(
+                turn_id=spec.context.turn_id,
+                trace_id=spec.context.trace_id,
+                round_number=round_number,
+                model_route=model_route,
+            )
+            await hooks.before_model(model_context)
+            model_started_at = time.perf_counter()
             response = await self._invoke_provider(
                 messages,
                 available_specs,
                 emitter,
                 round_number,
             )
-            usage = usage + response.usage
             model_route = response.model_route or model_route
+            await hooks.after_model(
+                ModelHookContext(
+                    turn_id=spec.context.turn_id,
+                    trace_id=spec.context.trace_id,
+                    round_number=round_number,
+                    model_route=model_route,
+                ),
+                response.usage,
+                response.finish_reason,
+                elapsed_ms(model_started_at),
+            )
             await emitter.emit(
                 "model.completed",
                 {
@@ -107,7 +145,7 @@ class ToolCallingRunner:
                     turn_messages,
                     tools_used,
                     tool_events,
-                    usage,
+                    hooks.usage.total,
                     model_route,
                     response.finish_reason,
                 )
@@ -125,7 +163,7 @@ class ToolCallingRunner:
                     final_content=answer,
                     tools_used=tuple(tools_used),
                     messages=tuple(turn_messages),
-                    usage=usage,
+                    usage=hooks.usage.total,
                     stop_reason=response.finish_reason,
                     tool_events=tuple(tool_events),
                     model_route=model_route,
@@ -146,7 +184,7 @@ class ToolCallingRunner:
 
                 # Keep provider call order even if individual read-only tools finish out of order.
                 results = await asyncio.gather(
-                    *(self._execute_call(call, spec, allowed_tool_names, ledger) for call in batch)
+                    *(self._execute_call(call, spec, risk_by_name, ledger, hooks) for call in batch)
                 )
                 for call, tool_result in zip(batch, results, strict=True):
                     tool_message = ChatMessage(
@@ -181,7 +219,7 @@ class ToolCallingRunner:
             final_content=answer,
             tools_used=tuple(tools_used),
             messages=tuple(turn_messages),
-            usage=usage,
+            usage=hooks.usage.total,
             stop_reason="max_tool_rounds",
             tool_events=tuple(tool_events),
             model_route=model_route,
@@ -211,24 +249,28 @@ class ToolCallingRunner:
         self,
         call: ToolCall,
         spec: AgentRunSpec,
-        allowed_tool_names: set[str],
+        risk_by_name: dict[str, ToolRisk],
         ledger: ToolCallLedger,
+        hooks: HookChain,
     ) -> ToolResult:
-        if call.name not in allowed_tool_names:
-            return ToolResult(
-                success=False,
-                code=403,
-                message=f"工具不在本轮允许列表: {call.name}",
-                retryable=False,
-                error_code=AgentErrorCode.TOOL_SCOPE_DENIED,
-            )
-        return await self._registry.execute(
+        context = ToolHookContext(
+            turn_id=spec.context.turn_id,
+            trace_id=spec.context.trace_id,
+            tool_call_id=safe_tool_call_id(call.id),
+            tool_name=call.name if call.name in risk_by_name else "<unavailable>",
+            risk=risk_by_name.get(call.name),
+        )
+        started_at = time.perf_counter()
+        decision = await hooks.before_tool(context)
+        result = decision or await self._registry.execute(
             call.name,
             call.arguments,
             ToolContext.from_turn(spec.context, call.id),
             timeout_seconds=self._tool_timeout_seconds,
             ledger=ledger,
         )
+        await hooks.after_tool(context, ToolOutcome.from_result(result, elapsed_ms(started_at)))
+        return result
 
     async def _invoke_provider(
         self,

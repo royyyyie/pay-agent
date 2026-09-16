@@ -9,7 +9,7 @@
 
 ## 1. 结论
 
-`damai-agent-python` 已完成阶段 0 工程基线，并进入阶段 1：FastAPI 接入、三项 Java 只读工具、进程内会话、JSON/SSE、W3C Trace、运行契约、Loop/Runner 分层、Tool 输入/输出校验和 Provider 真实流式已落地。现有 38 项 Python 测试与 6 项 Java 契约/Trace 测试全部通过，可以作为后续演进的可运行基线。
+`damai-agent-python` 已完成阶段 0 工程基线，并进入阶段 1：FastAPI 接入、三项 Java 只读工具、进程内会话、JSON/SSE、W3C Trace、运行契约、Loop/Runner 分层、Tool 输入/输出校验、Provider 真实流式、受控只读并发和基础 Hook 链已落地。现有 Python 与 Java 契约/Trace 测试可作为后续演进的可运行基线；实时结果见阶段 1 清单和 CI。
 
 下一阶段不应直接复制 `nanobot`，也不应急于增加下单、支付或大量通用工具。建议吸收 `nanobot` 已验证的运行时分层思想，构建“领域受限、默认拒绝、可恢复、可观测”的购票 Agent：
 
@@ -29,10 +29,11 @@
 | Agent 循环 | `TicketAgentLoop` 编排生命周期，`ToolCallingRunner` 执行模型/工具循环 | 职责已拆分，尚无 Checkpoint、取消和上下文预算 |
 | Provider | Demo 与 OpenAI-compatible Chat Completions，支持文本/Tool 分片、结束原因、路由和 Usage | 真实流式已落地，仍缺少重试、降级和费用治理 |
 | Tool | 3 个 Java 只读工具、请求/响应模型校验、Scope/风险/次数策略、受控只读并发与独占屏障 | 输入输出边界默认拒绝；同步 Java 客户端的物理取消和跨进程独占仍待落地 |
+| Hook | 每轮独立的 Policy、Trace、Audit、Usage 链，可注入扩展 Hook 与审计 Sink | 默认仅输出脱敏元数据日志；持久、不可篡改审计仍待建设 |
 | Session | `InMemorySessionStore`，同 Session 串行 | 适合单实例测试，不可跨进程恢复，锁和历史没有 TTL |
 | 契约 | `contracts/agent-tools-v1.openapi.yaml` 生成 Python ToolSpec、请求/响应 Pydantic 模型与执行元数据 | Python 契约已单一来源，并由 CI 检查漂移与兼容性 |
 | Java 网关 | API Key、统一响应、必填 Tool/Turn/Session Header、W3C `traceparent` | 具备内部调用基线，仍缺少租户和用户委托身份 |
-| 测试 | Python 单元/集成/契约测试与 Java 契约/Trace 测试 | Python 45 项、Java 6 项通过；Python 分支覆盖率 85.69%，仍需增加故障测试 |
+| 测试 | Python 单元/集成/契约测试与 Java 契约/Trace 测试 | 运行时 Hook 的拒绝、脱敏和故障隔离已有单测；仍需真实链路故障注入 |
 
 ### 2.2 主要缺口
 
@@ -47,7 +48,7 @@ P0 阻断项：
 
 P1 能力缺口：
 
-- 没有 AgentLoop 外层状态机、Pending Injection、取消、Checkpoint、Hook 和 Context Governor。
+- 没有 AgentLoop 外层状态机、Pending Injection、取消、Checkpoint 和 Context Governor；基础 Hook 链已落地，但尚无生产级投递保障。
 - 没有 Redis/PostgreSQL 会话持久化、分布式 Session 锁和幂等 Turn。
 - 没有 RAG、来源引用、长期偏好、历史压缩和离线 Agent Eval。
 - 没有监控任务、通知去重、购买意向、一次性确认授权和订单恢复协议。

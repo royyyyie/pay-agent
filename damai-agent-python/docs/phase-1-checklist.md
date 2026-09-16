@@ -28,7 +28,7 @@
 ## 后续批次
 
 - [x] 并发执行标记为安全的只读 Tool，独占 Tool 保持串行
-- [ ] 增加 Hook 链：Trace、Policy、Audit、Usage
+- [x] 增加 Hook 链：Trace、Policy、Audit、Usage
 - [ ] 增加上下文预算、Tool Result 限长和协议配对治理
 - [ ] 为三个真实 Java Tool 执行阶段 1 E2E 与故障注入验收
 
@@ -46,8 +46,11 @@
 - [x] 相邻只读调用受限并发；独占、串行和非只读调用形成执行屏障
 - [x] 并发时调用次数预算、超时/异常隔离、模型消息配对和事件序号保持正确
 - [x] `AgentRunSpec` 无法伪造注册 Tool 的并发/独占策略
+- [x] Hook 每轮独立创建；Usage 不跨 Turn 累计；Policy 在执行前拒绝未授权 Tool
+- [x] 审计记录仅包含时间、Trace/Turn/调用标识、Tool、风险、结果码和耗时，不含参数及结果体
+- [x] 未注册 Tool 名称与异常调用 ID 不进入审计原文；后置 Hook 故障不丢失 Tool Result
 - [x] 阶段 0 的 3 个 Java Tool 行为保持兼容
-- [x] Python 3.11：45 项测试通过，分支覆盖率 85.69%（门槛 70%）
+- [x] Python 3.11：52 项测试通过，分支覆盖率 87.09%（门槛 70%）
 - [x] OpenAPI、生成文件漂移和 v1 向后兼容检查通过
 - [x] Java Maven Reactor 30 模块通过，Agent 契约/Trace 测试 6 项通过
 
@@ -68,6 +71,16 @@
 - Tool Result、事件与上下文按模型调用顺序提交；单个调用失败或超时不会丢弃同批结果
 - Java 客户端仍为同步网络线程；超时后的物理取消及跨进程独占需后续阶段补强，不能把当前执行屏障视为交易级独占
 - 质量门禁：Ruff、Mypy strict、OpenAPI 漂移/兼容性、45 项 Pytest 和 85.69% 分支覆盖率通过
+
+## 第四批：运行时 Hook 链
+
+- 日期：2026-09-16
+- `PolicyHook` 在 Tool 执行前依据本轮授权列表默认拒绝；策略 Hook 异常时阻止执行并返回稳定错误码
+- `TraceHook` 记录模型/Tool 完成元数据；`UsageHook` 每轮累计 Provider Token Usage；扩展 Hook 由工厂按 Turn 创建
+- `AuditHook` 为每次 Tool 尝试生成带 UTC 时间戳的结构化记录；审计字段不包含 Prompt、Tool 参数、Tool 返回体或异常原文
+- 默认 Sink 写本进程日志；持久化、完整性保护、保留期、访问控制和投递失败处理尚未实现，不能视为生产级不可抵赖审计
+- 后置观测 Hook 或审计 Sink 故障不会吞掉对应 Tool Result；生产接入前仍需为自定义 Sink 设计可靠投递与告警
+- 本地质量门禁：Ruff、Mypy strict、OpenAPI 漂移/兼容性、52 项 Pytest 和 87.09% 分支覆盖率通过
 
 ## 第一批真实回归记录
 

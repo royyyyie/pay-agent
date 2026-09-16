@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from ..models import (
     AgentRunResult,
@@ -17,6 +17,7 @@ from ..providers import ModelProvider
 from ..session import InMemorySessionStore
 from ..tools import ToolRegistry
 from .events import EventSink, TurnEventEmitter
+from .hooks import AuditSink, HookFactory
 from .runner import ToolCallingRunner
 
 SYSTEM_PROMPT = """你是面向演出购票场景的智能助手。
@@ -154,10 +155,17 @@ class AgentRunner(TicketAgentLoop):
         tool_timeout_seconds: float = 8.0,
         max_tool_calls: int = 12,
         max_concurrent_read_tools: int = 4,
+        audit_sink: Optional[AuditSink] = None,
+        hook_factories: Sequence[HookFactory] = (),
     ) -> None:
         super().__init__(
             runner=ToolCallingRunner(
-                provider, registry, tool_timeout_seconds, max_concurrent_read_tools
+                provider,
+                registry,
+                tool_timeout_seconds,
+                max_concurrent_read_tools,
+                audit_sink,
+                hook_factories,
             ),
             sessions=sessions,
             max_tool_rounds=max_tool_rounds,
