@@ -73,6 +73,15 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.stream_idle_timeout_seconds, 2.5)
 
+    def test_concurrent_read_limit_is_configurable_and_bounded(self) -> None:
+        settings = Settings.from_env(env={"DAMAI_AGENT_MAX_CONCURRENT_READ_TOOLS": "2"})
+
+        self.assertEqual(settings.max_concurrent_read_tools, 2)
+        with self.assertRaises(ValidationError):
+            Settings(max_concurrent_read_tools=0)
+        with self.assertRaises(ValidationError):
+            Settings(max_concurrent_read_tools=13)
+
 
 if __name__ == "__main__":
     unittest.main()

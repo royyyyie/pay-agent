@@ -60,6 +60,7 @@ def build_runner(settings: Settings) -> AgentRunner:
         registry=registry,
         sessions=InMemorySessionStore(),
         max_tool_rounds=settings.max_tool_rounds,
+        max_concurrent_read_tools=settings.max_concurrent_read_tools,
         tool_timeout_seconds=settings.tool_timeout_seconds,
     )
 

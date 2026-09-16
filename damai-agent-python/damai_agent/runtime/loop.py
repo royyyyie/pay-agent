@@ -153,9 +153,12 @@ class AgentRunner(TicketAgentLoop):
         max_tool_rounds: int = 6,
         tool_timeout_seconds: float = 8.0,
         max_tool_calls: int = 12,
+        max_concurrent_read_tools: int = 4,
     ) -> None:
         super().__init__(
-            runner=ToolCallingRunner(provider, registry, tool_timeout_seconds),
+            runner=ToolCallingRunner(
+                provider, registry, tool_timeout_seconds, max_concurrent_read_tools
+            ),
             sessions=sessions,
             max_tool_rounds=max_tool_rounds,
             max_tool_calls=max_tool_calls,

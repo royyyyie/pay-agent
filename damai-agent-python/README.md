@@ -31,6 +31,7 @@ flowchart LR
 - Provider 结束原因、模型路由和 Token Usage 汇总。
 - OpenAPI 自动生成 Pydantic 请求/响应模型，Java Tool Result 缺字段或串单时默认拒绝。
 - Provider 文本与 Tool Call 分片流、Usage/结束事件，以及 SSE 空闲超时保护。
+- 相邻且授权的只读 Tool 可限量并发；独占和非只读 Tool 是串行屏障，结果与事件保持原顺序。
 
 第一版不包含下单、锁座、支付、退票，也不会尝试绕过排队、验证码或平台限制。
 
@@ -83,6 +84,8 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9010/api/v1/chat `
 
 接口文档启动后位于 `http://127.0.0.1:9010/docs`。SSE 入口为 `POST /api/v1/chat/stream`。这里使用 9010，避免与当前 nanobot WebUI 的 9009 端口冲突。
 
+`DAMAI_AGENT_MAX_CONCURRENT_READ_TOOLS` 默认为 4（可设 1～12）；仅影响同一轮模型请求中相邻且声明为 `READ_ONLY`、`concurrency_safe` 且非独占的 Tool Call。设置为 1 可关闭并行执行。当前 Java 客户端仍使用同步网络线程，超时后底层请求可能继续运行，生产级独占保证仍需在 Java 侧配合幂等与取消控制。
+
 ## 验证核心循环
 
 核心测试不依赖数据库和外部模型：
@@ -103,4 +106,4 @@ uv run --frozen pytest --cov=damai_agent
 
 阶段 0 将 Python 运行基线提升到 3.11，并建立配置 Profile、生产启动保护、OpenAPI 单一来源、Tool Schema 生成与 CI 质量门禁。
 
-阶段 1 已完成运行契约、Tool 输入/输出边界和 Provider 真实流式第二批能力；下一批将实现安全只读 Tool 并发、Hook 链与上下文治理。
+阶段 1 已完成运行契约、Tool 输入/输出边界、Provider 真实流式和受控只读 Tool 并发；后续批次将实现 Hook 链与上下文治理。

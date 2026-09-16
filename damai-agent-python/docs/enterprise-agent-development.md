@@ -28,11 +28,11 @@
 | HTTP 服务 | `damai_agent/api.py` 提供健康检查、JSON Chat、SSE 和生产内部密钥鉴权 | 可运行，但没有最终用户委托身份、限流和生命周期治理 |
 | Agent 循环 | `TicketAgentLoop` 编排生命周期，`ToolCallingRunner` 执行模型/工具循环 | 职责已拆分，尚无 Checkpoint、取消和上下文预算 |
 | Provider | Demo 与 OpenAI-compatible Chat Completions，支持文本/Tool 分片、结束原因、路由和 Usage | 真实流式已落地，仍缺少重试、降级和费用治理 |
-| Tool | 3 个 Java 只读工具、请求/响应模型校验、Scope/风险/次数策略 | 输入输出边界已默认拒绝，并发执行待落地 |
+| Tool | 3 个 Java 只读工具、请求/响应模型校验、Scope/风险/次数策略、受控只读并发与独占屏障 | 输入输出边界默认拒绝；同步 Java 客户端的物理取消和跨进程独占仍待落地 |
 | Session | `InMemorySessionStore`，同 Session 串行 | 适合单实例测试，不可跨进程恢复，锁和历史没有 TTL |
 | 契约 | `contracts/agent-tools-v1.openapi.yaml` 生成 Python ToolSpec、请求/响应 Pydantic 模型与执行元数据 | Python 契约已单一来源，并由 CI 检查漂移与兼容性 |
 | Java 网关 | API Key、统一响应、必填 Tool/Turn/Session Header、W3C `traceparent` | 具备内部调用基线，仍缺少租户和用户委托身份 |
-| 测试 | Python 单元/集成/契约测试与 Java 契约/Trace 测试 | Python 38 项、Java 6 项通过；Python 分支覆盖率 84.98%，仍需增加故障测试 |
+| 测试 | Python 单元/集成/契约测试与 Java 契约/Trace 测试 | Python 45 项、Java 6 项通过；Python 分支覆盖率 85.69%，仍需增加故障测试 |
 
 ### 2.2 主要缺口
 

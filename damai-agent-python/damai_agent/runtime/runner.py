@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import List
+import asyncio
+from typing import List, Sequence
 
 from ..models import (
     AgentErrorCode,
@@ -13,8 +14,10 @@ from ..models import (
     ProviderResponse,
     ProviderStreamEventType,
     ProviderUsage,
+    ToolCall,
     ToolContext,
     ToolResult,
+    ToolRisk,
     ToolSpec,
 )
 from ..providers import ModelProvider, ProviderStreamAccumulator
@@ -30,10 +33,14 @@ class ToolCallingRunner:
         provider: ModelProvider,
         registry: ToolRegistry,
         tool_timeout_seconds: float = 8.0,
+        max_concurrent_read_tools: int = 4,
     ) -> None:
+        if not 1 <= max_concurrent_read_tools <= 12:
+            raise ValueError("max_concurrent_read_tools must be between 1 and 12")
         self._provider = provider
         self._registry = registry
         self._tool_timeout_seconds = tool_timeout_seconds
+        self._max_concurrent_read_tools = max_concurrent_read_tools
 
     @property
     def tool_names(self) -> List[str]:
@@ -48,8 +55,13 @@ class ToolCallingRunner:
         return str(getattr(self._provider, "route_name", type(self._provider).__name__))
 
     def available_specs(self, spec: AgentRunSpec) -> List[ToolSpec]:
-        authorized_names = {item.name for item in self._registry.available_specs(spec.context)}
-        return [item for item in spec.tool_specs if item.name in authorized_names]
+        authorized_specs = {
+            item.name: item for item in self._registry.available_specs(spec.context)
+        }
+        # RunSpec limits visibility; the registry remains authoritative for risk and scheduling.
+        return [
+            authorized_specs[item.name] for item in spec.tool_specs if item.name in authorized_specs
+        ]
 
     async def run(
         self,
@@ -119,52 +131,46 @@ class ToolCallingRunner:
                     model_route=model_route,
                 )
 
-            for call in response.tool_calls:
-                tools_used.append(call.name)
-                started = await emitter.emit(
-                    "tool.started",
-                    {"toolCallId": call.id, "tool": call.name},
-                )
-                tool_events.append(started)
-                context = ToolContext.from_turn(spec.context, call.id)
-                if call.name not in allowed_tool_names:
-                    tool_result = ToolResult(
-                        success=False,
-                        code=403,
-                        message=f"工具不在本轮允许列表: {call.name}",
-                        retryable=False,
-                        error_code=AgentErrorCode.TOOL_SCOPE_DENIED,
+            parallel_names = {
+                item.name
+                for item in available_specs
+                if item.risk is ToolRisk.READ_ONLY and item.concurrency_safe and not item.exclusive
+            }
+            for batch in self._tool_batches(response.tool_calls, parallel_names):
+                for call in batch:
+                    tools_used.append(call.name)
+                    started = await emitter.emit(
+                        "tool.started", {"toolCallId": call.id, "tool": call.name}
                     )
-                else:
-                    tool_result = await self._registry.execute(
-                        call.name,
-                        call.arguments,
-                        context,
-                        timeout_seconds=self._tool_timeout_seconds,
-                        ledger=ledger,
+                    tool_events.append(started)
+
+                # Keep provider call order even if individual read-only tools finish out of order.
+                results = await asyncio.gather(
+                    *(self._execute_call(call, spec, allowed_tool_names, ledger) for call in batch)
+                )
+                for call, tool_result in zip(batch, results, strict=True):
+                    tool_message = ChatMessage(
+                        role="tool",
+                        content=tool_result.to_model_content(),
+                        name=call.name,
+                        tool_call_id=call.id,
                     )
-                tool_message = ChatMessage(
-                    role="tool",
-                    content=tool_result.to_model_content(),
-                    name=call.name,
-                    tool_call_id=call.id,
-                )
-                messages.append(tool_message)
-                turn_messages.append(tool_message)
-                completed = await emitter.emit(
-                    "tool.completed",
-                    {
-                        "toolCallId": call.id,
-                        "tool": call.name,
-                        "success": tool_result.success,
-                        "code": tool_result.code,
-                        "errorCode": (
-                            tool_result.error_code.value if tool_result.error_code else None
-                        ),
-                        "retryable": tool_result.retryable,
-                    },
-                )
-                tool_events.append(completed)
+                    messages.append(tool_message)
+                    turn_messages.append(tool_message)
+                    completed = await emitter.emit(
+                        "tool.completed",
+                        {
+                            "toolCallId": call.id,
+                            "tool": call.name,
+                            "success": tool_result.success,
+                            "code": tool_result.code,
+                            "errorCode": (
+                                tool_result.error_code.value if tool_result.error_code else None
+                            ),
+                            "retryable": tool_result.retryable,
+                        },
+                    )
+                    tool_events.append(completed)
 
         answer = "本轮调用工具次数已达到上限，请缩小查询范围后重试。"
         turn_messages.append(ChatMessage(role="assistant", content=answer))
@@ -179,6 +185,49 @@ class ToolCallingRunner:
             stop_reason="max_tool_rounds",
             tool_events=tuple(tool_events),
             model_route=model_route,
+        )
+
+    def _tool_batches(
+        self, calls: Sequence[ToolCall], parallel_names: set[str]
+    ) -> List[List[ToolCall]]:
+        batches: List[List[ToolCall]] = []
+        parallel_batch: List[ToolCall] = []
+        for call in calls:
+            if call.name not in parallel_names:
+                if parallel_batch:
+                    batches.append(parallel_batch)
+                    parallel_batch = []
+                batches.append([call])
+                continue
+            parallel_batch.append(call)
+            if len(parallel_batch) == self._max_concurrent_read_tools:
+                batches.append(parallel_batch)
+                parallel_batch = []
+        if parallel_batch:
+            batches.append(parallel_batch)
+        return batches
+
+    async def _execute_call(
+        self,
+        call: ToolCall,
+        spec: AgentRunSpec,
+        allowed_tool_names: set[str],
+        ledger: ToolCallLedger,
+    ) -> ToolResult:
+        if call.name not in allowed_tool_names:
+            return ToolResult(
+                success=False,
+                code=403,
+                message=f"工具不在本轮允许列表: {call.name}",
+                retryable=False,
+                error_code=AgentErrorCode.TOOL_SCOPE_DENIED,
+            )
+        return await self._registry.execute(
+            call.name,
+            call.arguments,
+            ToolContext.from_turn(spec.context, call.id),
+            timeout_seconds=self._tool_timeout_seconds,
+            ledger=ledger,
         )
 
     async def _invoke_provider(

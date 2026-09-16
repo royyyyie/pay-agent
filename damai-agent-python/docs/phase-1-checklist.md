@@ -27,7 +27,7 @@
 
 ## 后续批次
 
-- [ ] 并发执行标记为安全的只读 Tool，独占 Tool 保持串行
+- [x] 并发执行标记为安全的只读 Tool，独占 Tool 保持串行
 - [ ] 增加 Hook 链：Trace、Policy、Audit、Usage
 - [ ] 增加上下文预算、Tool Result 限长和协议配对治理
 - [ ] 为三个真实 Java Tool 执行阶段 1 E2E 与故障注入验收
@@ -43,8 +43,11 @@
 - [x] 分片 Tool 参数可安全拼装，畸形 JSON 不进入执行器
 - [x] Java 成功响应缺少契约字段或 `requestId` 不匹配时默认拒绝
 - [x] SSE 连续无事件达到阈值后以稳定 `STREAM_IDLE_TIMEOUT` 终止
+- [x] 相邻只读调用受限并发；独占、串行和非只读调用形成执行屏障
+- [x] 并发时调用次数预算、超时/异常隔离、模型消息配对和事件序号保持正确
+- [x] `AgentRunSpec` 无法伪造注册 Tool 的并发/独占策略
 - [x] 阶段 0 的 3 个 Java Tool 行为保持兼容
-- [x] Python 3.11：38 项测试通过，分支覆盖率 84.98%（门槛 70%）
+- [x] Python 3.11：45 项测试通过，分支覆盖率 85.69%（门槛 70%）
 - [x] OpenAPI、生成文件漂移和 v1 向后兼容检查通过
 - [x] Java Maven Reactor 30 模块通过，Agent 契约/Trace 测试 6 项通过
 
@@ -56,6 +59,15 @@
 - Java 响应防线：缺失 Envelope 字段和 Tool Call ID 串单均返回 `TOOL_RESULT_INVALID`
 - SSE：真实文本 Delta 保持连续事件序号，空闲超时不暴露内部异常
 - 质量门禁：Ruff、Mypy strict、38 项 Pytest、84.98% 分支覆盖率全部通过
+
+## 第三批：受控只读并发
+
+- 日期：2026-09-16
+- 默认最多同时运行 4 个相邻的授权只读 Tool，可通过 `DAMAI_AGENT_MAX_CONCURRENT_READ_TOOLS` 设置为 1～12
+- 模型定义与运行策略以注册表为准；风险高于 `READ_ONLY` 或标记独占的工具不能并发
+- Tool Result、事件与上下文按模型调用顺序提交；单个调用失败或超时不会丢弃同批结果
+- Java 客户端仍为同步网络线程；超时后的物理取消及跨进程独占需后续阶段补强，不能把当前执行屏障视为交易级独占
+- 质量门禁：Ruff、Mypy strict、OpenAPI 漂移/兼容性、45 项 Pytest 和 85.69% 分支覆盖率通过
 
 ## 第一批真实回归记录
 
