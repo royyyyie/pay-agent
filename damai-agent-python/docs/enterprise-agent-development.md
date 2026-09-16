@@ -26,7 +26,7 @@
 | 能力 | 当前实现 | 评价 |
 |---|---|---|
 | HTTP 服务 | `damai_agent/api.py` 提供健康检查、JSON Chat、SSE 和生产内部密钥鉴权 | 可运行，但没有最终用户委托身份、限流和生命周期治理 |
-| Agent 循环 | `TicketAgentLoop` 编排生命周期，`ToolCallingRunner` 执行模型/工具循环 | 职责已拆分，具备字符级上下文预算；尚无 Checkpoint、取消和 Token 级预算 |
+| Agent 循环 | `TicketAgentLoop` 编排生命周期，`ToolCallingRunner` 执行模型/工具循环 | 职责已拆分，具备字符级上下文预算；Checkpoint 契约已建但尚未接入运行时，仍无取消和 Token 级预算 |
 | Provider | Demo 与 OpenAI-compatible Chat Completions，支持文本/Tool 分片、结束原因、路由和 Usage | 真实流式已落地，仍缺少重试、降级和费用治理 |
 | Tool | 3 个 Java 只读工具、请求/响应模型校验、Scope/风险/次数策略、受控只读并发与独占屏障 | 输入输出边界默认拒绝；同步 Java 客户端的物理取消和跨进程独占仍待落地 |
 | Hook | 每轮独立的 Policy、Trace、Audit、Usage 链，可注入扩展 Hook 与审计 Sink | 默认仅输出脱敏元数据日志；持久、不可篡改审计仍待建设 |
@@ -48,7 +48,7 @@ P0 阻断项：
 
 P1 能力缺口：
 
-- 没有 AgentLoop 外层状态机、Pending Injection、取消、Checkpoint 和模型专用 Token Governor；基础 Hook 与字符级 Context Governor 已落地，但尚无生产级投递保障。
+- 没有 AgentLoop 外层状态机、Pending Injection、取消、持久化 Checkpoint 和模型专用 Token Governor；基础 Hook、字符级 Context Governor 与 Checkpoint 安全契约已落地，但尚无生产级投递保障。
 - 没有 Redis/PostgreSQL 会话持久化、分布式 Session 锁和幂等 Turn。
 - 没有 RAG、来源引用、长期偏好、历史压缩和离线 Agent Eval。
 - 没有监控任务、通知去重、购买意向、一次性确认授权和订单恢复协议。

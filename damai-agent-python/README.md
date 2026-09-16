@@ -106,8 +106,11 @@ uv run --frozen pytest --cov=damai_agent
 - [阶段 0 检查清单](docs/phase-0-checklist.md)
 - [阶段 0 真实链路一键验收](docs/phase-0-live-acceptance.md)
 - [阶段 1 检查清单](docs/phase-1-checklist.md)
+- [阶段 2 检查清单](docs/phase-2-checklist.md)
 - [Architecture Decision Records](docs/adr/README.md)
 
 阶段 0 将 Python 运行基线提升到 3.11，并建立配置 Profile、生产启动保护、OpenAPI 单一来源、Tool Schema 生成与 CI 质量门禁。
 
 阶段 1 已完成运行契约、Tool 输入/输出边界、Provider 真实流式、受控只读 Tool 并发、基础 Hook 链和字符级上下文治理。审计当前仅为进程日志或由部署方提供的 Sink，尚无持久化、不可篡改和跨服务关联保证；模型 Token 级预算与真实链路故障验收仍在后续批次。
+
+阶段 2 已启动 Checkpoint 安全契约与单进程测试实现；尚未连接 PostgreSQL/Redis，也未接入运行时自动恢复，不具备进程崩溃后的持久恢复能力。
