@@ -157,6 +157,8 @@ class AgentRunner(TicketAgentLoop):
         max_concurrent_read_tools: int = 4,
         audit_sink: Optional[AuditSink] = None,
         hook_factories: Sequence[HookFactory] = (),
+        max_context_chars: int = 80000,
+        max_tool_result_chars: int = 16000,
     ) -> None:
         super().__init__(
             runner=ToolCallingRunner(
@@ -166,6 +168,8 @@ class AgentRunner(TicketAgentLoop):
                 max_concurrent_read_tools,
                 audit_sink,
                 hook_factories,
+                max_context_chars,
+                max_tool_result_chars,
             ),
             sessions=sessions,
             max_tool_rounds=max_tool_rounds,

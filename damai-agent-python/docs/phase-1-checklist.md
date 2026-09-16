@@ -29,7 +29,7 @@
 
 - [x] 并发执行标记为安全的只读 Tool，独占 Tool 保持串行
 - [x] 增加 Hook 链：Trace、Policy、Audit、Usage
-- [ ] 增加上下文预算、Tool Result 限长和协议配对治理
+- [x] 增加字符级上下文预算、Tool Result 限长和协议配对治理
 - [ ] 为三个真实 Java Tool 执行阶段 1 E2E 与故障注入验收
 
 ## 当前自动验收
@@ -49,8 +49,10 @@
 - [x] Hook 每轮独立创建；Usage 不跨 Turn 累计；Policy 在执行前拒绝未授权 Tool
 - [x] 审计记录仅包含时间、Trace/Turn/调用标识、Tool、风险、结果码和耗时，不含参数及结果体
 - [x] 未注册 Tool 名称与异常调用 ID 不进入审计原文；后置 Hook 故障不丢失 Tool Result
+- [x] 旧对话按完整轮次裁剪；当前轮超预算时不调用模型且返回稳定错误码
+- [x] Tool Result 超限时不向模型发送不完整业务字段；重复调用 ID 或孤立 Tool Result 默认拒绝
 - [x] 阶段 0 的 3 个 Java Tool 行为保持兼容
-- [x] Python 3.11：52 项测试通过，分支覆盖率 87.09%（门槛 70%）
+- [x] Python 3.11：61 项测试通过，分支覆盖率 87.63%（门槛 70%）
 - [x] OpenAPI、生成文件漂移和 v1 向后兼容检查通过
 - [x] Java Maven Reactor 30 模块通过，Agent 契约/Trace 测试 6 项通过
 
@@ -81,6 +83,17 @@
 - 默认 Sink 写本进程日志；持久化、完整性保护、保留期、访问控制和投递失败处理尚未实现，不能视为生产级不可抵赖审计
 - 后置观测 Hook 或审计 Sink 故障不会吞掉对应 Tool Result；生产接入前仍需为自定义 Sink 设计可靠投递与告警
 - 本地质量门禁：Ruff、Mypy strict、OpenAPI 漂移/兼容性、52 项 Pytest 和 87.09% 分支覆盖率通过
+
+## 第五批：上下文与协议治理
+
+- 日期：2026-09-16
+- 模型请求的消息与 Tool Schema 按序列化字符数计入预算；超限先删除最旧的完整对话轮次，保留系统提示与当前轮
+- 当前轮无法容纳时返回 `CONTEXT_BUDGET_EXCEEDED`，不发起下一次模型请求；这是字符保护而非精确 Token/费用预算
+- 单个 Tool Result 超限时返回 `TOOL_RESULT_TOO_LARGE`；不截断票价、库存或规则等业务字段，以免模型引用不完整事实
+- 模型 Tool Call ID 必须非空且批内唯一；历史中的 Assistant Tool Call 与 Tool Result 必须按 ID、名称和顺序完整配对，异常时返回 `CONTEXT_PROTOCOL_INVALID`
+- 进程内会话按完整轮次淘汰旧消息，不再从轮次中间截断；多实例持久化与 Token 级预算仍待后续阶段
+- 本地质量门禁：Ruff、Mypy strict、OpenAPI 漂移/兼容性、61 项 Pytest 和 87.63% 分支覆盖率通过
+- 本次未执行真实 Java E2E：本机 `127.0.0.1:6086` 与 `127.0.0.1:9010` 均未启动；该退出标准仍待验收
 
 ## 第一批真实回归记录
 

@@ -35,6 +35,8 @@ _ENV_FIELDS = {
     "max_tool_rounds": "DAMAI_AGENT_MAX_TOOL_ROUNDS",
     "max_concurrent_read_tools": "DAMAI_AGENT_MAX_CONCURRENT_READ_TOOLS",
     "tool_timeout_seconds": "DAMAI_AGENT_TOOL_TIMEOUT_SECONDS",
+    "max_context_chars": "DAMAI_AGENT_MAX_CONTEXT_CHARS",
+    "max_tool_result_chars": "DAMAI_AGENT_MAX_TOOL_RESULT_CHARS",
 }
 
 _WEAK_SECRETS = {"", "change-me", "change-me-local", "changeme", "secret"}
@@ -85,6 +87,8 @@ class Settings(BaseModel):
     max_tool_rounds: int = Field(default=6, ge=1, le=20)
     max_concurrent_read_tools: int = Field(default=4, ge=1, le=12)
     tool_timeout_seconds: float = Field(default=8.0, gt=0, le=120)
+    max_context_chars: int = Field(default=80000, ge=512, le=1000000)
+    max_tool_result_chars: int = Field(default=16000, ge=256, le=1000000)
 
     @field_validator("environment", mode="before")
     @classmethod

@@ -62,6 +62,8 @@ def build_runner(settings: Settings) -> AgentRunner:
         max_tool_rounds=settings.max_tool_rounds,
         max_concurrent_read_tools=settings.max_concurrent_read_tools,
         tool_timeout_seconds=settings.tool_timeout_seconds,
+        max_context_chars=settings.max_context_chars,
+        max_tool_result_chars=settings.max_tool_result_chars,
     )
 
 

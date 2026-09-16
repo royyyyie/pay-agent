@@ -82,6 +82,21 @@ class SettingsTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             Settings(max_concurrent_read_tools=13)
 
+    def test_context_and_tool_result_character_limits_are_bounded(self) -> None:
+        settings = Settings.from_env(
+            env={
+                "DAMAI_AGENT_MAX_CONTEXT_CHARS": "32000",
+                "DAMAI_AGENT_MAX_TOOL_RESULT_CHARS": "4000",
+            }
+        )
+
+        self.assertEqual(settings.max_context_chars, 32000)
+        self.assertEqual(settings.max_tool_result_chars, 4000)
+        with self.assertRaises(ValidationError):
+            Settings(max_context_chars=511)
+        with self.assertRaises(ValidationError):
+            Settings(max_tool_result_chars=255)
+
 
 if __name__ == "__main__":
     unittest.main()

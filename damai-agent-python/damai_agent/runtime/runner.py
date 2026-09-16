@@ -23,6 +23,7 @@ from ..models import (
 )
 from ..providers import ModelProvider, ProviderStreamAccumulator
 from ..tools import ToolCallLedger, ToolRegistry
+from .context import ContextGovernor, valid_tool_calls
 from .events import TurnEventEmitter
 from .hooks import (
     AuditSink,
@@ -47,6 +48,8 @@ class ToolCallingRunner:
         max_concurrent_read_tools: int = 4,
         audit_sink: Optional[AuditSink] = None,
         hook_factories: Sequence[HookFactory] = (),
+        max_context_chars: int = 80000,
+        max_tool_result_chars: int = 16000,
     ) -> None:
         if not 1 <= max_concurrent_read_tools <= 12:
             raise ValueError("max_concurrent_read_tools must be between 1 and 12")
@@ -56,6 +59,7 @@ class ToolCallingRunner:
         self._max_concurrent_read_tools = max_concurrent_read_tools
         self._audit_sink = audit_sink
         self._hook_factories = tuple(hook_factories)
+        self._context_governor = ContextGovernor(max_context_chars, max_tool_result_chars)
 
     @property
     def tool_names(self) -> List[str]:
@@ -102,6 +106,29 @@ class ToolCallingRunner:
         ledger = ToolCallLedger(max_calls=spec.max_tool_calls)
 
         for round_number in range(1, spec.max_tool_rounds + 1):
+            try:
+                prepared = self._context_governor.prepare(messages, available_specs)
+            except ValueError:
+                return self._governor_failure(
+                    spec,
+                    turn_messages,
+                    tools_used,
+                    tool_events,
+                    hooks.usage.total,
+                    model_route,
+                    AgentErrorCode.CONTEXT_PROTOCOL_INVALID,
+                )
+            if prepared is None:
+                return self._governor_failure(
+                    spec,
+                    turn_messages,
+                    tools_used,
+                    tool_events,
+                    hooks.usage.total,
+                    model_route,
+                    AgentErrorCode.CONTEXT_BUDGET_EXCEEDED,
+                )
+            messages = prepared
             model_context = ModelHookContext(
                 turn_id=spec.context.turn_id,
                 trace_id=spec.context.trace_id,
@@ -148,6 +175,17 @@ class ToolCallingRunner:
                     hooks.usage.total,
                     model_route,
                     response.finish_reason,
+                )
+
+            if not valid_tool_calls(response.tool_calls):
+                return self._governor_failure(
+                    spec,
+                    turn_messages,
+                    tools_used,
+                    tool_events,
+                    hooks.usage.total,
+                    model_route,
+                    AgentErrorCode.CONTEXT_PROTOCOL_INVALID,
                 )
 
             assistant = self._assistant_message(response)
@@ -269,8 +307,39 @@ class ToolCallingRunner:
             timeout_seconds=self._tool_timeout_seconds,
             ledger=ledger,
         )
+        result = self._context_governor.bound_tool_result(result)
         await hooks.after_tool(context, ToolOutcome.from_result(result, elapsed_ms(started_at)))
         return result
+
+    def _governor_failure(
+        self,
+        spec: AgentRunSpec,
+        turn_messages: List[ChatMessage],
+        tools_used: List[str],
+        tool_events: List[AgentEvent],
+        usage: ProviderUsage,
+        model_route: str,
+        code: AgentErrorCode,
+    ) -> AgentRunResult:
+        answer = (
+            "对话上下文过长，请缩短问题或开启新会话。"
+            if code is AgentErrorCode.CONTEXT_BUDGET_EXCEEDED
+            else "工具调用协议不完整，本轮已安全停止。"
+        )
+        turn_messages.append(ChatMessage(role="assistant", content=answer))
+        return AgentRunResult(
+            session_key=spec.context.session_key,
+            turn_id=spec.context.turn_id,
+            trace_id=spec.context.trace_id,
+            final_content=answer,
+            tools_used=tuple(tools_used),
+            messages=tuple(turn_messages),
+            usage=usage,
+            stop_reason=code.value.lower(),
+            error_code=code,
+            tool_events=tuple(tool_events),
+            model_route=model_route,
+        )
 
     async def _invoke_provider(
         self,
