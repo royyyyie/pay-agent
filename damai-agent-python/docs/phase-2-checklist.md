@@ -66,7 +66,7 @@
 - 完成一批 Tool 后，`append_tool_round_progress` 校验 Checkpoint 全部结果及模型消息配对，在同一事务内保存本轮消息、递增序号并清理 Checkpoint；下一轮 Tool 可以再创建新的 Checkpoint
 - Turn 完成时只追加尚未持久化的消息，并校验已存前缀，防止重试覆盖早前 Tool 结果
 - 原有 `PostgresCheckpointRepository` 保留供基础测试/兼容使用，未绑定 Turn 代次；生产运行时接入时必须使用上述 fenced 写入方法
-- 当前仍未把 Runner、Redis 租约和 Repository 串成自动恢复链路；外部 Tool 的已发请求也不会因数据库 fencing 自动取消。新增真实 PostgreSQL 接管测试待 CI 验证
+- 当前仍未把 Runner、Redis 租约和 Repository 串成自动恢复链路；外部 Tool 的已发请求也不会因数据库 fencing 自动取消。新增真实 PostgreSQL 接管和多轮原子进度测试已在 GitHub [分支推送检查](https://github.com/royyyyie/pay-agent/actions/runs/35347773800)通过，`quality` 与 `java-contract` 均为绿色
 - 本地检查：73 项通过、14 项外部数据库/Redis 测试因缺少测试连接跳过，覆盖率 74.83%；Ruff、Mypy strict、OpenAPI/生成文件/兼容性检查通过
 
 ## 阶段退出标准
