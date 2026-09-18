@@ -86,7 +86,7 @@
 - 恢复中途再次失败时，已写入的未知结果仍留在 Checkpoint；重新取得租约后可继续完成，不会重放 Tool。已完成 Turn 通过原幂等请求读取结果，`recover` 本身不重复接管
 - 可选 `RedisTurnCancellationStore` 用短期、哈希隔离的 Turn 标记表达取消。`cancel` 必须匹配原请求指纹和 Turn ID；运行时在模型/Tool 安全点检查标记并停止。正在运行的外部网络调用无法强制撤销，取消后仍须显式恢复终结
 - 此机制是保守的“终结并允许用户重新提问”，不是自动续写原答案；不会把不明副作用当作已失败。仅允许只读工具的持久化入口，默认 Chat API 尚未接入。Pending Queue、SSE 续传、连接池、后台续租和进程强杀/真实 Java Tool 故障验收仍未完成
-- 新增 PostgreSQL/Redis 集成测试覆盖请求绑定、接管、Checkpoint 完整/不完整恢复、无 Checkpoint 恢复、取消前阻止工具派发以及结果不重放；CI 检查完成后记录验收链接
+- 新增 PostgreSQL/Redis 集成测试覆盖请求绑定、接管、Checkpoint 完整/不完整恢复、无 Checkpoint 恢复、取消前阻止工具派发以及结果不重放；GitHub [分支推送检查](https://github.com/royyyyie/pay-agent/actions/runs/35357485595)的 `quality` 与 `java-contract` 均通过。本机无测试连接时 79 项通过、23 项外部测试跳过，覆盖率 70.83%
 
 ## 阶段退出标准
 
