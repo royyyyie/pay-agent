@@ -107,6 +107,49 @@ class SettingsTest(unittest.TestCase):
                 llm_fallback_model="backup-model",
             )
 
+    def test_versioned_pricing_and_turn_budget_are_validated(self) -> None:
+        catalog = (
+            '{"openai-compatible/model-a":{"version":"2026-09",'
+            '"prompt_micro_usd_per_million":1000000,'
+            '"completion_micro_usd_per_million":2000000}}'
+        )
+        settings = Settings.from_env(
+            env={
+                "DAMAI_AGENT_PROVIDER": "openai_compatible",
+                "DAMAI_LLM_API_KEY": "p" * 32,
+                "DAMAI_LLM_MODEL": "model-a",
+                "DAMAI_LLM_PRICING_JSON": catalog,
+                "DAMAI_AGENT_MAX_TURN_TOKENS": "1000",
+                "DAMAI_AGENT_MAX_TURN_COST_MICRO_USD": "30000",
+            }
+        )
+        self.assertEqual(settings.llm_pricing["openai-compatible/model-a"].version, "2026-09")
+        self.assertEqual(settings.max_turn_cost_micro_usd, 30000)
+        with self.assertRaisesRegex(ValidationError, "费用预算需要"):
+            Settings(max_turn_cost_micro_usd=10)
+        with self.assertRaisesRegex(ValidationError, "模型预算仅适用于"):
+            Settings(max_turn_tokens=10)
+        with self.assertRaisesRegex(ValidationError, "缺少主模型或备用模型的定价"):
+            Settings(
+                provider="openai_compatible",
+                llm_api_key="p" * 32,
+                llm_model="model-a",
+                llm_pricing={
+                    "openai-compatible/other": settings.llm_pricing["openai-compatible/model-a"]
+                },
+                max_turn_cost_micro_usd=10,
+            )
+        with self.assertRaises(ValidationError):
+            Settings(
+                llm_pricing={
+                    "bad\nroute": {
+                        "version": "x",
+                        "prompt_micro_usd_per_million": 0,
+                        "completion_micro_usd_per_million": 0,
+                    }
+                }
+            )
+
     def test_concurrent_read_limit_is_configurable_and_bounded(self) -> None:
         settings = Settings.from_env(env={"DAMAI_AGENT_MAX_CONCURRENT_READ_TOOLS": "2"})
 

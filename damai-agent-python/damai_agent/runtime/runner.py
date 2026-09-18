@@ -6,6 +6,8 @@ import asyncio
 import time
 from typing import List, Optional, Protocol, Sequence, cast
 
+from ..config import ModelPrice
+from ..governance import TurnBudget
 from ..models import (
     AgentErrorCode,
     AgentEvent,
@@ -21,6 +23,7 @@ from ..models import (
     ToolRisk,
     ToolSpec,
 )
+from ..observability import RuntimeMetrics
 from ..providers import ModelProvider, ProviderStreamAccumulator
 from ..tools import ToolCallLedger, ToolRegistry
 from .context import ContextGovernor, valid_tool_calls
@@ -64,6 +67,10 @@ class ToolCallingRunner:
         hook_factories: Sequence[HookFactory] = (),
         max_context_chars: int = 80000,
         max_tool_result_chars: int = 16000,
+        max_turn_tokens: int = 0,
+        max_turn_cost_micro_usd: int = 0,
+        pricing_catalog: dict[str, ModelPrice] | None = None,
+        metrics: RuntimeMetrics | None = None,
     ) -> None:
         if not 1 <= max_concurrent_read_tools <= 12:
             raise ValueError("max_concurrent_read_tools must be between 1 and 12")
@@ -74,6 +81,10 @@ class ToolCallingRunner:
         self._audit_sink = audit_sink
         self._hook_factories = tuple(hook_factories)
         self._context_governor = ContextGovernor(max_context_chars, max_tool_result_chars)
+        self._max_turn_tokens = max_turn_tokens
+        self._max_turn_cost_micro_usd = max_turn_cost_micro_usd
+        self._pricing_catalog = pricing_catalog or {}
+        self._metrics = metrics
 
     @property
     def tool_names(self) -> List[str]:
@@ -103,6 +114,24 @@ class ToolCallingRunner:
         *,
         recorder: ToolRoundRecorder | None = None,
     ) -> AgentRunResult:
+        started_at = time.perf_counter()
+        try:
+            result = await self._run_impl(spec, emitter, recorder=recorder)
+        except BaseException:
+            if self._metrics is not None:
+                self._metrics.observe_turn(False, elapsed_ms(started_at))
+            raise
+        if self._metrics is not None:
+            self._metrics.observe_turn(result.error_code is None, elapsed_ms(started_at))
+        return result
+
+    async def _run_impl(
+        self,
+        spec: AgentRunSpec,
+        emitter: TurnEventEmitter,
+        *,
+        recorder: ToolRoundRecorder | None = None,
+    ) -> AgentRunResult:
         if not spec.messages or spec.messages[-1].role != "user":
             raise ValueError("AgentRunSpec.messages 必须以当前 user 消息结束")
 
@@ -113,6 +142,9 @@ class ToolCallingRunner:
             frozenset(allowed_tool_names),
             audit_sink=self._audit_sink,
             extra_factories=self._hook_factories,
+        )
+        budget = TurnBudget(
+            self._max_turn_tokens, self._max_turn_cost_micro_usd, self._pricing_catalog
         )
         messages = [ChatMessage(role="system", content=spec.system_prompt), *spec.messages]
         turn_messages: List[ChatMessage] = [spec.messages[-1]]
@@ -135,6 +167,7 @@ class ToolCallingRunner:
                     hooks.usage.total,
                     model_route,
                     AgentErrorCode.CONTEXT_PROTOCOL_INVALID,
+                    budget.cost_micro_usd,
                 )
             if prepared is None:
                 return self._governor_failure(
@@ -145,6 +178,7 @@ class ToolCallingRunner:
                     hooks.usage.total,
                     model_route,
                     AgentErrorCode.CONTEXT_BUDGET_EXCEEDED,
+                    budget.cost_micro_usd,
                 )
             messages = prepared
             model_context = ModelHookContext(
@@ -155,13 +189,19 @@ class ToolCallingRunner:
             )
             await hooks.before_model(model_context)
             model_started_at = time.perf_counter()
-            response = await self._invoke_provider(
-                messages,
-                available_specs,
-                emitter,
-                round_number,
-            )
+            try:
+                response = await self._invoke_provider(
+                    messages,
+                    available_specs,
+                    emitter,
+                    round_number,
+                )
+            except BaseException:
+                if self._metrics is not None:
+                    self._metrics.observe_model(False, elapsed_ms(model_started_at))
+                raise
             model_route = response.model_route or model_route
+            model_duration_ms = elapsed_ms(model_started_at)
             await hooks.after_model(
                 ModelHookContext(
                     turn_id=spec.context.turn_id,
@@ -171,8 +211,20 @@ class ToolCallingRunner:
                 ),
                 response.usage,
                 response.finish_reason,
-                elapsed_ms(model_started_at),
+                model_duration_ms,
             )
+            previous_cost = budget.cost_micro_usd
+            budget_error = budget.record(model_route, response.usage)
+            current_cost = budget.cost_micro_usd
+            if self._metrics is not None:
+                self._metrics.observe_model(
+                    True,
+                    model_duration_ms,
+                    response.usage,
+                    current_cost - previous_cost
+                    if current_cost is not None and previous_cost is not None
+                    else None,
+                )
             await emitter.emit(
                 "model.completed",
                 {
@@ -181,8 +233,21 @@ class ToolCallingRunner:
                     "toolCalls": [call.name for call in response.tool_calls],
                     "usage": response.usage.to_dict(),
                     "modelRoute": model_route,
+                    "costMicroUsd": budget.cost_micro_usd,
                 },
             )
+
+            if budget_error is not None:
+                return self._governor_failure(
+                    spec,
+                    turn_messages,
+                    tools_used,
+                    tool_events,
+                    hooks.usage.total,
+                    model_route,
+                    budget_error,
+                    budget.cost_micro_usd,
+                )
 
             if response.refusal or response.finish_reason in REJECTED_FINISH_REASONS:
                 return self._rejected_result(
@@ -193,6 +258,7 @@ class ToolCallingRunner:
                     hooks.usage.total,
                     model_route,
                     response.finish_reason,
+                    budget.cost_micro_usd,
                 )
 
             if not valid_tool_calls(response.tool_calls):
@@ -204,6 +270,7 @@ class ToolCallingRunner:
                     hooks.usage.total,
                     model_route,
                     AgentErrorCode.CONTEXT_PROTOCOL_INVALID,
+                    budget.cost_micro_usd,
                 )
 
             assistant = self._assistant_message(response)
@@ -222,6 +289,7 @@ class ToolCallingRunner:
                     tools_used=tuple(tools_used),
                     messages=tuple(turn_messages),
                     usage=hooks.usage.total,
+                    cost_micro_usd=budget.cost_micro_usd,
                     stop_reason=response.finish_reason,
                     tool_events=tuple(tool_events),
                     model_route=model_route,
@@ -300,6 +368,7 @@ class ToolCallingRunner:
             tools_used=tuple(tools_used),
             messages=tuple(turn_messages),
             usage=hooks.usage.total,
+            cost_micro_usd=budget.cost_micro_usd,
             stop_reason="max_tool_rounds",
             tool_events=tuple(tool_events),
             model_route=model_route,
@@ -341,16 +410,23 @@ class ToolCallingRunner:
             risk=risk_by_name.get(call.name),
         )
         started_at = time.perf_counter()
-        decision = await hooks.before_tool(context)
-        result = decision or await self._registry.execute(
-            call.name,
-            call.arguments,
-            ToolContext.from_turn(spec.context, call.id),
-            timeout_seconds=self._tool_timeout_seconds,
-            ledger=ledger,
-        )
-        result = self._context_governor.bound_tool_result(result)
-        await hooks.after_tool(context, ToolOutcome.from_result(result, elapsed_ms(started_at)))
+        try:
+            decision = await hooks.before_tool(context)
+            result = decision or await self._registry.execute(
+                call.name,
+                call.arguments,
+                ToolContext.from_turn(spec.context, call.id),
+                timeout_seconds=self._tool_timeout_seconds,
+                ledger=ledger,
+            )
+            result = self._context_governor.bound_tool_result(result)
+            await hooks.after_tool(context, ToolOutcome.from_result(result, elapsed_ms(started_at)))
+        except BaseException:
+            if self._metrics is not None:
+                self._metrics.observe_tool(False, elapsed_ms(started_at))
+            raise
+        if self._metrics is not None:
+            self._metrics.observe_tool(result.success, elapsed_ms(started_at))
         return result
 
     async def _execute_and_record(
@@ -376,12 +452,16 @@ class ToolCallingRunner:
         usage: ProviderUsage,
         model_route: str,
         code: AgentErrorCode,
+        cost_micro_usd: int | None,
     ) -> AgentRunResult:
-        answer = (
-            "对话上下文过长，请缩短问题或开启新会话。"
-            if code is AgentErrorCode.CONTEXT_BUDGET_EXCEEDED
-            else "工具调用协议不完整，本轮已安全停止。"
-        )
+        if code is AgentErrorCode.CONTEXT_BUDGET_EXCEEDED:
+            answer = "对话上下文过长，请缩短问题或开启新会话。"
+        elif code is AgentErrorCode.TURN_BUDGET_EXCEEDED:
+            answer = "本轮模型使用量已达预算上限，已停止后续工具调用。"
+        elif code is AgentErrorCode.MODEL_ACCOUNTING_UNAVAILABLE:
+            answer = "模型用量或定价信息不可核实，已停止后续工具调用。"
+        else:
+            answer = "工具调用协议不完整，本轮已安全停止。"
         turn_messages.append(ChatMessage(role="assistant", content=answer))
         return AgentRunResult(
             session_key=spec.context.session_key,
@@ -391,6 +471,7 @@ class ToolCallingRunner:
             tools_used=tuple(tools_used),
             messages=tuple(turn_messages),
             usage=usage,
+            cost_micro_usd=cost_micro_usd,
             stop_reason=code.value.lower(),
             error_code=code,
             tool_events=tuple(tool_events),
@@ -450,6 +531,7 @@ class ToolCallingRunner:
         usage: ProviderUsage,
         model_route: str,
         finish_reason: str,
+        cost_micro_usd: int | None,
     ) -> AgentRunResult:
         answer = "模型未能安全完成本轮请求，请调整问题后重试。"
         turn_messages.append(ChatMessage(role="assistant", content=answer))
@@ -461,6 +543,7 @@ class ToolCallingRunner:
             tools_used=tuple(tools_used),
             messages=tuple(turn_messages),
             usage=usage,
+            cost_micro_usd=cost_micro_usd,
             stop_reason=finish_reason or "rejected",
             error_code=AgentErrorCode.PROVIDER_FINISH_REJECTED,
             tool_events=tuple(tool_events),

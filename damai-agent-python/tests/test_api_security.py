@@ -37,6 +37,15 @@ class ApiSecurityTest(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["detail"], "Agent API 鉴权失败")
 
+    def test_metrics_requires_internal_key_and_has_bounded_labels(self) -> None:
+        self.assertEqual(self.client.get("/metrics").status_code, 401)
+        response = self.client.get("/metrics", headers={"X-Agent-Internal-Key": self.internal_key})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("damai_agent_requests_total", response.text)
+        self.assertIn("damai_agent_duration_seconds_bucket", response.text)
+        self.assertNotIn("sessionKey", response.text)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
     def test_chat_rejects_incorrect_internal_key(self) -> None:
         response = self.client.post(
             "/api/v1/chat",

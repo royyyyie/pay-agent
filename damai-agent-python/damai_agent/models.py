@@ -40,6 +40,8 @@ class AgentErrorCode(str, Enum):
     PROVIDER_FINISH_REJECTED = "PROVIDER_FINISH_REJECTED"
     CONTEXT_BUDGET_EXCEEDED = "CONTEXT_BUDGET_EXCEEDED"
     CONTEXT_PROTOCOL_INVALID = "CONTEXT_PROTOCOL_INVALID"
+    MODEL_ACCOUNTING_UNAVAILABLE = "MODEL_ACCOUNTING_UNAVAILABLE"
+    TURN_BUDGET_EXCEEDED = "TURN_BUDGET_EXCEEDED"
     TOOL_EXECUTION_UNKNOWN = "TOOL_EXECUTION_UNKNOWN"
 
 
@@ -293,6 +295,7 @@ class AgentRunResult:
     messages: Tuple[ChatMessage, ...] = ()
     usage: ProviderUsage = field(default_factory=ProviderUsage)
     cost: Optional[float] = None
+    cost_micro_usd: Optional[int] = None
     stop_reason: str = "stop"
     error_code: Optional[AgentErrorCode] = None
     tool_events: Tuple[AgentEvent, ...] = ()

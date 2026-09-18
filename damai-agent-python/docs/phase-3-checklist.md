@@ -19,9 +19,18 @@
 
 ## 后续批次与退出标准
 
-- [ ] Token/费用治理：模型定价版本、单 Turn 预算、租户额度和实际成本汇总
-- [ ] OpenTelemetry Trace、核心 Metrics、跨 Java/Provider 的关联与脱敏 Tool Audit
+- [x] 第二批：版本化模型定价表、单 Turn Token/估算费用阈值；缺少 Usage 或定价时在工具派发前默认拒绝
+- [x] 第二批：返回整数微美元成本，提供只含固定标签的实例级 Prometheus 次数、耗时、Token 与估算费用指标；生产 `/metrics` 受内部密钥保护
+- [ ] 租户级共享额度、供应商账单对账和失败/重试请求的费用归集
+- [ ] OpenTelemetry Trace、跨 Java/Provider 的关联与持久化脱敏 Tool Audit
 - [ ] Provider/Java/Redis/PostgreSQL 的隔离故障注入与可重复验收报告
 - [ ] 只读链路 SLO 定义、测量、告警和 Runbook；真实测试环境灰度验收
 
 第一批仅建立路由安全策略，不代表阶段 3 完成或生产 SLO 达标。
+
+## 第二批：预算与指标的边界
+
+- `DAMAI_LLM_PRICING_JSON` 以实际 `modelRoute` 为键，每项包含 `version`、`prompt_micro_usd_per_million` 和 `completion_micro_usd_per_million`。金额全程使用整数微美元，按单次模型响应向上取整；缓存 Token 暂按普通 prompt Token 计费，不宣称与供应商账单一致。
+- `DAMAI_AGENT_MAX_TURN_TOKENS`、`DAMAI_AGENT_MAX_TURN_COST_MICRO_USD` 默认 0（关闭）。非零时在每次模型响应后检查；超限、Usage 缺失或费用阈值开启但定价路由缺失时，停止后续 Tool 派发。单次模型响应已生成的 Token 无法事前精确截断，故此为后置安全点预算，不是绝对支出上限。
+- `/metrics` 输出当前进程的 Prometheus 文本格式；仅含 `turn/model/tool` 和 `success/error` 固定标签，不含租户、用户、Session、Prompt、Tool 参数或模型错误正文。生产须使用内部密钥并在网络层限制采集来源；多副本聚合交由监控系统，不把单实例指标当作全局额度。
+- 当前 Tool Audit 仍是元数据日志/可注入 Sink，未具备不可篡改或持久保留保证。OTel、租户配额、端到端故障注入和 SLO 均未完成。

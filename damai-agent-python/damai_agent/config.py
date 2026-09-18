@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Literal, Mapping, Optional
+from typing import Any, Dict, Literal, Mapping, Optional
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -36,6 +38,9 @@ _ENV_FIELDS = {
     "llm_fallback_base_url": "DAMAI_LLM_FALLBACK_BASE_URL",
     "llm_fallback_api_key": "DAMAI_LLM_FALLBACK_API_KEY",
     "llm_fallback_model": "DAMAI_LLM_FALLBACK_MODEL",
+    "llm_pricing": "DAMAI_LLM_PRICING_JSON",
+    "max_turn_tokens": "DAMAI_AGENT_MAX_TURN_TOKENS",
+    "max_turn_cost_micro_usd": "DAMAI_AGENT_MAX_TURN_COST_MICRO_USD",
     "stream_idle_timeout_seconds": "DAMAI_AGENT_STREAM_IDLE_TIMEOUT_SECONDS",
     "max_tool_rounds": "DAMAI_AGENT_MAX_TOOL_ROUNDS",
     "max_concurrent_read_tools": "DAMAI_AGENT_MAX_CONCURRENT_READ_TOOLS",
@@ -76,6 +81,16 @@ def load_dotenv(path: Optional[Path] = None) -> None:
         os.environ.setdefault(key, value)
 
 
+class ModelPrice(BaseModel):
+    """Versioned micro-USD price per million billed tokens."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    version: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    prompt_micro_usd_per_million: int = Field(ge=0, le=1000000000000)
+    completion_micro_usd_per_million: int = Field(ge=0, le=1000000000000)
+
+
 class Settings(BaseModel):
     """Application settings with local/test and staging/production safety profiles."""
 
@@ -98,6 +113,9 @@ class Settings(BaseModel):
     llm_fallback_base_url: str = ""
     llm_fallback_api_key: str = Field(default="", repr=False, max_length=4096)
     llm_fallback_model: str = ""
+    llm_pricing: dict[str, ModelPrice] = Field(default_factory=dict)
+    max_turn_tokens: int = Field(default=0, ge=0, le=1000000)
+    max_turn_cost_micro_usd: int = Field(default=0, ge=0, le=1000000000)
     stream_idle_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     max_tool_rounds: int = Field(default=6, ge=1, le=20)
     max_concurrent_read_tools: int = Field(default=4, ge=1, le=12)
@@ -136,6 +154,11 @@ class Settings(BaseModel):
     def validate_optional_http_url(cls, value: str) -> str:
         return cls.validate_http_url(value) if value else ""
 
+    @field_validator("llm_pricing", mode="before")
+    @classmethod
+    def parse_pricing(cls, value: Any) -> Any:
+        return json.loads(value) if isinstance(value, str) else value
+
     @model_validator(mode="after")
     def validate_cross_fields(self) -> "Settings":
         fallback_fields = (
@@ -149,11 +172,32 @@ class Settings(BaseModel):
             raise ValueError("备用模型必须同时配置 URL、API Key 和模型名")
         if self.provider != "openai_compatible" and self.llm_max_retries:
             raise ValueError("模型重试仅适用于 openai_compatible Provider")
+        if len(self.llm_pricing) > 32:
+            raise ValueError("模型定价表最多包含 32 个路由")
+        if any(
+            re.fullmatch(r"[A-Za-z0-9._/-]{1,128}", route) is None for route in self.llm_pricing
+        ):
+            raise ValueError("模型定价路由格式无效")
+        if self.max_turn_cost_micro_usd and not self.llm_pricing:
+            raise ValueError("费用预算需要 DAMAI_LLM_PRICING_JSON")
+        if self.provider != "openai_compatible" and (
+            self.max_turn_tokens or self.max_turn_cost_micro_usd
+        ):
+            raise ValueError("模型预算仅适用于 openai_compatible Provider")
         if self.provider == "openai_compatible":
             if not self.llm_api_key:
                 raise ValueError("openai_compatible 模式必须配置 DAMAI_LLM_API_KEY")
             if not self.llm_model:
                 raise ValueError("openai_compatible 模式必须配置 DAMAI_LLM_MODEL")
+            if self.max_turn_cost_micro_usd:
+                configured_models = {self.llm_model}
+                if self.llm_fallback_model:
+                    configured_models.add(self.llm_fallback_model)
+                if any(
+                    f"openai-compatible/{model}" not in self.llm_pricing
+                    for model in configured_models
+                ):
+                    raise ValueError("费用预算缺少主模型或备用模型的定价")
 
         if self.environment in {Environment.STAGING, Environment.PRODUCTION}:
             if self.provider == "demo":

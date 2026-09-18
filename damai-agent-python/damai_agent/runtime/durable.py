@@ -244,6 +244,7 @@ class DurableTurnService:
                     "answer": result.final_content,
                     "toolCalls": list(result.tools_used),
                     "usage": result.usage.to_dict(),
+                    "costMicroUsd": result.cost_micro_usd,
                     "stopReason": result.stop_reason,
                     "errorCode": result.error_code.value if result.error_code else None,
                     "modelRoute": result.model_route,
