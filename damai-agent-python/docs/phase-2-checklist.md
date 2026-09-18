@@ -21,7 +21,7 @@
 ## 后续批次
 
 - [x] PostgreSQL 活动 Checkpoint Repository、迁移和同一租户/Session 原子版本比较写入；GitHub PostgreSQL 集成测试通过
-- [x] PostgreSQL Session/Message/Turn Repository、迁移和 Turn 完成/消息追加/Checkpoint 清理的单事务提交；新增测试待 CI 运行确认
+- [x] PostgreSQL Session/Message/Turn Repository、迁移和 Turn 完成/消息追加/Checkpoint 清理的单事务提交；新增真实数据库测试在 GitHub CI 通过
 - [x] Redis 带 owner token 的 Session 租约锁、条件续租与条件释放；云端 Redis 验证过期旧 owner 不会释放新租约
 - [ ] Redis Pending Queue、取消标记和租约失效后的运行时中止
 - [ ] Runner 在工具执行前、每个结果完成后写 Checkpoint；恢复协议并保证任何未知写操作不盲目重放
@@ -56,7 +56,8 @@
 - Turn 完成、消息追加、活动 Checkpoint 清理在同一 PostgreSQL 事务中；Checkpoint 版本错误会整体回滚，不产生半完成消息
 - 最近消息按完整 Turn 选取，不从 Tool 调用与结果之间截断；读取时校验存储格式版本
 - 该层还未接入 Agent Loop/API，Redis 租约持有状态尚未由数据库方法验证，Checkpoint 的独立更新也尚未携带 fencing 代次；因此仍不能宣布跨副本严格串行或安全自动恢复
-- 新增的真实 PostgreSQL 并发、幂等、接管和原子回滚测试待 GitHub CI 验证；本机没有 PostgreSQL 测试库
+- 新增的真实 PostgreSQL 并发、幂等、接管和原子回滚测试已在 GitHub [分支推送](https://github.com/royyyyie/pay-agent/actions/runs/35344002000)与 [PR](https://github.com/royyyyie/pay-agent/actions/runs/35344006196) 的 `quality` 检查通过；`java-contract` 同时通过。本机仍无 PostgreSQL 测试库
+- 本地质量门禁：73 项通过、12 项数据库/Redis 集成测试因未注入测试连接而跳过，覆盖率 78.68%；Ruff、Mypy strict、OpenAPI/生成文件/兼容性检查通过
 
 ## 阶段退出标准
 
