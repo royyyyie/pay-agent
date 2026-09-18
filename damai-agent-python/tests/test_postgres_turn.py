@@ -106,6 +106,7 @@ class PostgresTurnIntegrationTest(unittest.IsolatedAsyncioTestCase):
             await self.repository.complete_turn(claim, result, messages)
 
     async def test_initial_user_message_is_atomic_and_not_in_completed_history(self) -> None:
+        self.assertTrue(await self.repository.check_ready())
         user = ChatMessage(role="user", content="查票")
         claim = await self.repository.begin_turn(
             "tenant-1",

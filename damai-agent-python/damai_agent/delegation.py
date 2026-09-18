@@ -78,4 +78,5 @@ def verify_delegation(
         tool_scopes=frozenset(claims.toolScopes),
         risk_ceiling=ToolRisk.READ_ONLY,
         delegation_token_id=claims.delegationTokenId,
+        delegation_expires_at=claims.expiresAt,
     )

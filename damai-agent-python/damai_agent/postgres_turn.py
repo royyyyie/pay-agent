@@ -75,6 +75,20 @@ class PostgresTurnRepository:
             raise ValueError("PostgreSQL DSN is required")
         self._dsn = dsn
 
+    async def check_ready(self) -> bool:
+        """Require all durable runtime tables before accepting traffic."""
+
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT to_regclass('agent_session'), to_regclass('agent_turn'),
+                              to_regclass('agent_message'),
+                              to_regclass('agent_active_checkpoint'),
+                              to_regclass('agent_turn_event')"""
+                )
+                row = await cur.fetchone()
+        return row is not None and all(item is not None for item in row)
+
     async def get_active_turn(self, tenant_id: str, session_key: str) -> TurnClaim | None:
         """Read recovery metadata; only a fresh lease holder may call take_over_turn."""
 

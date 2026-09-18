@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import json
 from contextlib import suppress
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 from ..checkpoint import AgentCheckpoint
@@ -239,6 +240,7 @@ class DurableTurnService:
                 {
                     "type": "turn.completed",
                     "traceId": context.trace_id,
+                    "occurredAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     "answer": result.final_content,
                     "toolCalls": list(result.tools_used),
                     "usage": result.usage.to_dict(),
@@ -395,6 +397,7 @@ class DurableTurnService:
                 final_event={
                     "type": "turn.completed",
                     "traceId": context.trace_id,
+                    "occurredAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     "answer": answer,
                     "toolCalls": list(tools_used),
                     "stopReason": result.stop_reason,

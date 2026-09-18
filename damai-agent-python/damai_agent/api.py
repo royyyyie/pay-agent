@@ -143,6 +143,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.state.settings = resolved_settings
     app.state.durable_service = durable_service
     app.state.durable_turns = durable_turns
+    app.state.durable_redis = durable_redis
 
     async def require_internal_api_key(
         supplied_key: Optional[str] = Header(default=None, alias="X-Agent-Internal-Key"),
@@ -193,6 +194,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "provider": resolved_settings.provider,
             "tools": runner.tool_names,
         }
+
+    @app.get("/ready")
+    async def ready() -> Dict[str, str]:
+        if durable_turns is not None and durable_redis is not None:
+            try:
+                database_ready = await durable_turns.check_ready()
+                cache_ready = bool(await durable_redis.ping())
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail="Agent 持久化依赖不可用") from exc
+            if not database_ready or not cache_ready:
+                raise HTTPException(status_code=503, detail="Agent 持久化依赖不可用")
+        return {"status": "UP"}
 
     @app.post(
         "/api/v1/chat",
@@ -371,7 +384,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
         async def replay() -> AsyncIterator[str]:
             nonlocal cursor
-            deadline = time.monotonic() + 300
+            token_remaining = (
+                max(0, context.delegation_expires_at - time.time())
+                if context.delegation_expires_at is not None
+                else 300
+            )
+            deadline = time.monotonic() + min(300, token_remaining)
             while time.monotonic() < deadline and not await request.is_disconnected():
                 events = await durable_turns.load_events_after(
                     context.tenant_id, context.session_key, turn_id, cursor

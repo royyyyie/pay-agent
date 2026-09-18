@@ -62,6 +62,7 @@ class DelegationTest(unittest.TestCase):
         )
         self.assertEqual(context.tenant_id, "tenant-1")
         self.assertEqual(context.tool_scopes, frozenset({"programs:read"}))
+        self.assertIsNotNone(context.delegation_expires_at)
         with self.assertRaises(DelegationError):
             verify_delegation(headers["X-Agent-Delegation"], "0" * 64, self.secret)
         expired = self.claims()
@@ -184,3 +185,17 @@ class DurableApiTest(DelegationTest):
             )
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(recover.await_args.args[0])
+
+    def test_readiness_requires_both_migrations_and_redis(self) -> None:
+        turns = self.app.state.durable_turns
+        redis = self.app.state.durable_redis
+        with (
+            patch.object(turns, "check_ready", new=AsyncMock(return_value=True)),
+            patch.object(redis, "ping", new=AsyncMock(return_value=True)),
+        ):
+            self.assertEqual(self.client.get("/ready").status_code, 200)
+        with (
+            patch.object(turns, "check_ready", new=AsyncMock(return_value=False)),
+            patch.object(redis, "ping", new=AsyncMock(return_value=True)),
+        ):
+            self.assertEqual(self.client.get("/ready").status_code, 503)
