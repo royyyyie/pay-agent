@@ -8,7 +8,7 @@ from typing import Literal
 from .models import ProviderUsage
 
 _BUCKETS = (0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
-_Outcome = Literal["success", "error"]
+_Outcome = Literal["success", "error", "rejected"]
 
 
 class _Histogram:
@@ -30,15 +30,17 @@ class RuntimeMetrics:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._requests: dict[str, dict[_Outcome, int]] = {
-            kind: {"success": 0, "error": 0} for kind in ("turn", "model", "tool")
+            kind: {"success": 0, "error": 0, "rejected": 0} for kind in ("turn", "model", "tool")
         }
         self._durations = {kind: _Histogram() for kind in self._requests}
         self._prompt_tokens = 0
         self._completion_tokens = 0
         self._cost_micro_usd = 0
 
-    def observe_turn(self, success: bool, duration_ms: int) -> None:
-        self._observe("turn", success, duration_ms)
+    def observe_turn(self, outcome: _Outcome, duration_ms: int) -> None:
+        with self._lock:
+            self._requests["turn"][outcome] += 1
+            self._durations["turn"].observe(duration_ms)
 
     def observe_tool(self, success: bool, duration_ms: int) -> None:
         self._observe("tool", success, duration_ms)

@@ -197,6 +197,24 @@ class SettingsTest(unittest.TestCase):
         self.assertNotIn("pass", repr(settings))
         self.assertNotIn("d" * 32, repr(settings))
 
+    def test_phase3_opt_in_controls_require_safe_runtime(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "持久化 Tool 审计需要 durable"):
+            Settings(persist_tool_audit=True)
+        with self.assertRaisesRegex(ValidationError, "租户额度需要 durable"):
+            Settings(tenant_daily_cost_micro_usd=100)
+        with self.assertRaisesRegex(ValidationError, "/v1/traces"):
+            Settings(otlp_traces_endpoint="http://collector.example:4318")
+        with self.assertRaisesRegex(ValidationError, "必须使用 HTTPS"):
+            Settings(
+                environment="production",
+                provider="openai_compatible",
+                internal_api_key="i" * 32,
+                java_tool_api_key="j" * 32,
+                llm_api_key="l" * 32,
+                llm_model="model-a",
+                otlp_traces_endpoint="http://collector.example:4318/v1/traces",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

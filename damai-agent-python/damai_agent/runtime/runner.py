@@ -7,7 +7,7 @@ import time
 from typing import List, Optional, Protocol, Sequence, cast
 
 from ..config import ModelPrice
-from ..governance import TurnBudget
+from ..governance import TenantQuota, TurnBudget
 from ..models import (
     AgentErrorCode,
     AgentEvent,
@@ -26,6 +26,7 @@ from ..models import (
 from ..observability import RuntimeMetrics
 from ..providers import ModelProvider, ProviderStreamAccumulator
 from ..tools import ToolCallLedger, ToolRegistry
+from ..tracing import TraceManager
 from .context import ContextGovernor, valid_tool_calls
 from .events import TurnEventEmitter
 from .hooks import (
@@ -36,6 +37,7 @@ from .hooks import (
     ToolHookContext,
     ToolOutcome,
     elapsed_ms,
+    safe_log_label,
     safe_tool_call_id,
 )
 
@@ -71,6 +73,10 @@ class ToolCallingRunner:
         max_turn_cost_micro_usd: int = 0,
         pricing_catalog: dict[str, ModelPrice] | None = None,
         metrics: RuntimeMetrics | None = None,
+        tracing: TraceManager | None = None,
+        tenant_quota: TenantQuota | None = None,
+        tenant_daily_cost_micro_usd: int = 0,
+        strict_audit: bool = False,
     ) -> None:
         if not 1 <= max_concurrent_read_tools <= 12:
             raise ValueError("max_concurrent_read_tools must be between 1 and 12")
@@ -85,6 +91,12 @@ class ToolCallingRunner:
         self._max_turn_cost_micro_usd = max_turn_cost_micro_usd
         self._pricing_catalog = pricing_catalog or {}
         self._metrics = metrics
+        self._tracing = tracing or TraceManager()
+        if tenant_daily_cost_micro_usd and tenant_quota is None:
+            raise ValueError("tenant quota store is required")
+        self._tenant_quota = tenant_quota
+        self._tenant_daily_cost_micro_usd = tenant_daily_cost_micro_usd
+        self._strict_audit = strict_audit
 
     @property
     def tool_names(self) -> List[str]:
@@ -116,13 +128,35 @@ class ToolCallingRunner:
     ) -> AgentRunResult:
         started_at = time.perf_counter()
         try:
-            result = await self._run_impl(spec, emitter, recorder=recorder)
+            with self._tracing.span(
+                "agent.turn",
+                trace_id=spec.context.trace_id,
+                attributes={"agent.risk_ceiling": spec.context.risk_ceiling.value},
+            ) as turn_span:
+                result = await self._run_impl(spec, emitter, recorder=recorder)
+                if result.error_code is not None:
+                    self._tracing.mark_error(turn_span)
         except BaseException:
             if self._metrics is not None:
-                self._metrics.observe_turn(False, elapsed_ms(started_at))
+                self._metrics.observe_turn("error", elapsed_ms(started_at))
             raise
         if self._metrics is not None:
-            self._metrics.observe_turn(result.error_code is None, elapsed_ms(started_at))
+            rejected_codes = {
+                AgentErrorCode.CONTEXT_BUDGET_EXCEEDED,
+                AgentErrorCode.CONTEXT_PROTOCOL_INVALID,
+                AgentErrorCode.TURN_BUDGET_EXCEEDED,
+                AgentErrorCode.TENANT_QUOTA_EXCEEDED,
+            }
+            self._metrics.observe_turn(
+                (
+                    "success"
+                    if result.error_code is None
+                    else "rejected"
+                    if result.error_code in rejected_codes
+                    else "error"
+                ),
+                elapsed_ms(started_at),
+            )
         return result
 
     async def _run_impl(
@@ -142,6 +176,7 @@ class ToolCallingRunner:
             frozenset(allowed_tool_names),
             audit_sink=self._audit_sink,
             extra_factories=self._hook_factories,
+            strict_audit=self._strict_audit,
         )
         budget = TurnBudget(
             self._max_turn_tokens, self._max_turn_cost_micro_usd, self._pricing_catalog
@@ -181,6 +216,19 @@ class ToolCallingRunner:
                     budget.cost_micro_usd,
                 )
             messages = prepared
+            if self._tenant_quota is not None and await self._tenant_quota.exhausted(
+                spec.context.tenant_id, self._tenant_daily_cost_micro_usd
+            ):
+                return self._governor_failure(
+                    spec,
+                    turn_messages,
+                    tools_used,
+                    tool_events,
+                    hooks.usage.total,
+                    model_route,
+                    AgentErrorCode.TENANT_QUOTA_EXCEEDED,
+                    budget.cost_micro_usd,
+                )
             model_context = ModelHookContext(
                 turn_id=spec.context.turn_id,
                 trace_id=spec.context.trace_id,
@@ -190,12 +238,16 @@ class ToolCallingRunner:
             await hooks.before_model(model_context)
             model_started_at = time.perf_counter()
             try:
-                response = await self._invoke_provider(
-                    messages,
-                    available_specs,
-                    emitter,
-                    round_number,
-                )
+                with self._tracing.span(
+                    "agent.model",
+                    attributes={"agent.model_route": safe_log_label(model_route)},
+                ):
+                    response = await self._invoke_provider(
+                        messages,
+                        available_specs,
+                        emitter,
+                        round_number,
+                    )
             except BaseException:
                 if self._metrics is not None:
                     self._metrics.observe_model(False, elapsed_ms(model_started_at))
@@ -216,14 +268,28 @@ class ToolCallingRunner:
             previous_cost = budget.cost_micro_usd
             budget_error = budget.record(model_route, response.usage)
             current_cost = budget.cost_micro_usd
+            incremental_cost = (
+                current_cost - previous_cost
+                if current_cost is not None and previous_cost is not None
+                else None
+            )
+            if self._tenant_quota is not None:
+                if incremental_cost is None:
+                    budget_error = AgentErrorCode.MODEL_ACCOUNTING_UNAVAILABLE
+                elif not await self._tenant_quota.charge(
+                    spec.context.tenant_id,
+                    spec.context.turn_id,
+                    round_number,
+                    incremental_cost,
+                    self._tenant_daily_cost_micro_usd,
+                ):
+                    budget_error = AgentErrorCode.TENANT_QUOTA_EXCEEDED
             if self._metrics is not None:
                 self._metrics.observe_model(
                     True,
                     model_duration_ms,
                     response.usage,
-                    current_cost - previous_cost
-                    if current_cost is not None and previous_cost is not None
-                    else None,
+                    incremental_cost,
                 )
             await emitter.emit(
                 "model.completed",
@@ -408,19 +474,29 @@ class ToolCallingRunner:
             tool_call_id=safe_tool_call_id(call.id),
             tool_name=call.name if call.name in risk_by_name else "<unavailable>",
             risk=risk_by_name.get(call.name),
+            tenant_id=spec.context.tenant_id,
+            session_key=spec.context.session_key,
         )
         started_at = time.perf_counter()
         try:
-            decision = await hooks.before_tool(context)
-            result = decision or await self._registry.execute(
-                call.name,
-                call.arguments,
-                ToolContext.from_turn(spec.context, call.id),
-                timeout_seconds=self._tool_timeout_seconds,
-                ledger=ledger,
-            )
-            result = self._context_governor.bound_tool_result(result)
-            await hooks.after_tool(context, ToolOutcome.from_result(result, elapsed_ms(started_at)))
+            with self._tracing.span(
+                "agent.tool",
+                attributes={"agent.tool_name": safe_log_label(context.tool_name)},
+            ) as tool_span:
+                decision = await hooks.before_tool(context)
+                result = decision or await self._registry.execute(
+                    call.name,
+                    call.arguments,
+                    ToolContext.from_turn(spec.context, call.id),
+                    timeout_seconds=self._tool_timeout_seconds,
+                    ledger=ledger,
+                )
+                result = self._context_governor.bound_tool_result(result)
+                if not result.success:
+                    self._tracing.mark_error(tool_span)
+                await hooks.after_tool(
+                    context, ToolOutcome.from_result(result, elapsed_ms(started_at))
+                )
         except BaseException:
             if self._metrics is not None:
                 self._metrics.observe_tool(False, elapsed_ms(started_at))
@@ -460,6 +536,8 @@ class ToolCallingRunner:
             answer = "本轮模型使用量已达预算上限，已停止后续工具调用。"
         elif code is AgentErrorCode.MODEL_ACCOUNTING_UNAVAILABLE:
             answer = "模型用量或定价信息不可核实，已停止后续工具调用。"
+        elif code is AgentErrorCode.TENANT_QUOTA_EXCEEDED:
+            answer = "今日租户模型额度已用尽，已停止后续工具调用。"
         else:
             answer = "工具调用协议不完整，本轮已安全停止。"
         turn_messages.append(ChatMessage(role="assistant", content=answer))

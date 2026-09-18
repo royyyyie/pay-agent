@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Mapping, Protocol
 
 from .config import ModelPrice
 from .models import AgentErrorCode, ProviderUsage
+
+
+class TenantQuota(Protocol):
+    async def exhausted(self, tenant_id: str, limit_micro_usd: int) -> bool: ...
+
+    async def charge(
+        self,
+        tenant_id: str,
+        turn_id: str,
+        round_number: int,
+        amount_micro_usd: int,
+        limit_micro_usd: int,
+    ) -> bool: ...
 
 
 class TurnBudget:
