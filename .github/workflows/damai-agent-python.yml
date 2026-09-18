@@ -32,6 +32,20 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: damai_test
+          POSTGRES_PASSWORD: damai_test
+          POSTGRES_DB: damai_agent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U damai_test -d damai_agent_test"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      DAMAI_TEST_POSTGRES_DSN: postgresql://damai_test:damai_test@127.0.0.1:5432/damai_agent_test
     defaults:
       run:
         working-directory: damai-agent-python
@@ -50,24 +64,24 @@ jobs:
       - name: Install locked dependencies
         run: |
           python -m pip install uv==0.12.10
-          uv sync --frozen --extra dev --python 3.11
+          uv sync --frozen --extra dev --extra postgres --python 3.11
 
       - name: Verify generated contracts
         run: |
-          uv run --frozen --extra dev openapi-spec-validator ../contracts/agent-tools-v1.openapi.yaml
-          uv run --frozen --extra dev python scripts/generate_tool_schemas.py --check
-          uv run --frozen --extra dev python scripts/check_contract_compatibility.py
+          uv run --frozen --extra dev --extra postgres openapi-spec-validator ../contracts/agent-tools-v1.openapi.yaml
+          uv run --frozen --extra dev --extra postgres python scripts/generate_tool_schemas.py --check
+          uv run --frozen --extra dev --extra postgres python scripts/check_contract_compatibility.py
 
       - name: Lint and format
         run: |
-          uv run --frozen --extra dev ruff format --check damai_agent tests scripts
-          uv run --frozen --extra dev ruff check damai_agent tests scripts
+          uv run --frozen --extra dev --extra postgres ruff format --check damai_agent tests scripts
+          uv run --frozen --extra dev --extra postgres ruff check damai_agent tests scripts
 
       - name: Type check
-        run: uv run --frozen --extra dev mypy damai_agent
+        run: uv run --frozen --extra dev --extra postgres mypy damai_agent
 
       - name: Test and enforce coverage
-        run: uv run --frozen --extra dev pytest --cov=damai_agent --cov-report=term-missing --cov-report=xml
+        run: uv run --frozen --extra dev --extra postgres pytest --cov=damai_agent --cov-report=term-missing --cov-report=xml
 
   java-contract:
     runs-on: ubuntu-latest
