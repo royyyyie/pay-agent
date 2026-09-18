@@ -31,6 +31,11 @@ _ENV_FIELDS = {
     "llm_api_key": "DAMAI_LLM_API_KEY",
     "llm_model": "DAMAI_LLM_MODEL",
     "llm_timeout_seconds": "DAMAI_LLM_TIMEOUT_SECONDS",
+    "llm_max_retries": "DAMAI_LLM_MAX_RETRIES",
+    "llm_retry_backoff_seconds": "DAMAI_LLM_RETRY_BACKOFF_SECONDS",
+    "llm_fallback_base_url": "DAMAI_LLM_FALLBACK_BASE_URL",
+    "llm_fallback_api_key": "DAMAI_LLM_FALLBACK_API_KEY",
+    "llm_fallback_model": "DAMAI_LLM_FALLBACK_MODEL",
     "stream_idle_timeout_seconds": "DAMAI_AGENT_STREAM_IDLE_TIMEOUT_SECONDS",
     "max_tool_rounds": "DAMAI_AGENT_MAX_TOOL_ROUNDS",
     "max_concurrent_read_tools": "DAMAI_AGENT_MAX_CONCURRENT_READ_TOOLS",
@@ -88,6 +93,11 @@ class Settings(BaseModel):
     llm_api_key: str = Field(default="", repr=False, max_length=4096)
     llm_model: str = ""
     llm_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    llm_max_retries: int = Field(default=0, ge=0, le=3)
+    llm_retry_backoff_seconds: float = Field(default=0.2, ge=0, le=2)
+    llm_fallback_base_url: str = ""
+    llm_fallback_api_key: str = Field(default="", repr=False, max_length=4096)
+    llm_fallback_model: str = ""
     stream_idle_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     max_tool_rounds: int = Field(default=6, ge=1, le=20)
     max_concurrent_read_tools: int = Field(default=4, ge=1, le=12)
@@ -121,8 +131,24 @@ class Settings(BaseModel):
             raise ValueError("URL 中禁止包含用户名或密码")
         return normalized
 
+    @field_validator("llm_fallback_base_url")
+    @classmethod
+    def validate_optional_http_url(cls, value: str) -> str:
+        return cls.validate_http_url(value) if value else ""
+
     @model_validator(mode="after")
     def validate_cross_fields(self) -> "Settings":
+        fallback_fields = (
+            self.llm_fallback_base_url,
+            self.llm_fallback_api_key,
+            self.llm_fallback_model,
+        )
+        if any(fallback_fields) and (
+            self.provider != "openai_compatible" or not all(fallback_fields)
+        ):
+            raise ValueError("备用模型必须同时配置 URL、API Key 和模型名")
+        if self.provider != "openai_compatible" and self.llm_max_retries:
+            raise ValueError("模型重试仅适用于 openai_compatible Provider")
         if self.provider == "openai_compatible":
             if not self.llm_api_key:
                 raise ValueError("openai_compatible 模式必须配置 DAMAI_LLM_API_KEY")
@@ -141,6 +167,10 @@ class Settings(BaseModel):
                 "DAMAI_JAVA_TOOL_API_KEY",
             )
             self._require_strong_secret(self.llm_api_key, "DAMAI_LLM_API_KEY", minimum=16)
+            if self.llm_fallback_api_key:
+                self._require_strong_secret(
+                    self.llm_fallback_api_key, "DAMAI_LLM_FALLBACK_API_KEY", minimum=16
+                )
         if self.runtime_backend == "durable":
             postgres_url = urlparse(self.postgres_dsn)
             redis_url = urlparse(self.redis_url)

@@ -215,6 +215,24 @@ class ProviderStreamingTest(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.sleep(0.11)
 
+    async def test_openai_stream_rejects_premature_eof(self) -> None:
+        response = FakeStreamResponse([b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'])
+        provider = OpenAICompatibleProvider(
+            base_url="https://model.example/v1",
+            api_key="test-key",
+            model="model-a",
+            timeout_seconds=1,
+        )
+
+        with patch("damai_agent.providers.urllib.request.urlopen", return_value=response):
+            events = []
+            with self.assertRaisesRegex(ProviderError, "提前中断") as raised:
+                async for event in provider.stream([ChatMessage(role="user", content="hi")], []):
+                    events.append(event)
+
+        self.assertTrue(raised.exception.retryable)
+        self.assertEqual([event.text_delta for event in events], ["partial"])
+
     async def test_runner_emits_real_stream_deltas_and_usage(self) -> None:
         runner = AgentRunner(
             provider=StreamingProvider(),
