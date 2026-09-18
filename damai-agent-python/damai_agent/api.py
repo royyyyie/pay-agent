@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from .config import Settings
 from .delegation import DelegationError, verify_delegation
 from .models import AgentRunResult, TicketTurnContext
+from .provider_routing import ResilientProvider
 from .providers import DemoProvider, ModelProvider, OpenAICompatibleProvider, ProviderError
 from .runner import AgentRunner
 from .session import InMemorySessionStore
@@ -66,12 +67,33 @@ def _chat_response(result: AgentRunResult) -> ChatResponse:
 def build_runner(settings: Settings) -> AgentRunner:
     provider: ModelProvider
     if settings.provider == "openai_compatible":
-        provider = OpenAICompatibleProvider(
+        primary = OpenAICompatibleProvider(
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key,
             model=settings.llm_model,
             timeout_seconds=settings.llm_timeout_seconds,
             stream_idle_timeout_seconds=settings.stream_idle_timeout_seconds,
+        )
+        fallback = (
+            OpenAICompatibleProvider(
+                base_url=settings.llm_fallback_base_url,
+                api_key=settings.llm_fallback_api_key,
+                model=settings.llm_fallback_model,
+                timeout_seconds=settings.llm_timeout_seconds,
+                stream_idle_timeout_seconds=settings.stream_idle_timeout_seconds,
+            )
+            if settings.llm_fallback_base_url
+            else None
+        )
+        provider = (
+            ResilientProvider(
+                primary,
+                fallback,
+                max_retries=settings.llm_max_retries,
+                backoff_seconds=settings.llm_retry_backoff_seconds,
+            )
+            if fallback is not None or settings.llm_max_retries
+            else primary
         )
     else:
         provider = DemoProvider()

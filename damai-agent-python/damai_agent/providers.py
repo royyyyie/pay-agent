@@ -37,6 +37,10 @@ class ModelProvider(Protocol):
 class ProviderError(RuntimeError):
     """Raised when the configured model endpoint cannot return a valid reply."""
 
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
 
 @dataclass(slots=True)
 class _ToolCallAccumulator:
@@ -155,7 +159,7 @@ class OpenAICompatibleProvider:
             while True:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
-                    raise ProviderError("模型流式响应超过总超时")
+                    raise ProviderError("模型流式响应超过总超时", retryable=True)
                 wait_seconds = min(self._stream_idle_timeout_seconds, remaining)
                 try:
                     item = await asyncio.wait_for(
@@ -163,7 +167,7 @@ class OpenAICompatibleProvider:
                         timeout=wait_seconds,
                     )
                 except asyncio.TimeoutError as error:
-                    raise ProviderError("模型流式响应空闲超时") from error
+                    raise ProviderError("模型流式响应空闲超时", retryable=True) from error
                 if item is sentinel:
                     break
                 if isinstance(item, _StreamFailure):
@@ -190,6 +194,7 @@ class OpenAICompatibleProvider:
         payload["stream_options"] = {"include_usage": True}
         request = self._request(payload)
         saw_completed = False
+        saw_done = False
         socket_timeout = min(self._timeout_seconds, self._stream_idle_timeout_seconds)
         try:
             with urllib.request.urlopen(request, timeout=socket_timeout) as response:
@@ -199,6 +204,7 @@ class OpenAICompatibleProvider:
                         continue
                     data = line[5:].strip()
                     if data == "[DONE]":
+                        saw_done = True
                         break
                     try:
                         chunk = json.loads(data)
@@ -209,10 +215,16 @@ class OpenAICompatibleProvider:
                             saw_completed = True
                         yield event
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[:500]
-            raise ProviderError(f"模型服务返回 HTTP {error.code}: {detail}") from error
-        except (urllib.error.URLError, TimeoutError, UnicodeDecodeError) as error:
-            raise ProviderError(f"模型流式调用失败: {error}") from error
+            raise ProviderError(
+                f"模型服务返回 HTTP {error.code}",
+                retryable=error.code in {408, 429, 500, 502, 503, 504},
+            ) from error
+        except (urllib.error.URLError, TimeoutError) as error:
+            raise ProviderError("模型流式调用失败", retryable=True) from error
+        except UnicodeDecodeError as error:
+            raise ProviderError("模型流式响应编码无效") from error
+        if not saw_done:
+            raise ProviderError("模型流式响应提前中断", retryable=True)
         if not saw_completed:
             yield ProviderStreamEvent(
                 event_type=ProviderStreamEventType.COMPLETED,
@@ -288,10 +300,14 @@ class OpenAICompatibleProvider:
             with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[:500]
-            raise ProviderError(f"模型服务返回 HTTP {error.code}: {detail}") from error
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
-            raise ProviderError(f"模型服务调用失败: {error}") from error
+            raise ProviderError(
+                f"模型服务返回 HTTP {error.code}",
+                retryable=error.code in {408, 429, 500, 502, 503, 504},
+            ) from error
+        except (urllib.error.URLError, TimeoutError) as error:
+            raise ProviderError("模型服务调用失败", retryable=True) from error
+        except json.JSONDecodeError as error:
+            raise ProviderError("模型服务返回了非法 JSON") from error
 
         try:
             choice = body["choices"][0]

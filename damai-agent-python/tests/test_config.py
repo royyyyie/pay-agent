@@ -73,6 +73,40 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.stream_idle_timeout_seconds, 2.5)
 
+    def test_provider_retry_and_fallback_require_complete_safe_configuration(self) -> None:
+        base = {"provider": "openai_compatible", "llm_api_key": "p" * 32, "llm_model": "m"}
+        with self.assertRaisesRegex(ValidationError, "模型重试仅适用于"):
+            Settings(llm_max_retries=1)
+        with self.assertRaises(ValidationError):
+            Settings(**base, llm_max_retries=4)
+        with self.assertRaisesRegex(ValidationError, "备用模型必须同时配置"):
+            Settings(**base, llm_fallback_base_url="https://backup.example/v1")
+        with self.assertRaisesRegex(ValidationError, "用户名或密码"):
+            Settings(**base, llm_fallback_base_url="https://user:pass@backup.example/v1")
+        settings = Settings(
+            **base,
+            llm_max_retries=1,
+            llm_fallback_base_url="https://backup.example/v1",
+            llm_fallback_api_key="f" * 32,
+            llm_fallback_model="backup-model",
+        )
+        self.assertEqual(settings.llm_max_retries, 1)
+        self.assertNotIn("f" * 32, repr(settings))
+
+    def test_production_rejects_weak_fallback_key(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "DAMAI_LLM_FALLBACK_API_KEY"):
+            Settings(
+                environment="production",
+                provider="openai_compatible",
+                llm_api_key="p" * 32,
+                llm_model="m",
+                internal_api_key="i" * 32,
+                java_tool_api_key="j" * 32,
+                llm_fallback_base_url="https://backup.example/v1",
+                llm_fallback_api_key="weak",
+                llm_fallback_model="backup-model",
+            )
+
     def test_concurrent_read_limit_is_configurable_and_bounded(self) -> None:
         settings = Settings.from_env(env={"DAMAI_AGENT_MAX_CONCURRENT_READ_TOOLS": "2"})
 
