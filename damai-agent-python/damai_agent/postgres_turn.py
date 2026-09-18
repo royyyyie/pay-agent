@@ -95,6 +95,27 @@ class PostgresTurnRepository:
             raise ValueError("inconsistent active turn state")
         return TurnClaim(tenant_id, session_key, row[0], "in_progress", row[1])
 
+    async def get_turn_status(
+        self, tenant_id: str, session_key: str, turn_id: str
+    ) -> Literal["running", "completed"] | None:
+        if not tenant_id or not session_key or not turn_id:
+            raise ValueError("turn identity is incomplete")
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT status FROM agent_turn
+                       WHERE tenant_id = %s AND session_key = %s AND turn_id = %s""",
+                    (tenant_id, session_key, turn_id),
+                )
+                row = await cur.fetchone()
+        if row is None:
+            return None
+        if row[0] == "running":
+            return "running"
+        if row[0] == "completed":
+            return "completed"
+        raise ValueError("invalid stored turn status")
+
     async def get_recoverable_turn(
         self,
         tenant_id: str,
@@ -424,6 +445,86 @@ class PostgresTurnRepository:
                 ),
             )
 
+    @staticmethod
+    async def _append_event(
+        cur: psycopg.AsyncCursor[Any], claim: TurnClaim, event: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not isinstance(event.get("type"), str) or not event["type"]:
+            raise ValueError("event type is required")
+        await cur.execute(
+            """SELECT COALESCE(MAX(event_seq), 0) + 1 FROM agent_turn_event
+               WHERE tenant_id = %s AND session_key = %s AND turn_id = %s""",
+            (claim.tenant_id, claim.session_key, claim.turn_id),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise RuntimeError("event sequence allocation failed")
+        sequence = row[0]
+        recorded = {
+            **event,
+            "sessionKey": claim.session_key,
+            "turnId": claim.turn_id,
+            "eventSeq": sequence,
+            "eventId": str(sequence),
+        }
+        await cur.execute(
+            """INSERT INTO agent_turn_event
+               (tenant_id, session_key, turn_id, event_seq, schema_version, payload)
+               VALUES (%s, %s, %s, %s, 1, %s)""",
+            (
+                claim.tenant_id,
+                claim.session_key,
+                claim.turn_id,
+                sequence,
+                Jsonb(recorded),
+            ),
+        )
+        return recorded
+
+    async def append_event(self, claim: TurnClaim, event: dict[str, Any]) -> dict[str, Any]:
+        """Persist an event under the current Turn fence before delivering it."""
+
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await self._lock_writable_claim(cur, claim)
+                return await self._append_event(cur, claim, event)
+
+    async def load_events_after(
+        self,
+        tenant_id: str,
+        session_key: str,
+        turn_id: str,
+        after_sequence: int,
+        *,
+        limit: int = 200,
+    ) -> tuple[dict[str, Any], ...]:
+        if not tenant_id or not session_key or not turn_id:
+            raise ValueError("event identity is incomplete")
+        if after_sequence < 0 or not 1 <= limit <= 1000:
+            raise ValueError("invalid event cursor or limit")
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT event_seq, schema_version, payload FROM agent_turn_event
+                       WHERE tenant_id = %s AND session_key = %s AND turn_id = %s
+                         AND event_seq > %s ORDER BY event_seq LIMIT %s""",
+                    (tenant_id, session_key, turn_id, after_sequence, limit),
+                )
+                rows = await cur.fetchall()
+        events: list[dict[str, Any]] = []
+        for sequence, schema_version, payload in rows:
+            if (
+                schema_version != _SCHEMA_VERSION
+                or not isinstance(payload, dict)
+                or payload.get("eventSeq") != sequence
+                or payload.get("turnId") != turn_id
+                or payload.get("sessionKey") != session_key
+                or not isinstance(payload.get("type"), str)
+            ):
+                raise ValueError("invalid stored turn event")
+            events.append(payload)
+        return tuple(events)
+
     async def append_tool_round_progress(
         self,
         claim: TurnClaim,
@@ -508,7 +609,8 @@ class PostgresTurnRepository:
         messages: Sequence[ChatMessage],
         *,
         expected_checkpoint_version: int | None = None,
-    ) -> None:
+        final_event: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         if claim.state != "started" or claim.fence_version is None:
             raise TurnConflict("turn claim is not writable")
         if result.turn_id != claim.turn_id or result.session_key != claim.session_key:
@@ -589,6 +691,11 @@ class PostgresTurnRepository:
                 )
                 if cur.rowcount != 1:
                     raise TurnConflict("turn changed during completion")
+                recorded_final = (
+                    await self._append_event(cur, claim, final_event)
+                    if final_event is not None
+                    else None
+                )
                 await cur.execute(
                     """UPDATE agent_session SET active_turn_id = NULL, next_message_seq = %s
                        WHERE tenant_id = %s AND session_key = %s
@@ -603,6 +710,7 @@ class PostgresTurnRepository:
                 )
                 if cur.rowcount != 1:
                     raise TurnConflict("session changed during completion")
+                return recorded_final
 
     async def load_recent_messages(
         self, tenant_id: str, session_key: str, *, max_turns: int = 20

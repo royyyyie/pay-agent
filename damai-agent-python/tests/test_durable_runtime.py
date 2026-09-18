@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import unittest
@@ -26,6 +27,7 @@ from damai_agent.postgres_checkpoint import PostgresCheckpointRepository
 from damai_agent.postgres_turn import PostgresTurnRepository, TurnClaim, TurnConflict
 from damai_agent.redis_control import RedisTurnCancellationStore
 from damai_agent.redis_lease import RedisSessionLeaseStore, SessionLease
+from damai_agent.redis_queue import RedisPendingTurnQueue
 from damai_agent.runtime.durable import DurableTurnService, LeaseLost, TurnCancelled
 from damai_agent.runtime.events import TurnEventEmitter
 from damai_agent.runtime.runner import ToolCallingRunner
@@ -34,7 +36,11 @@ from damai_agent.tools import AgentTool, ToolRegistry
 _MIGRATION_DIR = Path(__file__).resolve().parents[1] / "migrations"
 _MIGRATIONS = tuple(
     (_MIGRATION_DIR / name).read_text(encoding="utf-8")
-    for name in ("001_agent_active_checkpoint.sql", "002_agent_session_turn.sql")
+    for name in (
+        "001_agent_active_checkpoint.sql",
+        "002_agent_session_turn.sql",
+        "003_agent_turn_event.sql",
+    )
 )
 
 
@@ -196,6 +202,101 @@ class RunnerCheckpointBoundaryTest(unittest.IsolatedAsyncioTestCase):
         turns.complete_turn.assert_awaited_once()
         leases.release.assert_awaited_once()
 
+    async def test_durable_run_persists_events_before_forwarding(self) -> None:
+        provider = ScriptedProvider()
+        tool = CountingTool()
+        runner = ToolCallingRunner(provider, ToolRegistry([tool]))
+        turns = AsyncMock(spec=PostgresTurnRepository)
+        leases = AsyncMock(spec=RedisSessionLeaseStore)
+        context = make_context("session-event-unit")
+        leases.acquire.return_value = SessionLease("test-key", "test-owner", 30_000)
+        leases.renew.return_value = True
+        turns.begin_turn.return_value = TurnClaim(
+            context.tenant_id, context.session_key, context.turn_id, "started", 1
+        )
+        turns.load_recent_messages.return_value = ()
+        sequence = 0
+        stored_events: list[dict[str, Any]] = []
+
+        async def record_event(_: TurnClaim, event: dict[str, Any]) -> dict[str, Any]:
+            nonlocal sequence
+            sequence += 1
+            recorded = {**event, "eventSeq": sequence, "eventId": str(sequence)}
+            stored_events.append(recorded)
+            return recorded
+
+        async def finish_turn(
+            _: TurnClaim,
+            __: Any,
+            ___: Any,
+            *,
+            final_event: dict[str, Any],
+        ) -> dict[str, Any]:
+            return await record_event(turns.begin_turn.return_value, final_event)
+
+        turns.append_event.side_effect = record_event
+        turns.complete_turn.side_effect = finish_turn
+        delivered: list[dict[str, Any]] = []
+        service = DurableTurnService(runner, turns, leases)
+
+        result = await service.run("查票", context, "idem-1", delivered.append)
+
+        self.assertEqual(result.final_content, "找到节目")
+        self.assertEqual(tool.calls, 1)
+        self.assertEqual(delivered, stored_events)
+        self.assertEqual(delivered[-1]["type"], "turn.completed")
+        self.assertEqual(delivered[-1]["eventId"], str(len(delivered)))
+        turns.create_checkpoint.assert_awaited_once()
+        turns.update_checkpoint.assert_awaited_once()
+        turns.append_tool_round_progress.assert_awaited_once()
+
+    async def test_pending_head_blocks_later_request_before_lease(self) -> None:
+        provider = ScriptedProvider()
+        tool = CountingTool()
+        runner = ToolCallingRunner(provider, ToolRegistry([tool]))
+        turns = AsyncMock(spec=PostgresTurnRepository)
+        leases = AsyncMock(spec=RedisSessionLeaseStore)
+        pending = AsyncMock(spec=RedisPendingTurnQueue)
+        pending.head.return_value = "a" * 64
+        pending.enqueue.return_value = 2
+        service = DurableTurnService(runner, turns, leases, pending_queue=pending)
+        context = make_context("session-pending-unit")
+
+        self.assertEqual(await service.enqueue("查票", context, "idem-2"), 2)
+        with self.assertRaises(TurnConflict):
+            await service.run("查票", context, "idem-2")
+        leases.acquire.assert_not_awaited()
+        turns.begin_turn.assert_not_awaited()
+
+    async def test_background_lease_loss_cancels_slow_model(self) -> None:
+        class SlowProvider:
+            route_name = "test/slow"
+
+            async def complete(
+                self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]
+            ) -> ProviderResponse:
+                await asyncio.sleep(1)
+                return ProviderResponse(content="late")
+
+        tool = CountingTool()
+        runner = ToolCallingRunner(SlowProvider(), ToolRegistry([tool]))
+        turns = AsyncMock(spec=PostgresTurnRepository)
+        leases = AsyncMock(spec=RedisSessionLeaseStore)
+        context = make_context("session-heartbeat-unit")
+        leases.acquire.return_value = SessionLease("test-key", "test-owner", 100)
+        leases.renew.side_effect = [True, False]
+        turns.begin_turn.return_value = TurnClaim(
+            context.tenant_id, context.session_key, context.turn_id, "started", 1
+        )
+        turns.load_recent_messages.return_value = ()
+        service = DurableTurnService(runner, turns, leases, lease_ttl_ms=100)
+
+        with self.assertRaises(LeaseLost):
+            await service.run("查票", context, "idem-1")
+
+        turns.complete_turn.assert_not_awaited()
+        leases.release.assert_awaited_once()
+
 
 @unittest.skipUnless(
     os.environ.get("DAMAI_TEST_POSTGRES_DSN") and os.environ.get("DAMAI_TEST_REDIS_HOST"),
@@ -238,6 +339,14 @@ class DurableRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.tool.calls, 1)
         self.assertEqual(self.provider.calls, 2)
         self.assertEqual(events[-1]["type"], "turn.completed")
+        saved_events = await self.turns.load_events_after(
+            context.tenant_id, self.session_key, context.turn_id, 0
+        )
+        self.assertEqual(saved_events, tuple(events))
+        self.assertEqual(
+            [event["eventSeq"] for event in saved_events],
+            list(range(1, len(saved_events) + 1)),
+        )
         self.assertIsNone(await self.checkpoints.get_active(context.tenant_id, self.session_key))
         self.assertEqual(
             await self.turns.load_recent_messages(context.tenant_id, self.session_key),

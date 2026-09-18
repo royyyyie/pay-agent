@@ -24,7 +24,11 @@ from damai_agent.postgres_turn import (
 _MIGRATION_DIR = Path(__file__).resolve().parents[1] / "migrations"
 _MIGRATIONS = tuple(
     (_MIGRATION_DIR / name).read_text(encoding="utf-8")
-    for name in ("001_agent_active_checkpoint.sql", "002_agent_session_turn.sql")
+    for name in (
+        "001_agent_active_checkpoint.sql",
+        "002_agent_session_turn.sql",
+        "003_agent_turn_event.sql",
+    )
 )
 
 
@@ -175,6 +179,39 @@ class PostgresTurnIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             (await self.repository.get_active_turn("tenant-1", self.session_key)).fence_version,
             old.fence_version,
+        )
+
+    async def test_event_replay_is_ordered_and_old_fence_cannot_append(self) -> None:
+        old = await self.repository.begin_turn(
+            "tenant-1", self.session_key, "turn-1", "idem-1", self.fingerprint
+        )
+        first = await self.repository.append_event(old, {"type": "turn.started"})
+        second = await self.repository.append_event(old, {"type": "model.completed"})
+        self.assertEqual([first["eventSeq"], second["eventSeq"]], [1, 2])
+        self.assertEqual(
+            await self.repository.load_events_after("tenant-1", self.session_key, "turn-1", 1),
+            (second,),
+        )
+        candidate = await self.repository.get_active_turn("tenant-1", self.session_key)
+        assert candidate is not None
+        current = await self.repository.take_over_turn(candidate)
+        with self.assertRaises(TurnConflict):
+            await self.repository.append_event(old, {"type": "stale"})
+        recovered = await self.repository.append_event(current, {"type": "turn.recovered"})
+        self.assertEqual(recovered["eventSeq"], 3)
+        messages = make_messages()
+        result = make_result(self.session_key, "turn-1", messages)
+        completed = await self.repository.complete_turn(
+            current,
+            result,
+            messages,
+            final_event={"type": "turn.completed"},
+        )
+        assert completed is not None
+        self.assertEqual(completed["eventSeq"], 4)
+        self.assertEqual(
+            await self.repository.load_events_after("tenant-1", self.session_key, "turn-1", 0),
+            (first, second, recovered, completed),
         )
 
     async def test_checkpoint_clear_and_turn_commit_are_atomic(self) -> None:

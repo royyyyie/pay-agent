@@ -37,6 +37,11 @@ _ENV_FIELDS = {
     "tool_timeout_seconds": "DAMAI_AGENT_TOOL_TIMEOUT_SECONDS",
     "max_context_chars": "DAMAI_AGENT_MAX_CONTEXT_CHARS",
     "max_tool_result_chars": "DAMAI_AGENT_MAX_TOOL_RESULT_CHARS",
+    "runtime_backend": "DAMAI_AGENT_RUNTIME_BACKEND",
+    "postgres_dsn": "DAMAI_AGENT_POSTGRES_DSN",
+    "redis_url": "DAMAI_AGENT_REDIS_URL",
+    "delegation_hmac_key": "DAMAI_AGENT_DELEGATION_HMAC_KEY",
+    "event_poll_seconds": "DAMAI_AGENT_EVENT_POLL_SECONDS",
 }
 
 _WEAK_SECRETS = {"", "change-me", "change-me-local", "changeme", "secret"}
@@ -89,6 +94,11 @@ class Settings(BaseModel):
     tool_timeout_seconds: float = Field(default=8.0, gt=0, le=120)
     max_context_chars: int = Field(default=80000, ge=512, le=1000000)
     max_tool_result_chars: int = Field(default=16000, ge=256, le=1000000)
+    runtime_backend: Literal["memory", "durable"] = "memory"
+    postgres_dsn: str = Field(default="", repr=False)
+    redis_url: str = Field(default="", repr=False)
+    delegation_hmac_key: str = Field(default="", repr=False)
+    event_poll_seconds: float = Field(default=0.5, ge=0.1, le=5.0)
 
     @field_validator("environment", mode="before")
     @classmethod
@@ -131,6 +141,14 @@ class Settings(BaseModel):
                 "DAMAI_JAVA_TOOL_API_KEY",
             )
             self._require_strong_secret(self.llm_api_key, "DAMAI_LLM_API_KEY", minimum=16)
+        if self.runtime_backend == "durable":
+            postgres_url = urlparse(self.postgres_dsn)
+            redis_url = urlparse(self.redis_url)
+            if postgres_url.scheme not in {"postgres", "postgresql"} or not postgres_url.hostname:
+                raise ValueError("durable runtime requires DAMAI_AGENT_POSTGRES_DSN")
+            if redis_url.scheme not in {"redis", "rediss"} or not redis_url.hostname:
+                raise ValueError("durable runtime requires DAMAI_AGENT_REDIS_URL")
+            self._require_strong_secret(self.delegation_hmac_key, "DAMAI_AGENT_DELEGATION_HMAC_KEY")
         return self
 
     @staticmethod

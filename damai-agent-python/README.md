@@ -107,10 +107,11 @@ uv run --frozen pytest --cov=damai_agent
 - [阶段 0 真实链路一键验收](docs/phase-0-live-acceptance.md)
 - [阶段 1 检查清单](docs/phase-1-checklist.md)
 - [阶段 2 检查清单](docs/phase-2-checklist.md)
+- [阶段 2 持久化入口操作说明](docs/phase-2-operations.md)
 - [Architecture Decision Records](docs/adr/README.md)
 
 阶段 0 将 Python 运行基线提升到 3.11，并建立配置 Profile、生产启动保护、OpenAPI 单一来源、Tool Schema 生成与 CI 质量门禁。
 
 阶段 1 已完成运行契约、Tool 输入/输出边界、Provider 真实流式、受控只读 Tool 并发、基础 Hook 链和字符级上下文治理。审计当前仅为进程日志或由部署方提供的 Sink，尚无持久化、不可篡改和跨服务关联保证；模型 Token 级预算与真实链路故障验收仍在后续批次。
 
-阶段 2 已建立 Checkpoint 安全契约，并提供可选的 PostgreSQL Checkpoint/Session/Turn/Message Repository 与 Redis Session 租约原语。迁移脚本位于 `migrations/001_agent_active_checkpoint.sql` 和 `migrations/002_agent_session_turn.sql`，需按顺序由有权限的迁移账号执行；分别通过 `postgres`、`redis` 可选依赖安装。独立的 `DurableTurnService` 将 Redis 租约、数据库 Turn 与 Runner 的工具批次 Checkpoint 连接起来，仅允许只读风险上限并需显式调用；可对匹配原请求的中断 Turn 执行不重放工具的终结恢复，并通过可选 Redis 取消标记在安全点停止。默认 Chat API 仍使用进程内会话，不会自动恢复。Turn 完成提交和通过 `PostgresTurnRepository` 进行的 Checkpoint 写入有数据库 fencing，一批 Tool 的消息与 Checkpoint 清理可原子提交；外部 Tool 副作用不受该代次保护。恢复不会自动续写模型答案，正在执行的外部调用无法被强制撤销，不能据此认定生产级多副本严格串行能力。Checkpoint 和历史消息可能包含用户输入及 Tool 参数/结果，生产使用前须完成数据库账号隔离、传输与静态加密、保留期和备份设计。详见[阶段 2 检查清单](docs/phase-2-checklist.md)。
+阶段 2 新增 PostgreSQL Session/Turn/Message/Checkpoint/Event 存储、Redis 租约/取消/有界排队，以及签名委托保护的 `/api/v2/turns` 和可用 `Last-Event-ID` 续传的 SSE。迁移脚本 `001`、`002`、`003` 须按序执行；分别通过 `postgres`、`redis` 可选依赖安装。设置 `DAMAI_AGENT_RUNTIME_BACKEND=durable` 后，旧匿名 `/api/v1/chat` 禁用，持久化入口只允许只读 Tool；默认本地配置仍用内存模式。中断恢复会保留已确认结果、把未知结果明确标记为未知并终结 Turn，不会盲目重放工具。外部请求的副作用不受数据库 fencing 保护，生产准入仍以真实 Java 链路、进程中断和多副本故障验收为前提。生产须配置独立账号、TLS、加密、保留期、备份与连接容量。详见[阶段 2 检查清单](docs/phase-2-checklist.md)和[操作说明](docs/phase-2-operations.md)。
