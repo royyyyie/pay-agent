@@ -10,12 +10,13 @@ from contextlib import asynccontextmanager, suppress
 from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
 from .delegation import DelegationError, verify_delegation
 from .models import AgentRunResult, TicketTurnContext
+from .observability import RuntimeMetrics
 from .provider_routing import ResilientProvider
 from .providers import DemoProvider, ModelProvider, OpenAICompatibleProvider, ProviderError
 from .runner import AgentRunner
@@ -38,6 +39,7 @@ class ChatResponse(BaseModel):
     stopReason: str
     errorCode: Optional[str]
     modelRoute: str
+    costMicroUsd: Optional[int] = None
 
 
 class DurableChatRequest(BaseModel):
@@ -61,10 +63,11 @@ def _chat_response(result: AgentRunResult) -> ChatResponse:
         stopReason=result.stop_reason,
         errorCode=result.error_code.value if result.error_code else None,
         modelRoute=result.model_route,
+        costMicroUsd=result.cost_micro_usd,
     )
 
 
-def build_runner(settings: Settings) -> AgentRunner:
+def build_runner(settings: Settings, metrics: RuntimeMetrics | None = None) -> AgentRunner:
     provider: ModelProvider
     if settings.provider == "openai_compatible":
         primary = OpenAICompatibleProvider(
@@ -113,12 +116,17 @@ def build_runner(settings: Settings) -> AgentRunner:
         tool_timeout_seconds=settings.tool_timeout_seconds,
         max_context_chars=settings.max_context_chars,
         max_tool_result_chars=settings.max_tool_result_chars,
+        max_turn_tokens=settings.max_turn_tokens,
+        max_turn_cost_micro_usd=settings.max_turn_cost_micro_usd,
+        pricing_catalog=settings.llm_pricing,
+        metrics=metrics,
     )
 
 
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
-    runner = build_runner(resolved_settings)
+    metrics = RuntimeMetrics()
+    runner = build_runner(resolved_settings, metrics)
     durable_service = None
     durable_turns = None
     durable_redis = None
@@ -162,6 +170,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.runner = runner
+    app.state.metrics = metrics
     app.state.settings = resolved_settings
     app.state.durable_service = durable_service
     app.state.durable_turns = durable_turns
@@ -216,6 +225,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "provider": resolved_settings.provider,
             "tools": runner.tool_names,
         }
+
+    @app.get("/metrics", dependencies=[Depends(require_internal_api_key)])
+    async def prometheus_metrics() -> PlainTextResponse:
+        return PlainTextResponse(
+            metrics.render_prometheus(),
+            media_type="text/plain; version=0.0.4",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/ready")
     async def ready() -> Dict[str, str]:

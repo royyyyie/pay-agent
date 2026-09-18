@@ -118,3 +118,5 @@ uv run --frozen pytest --cov=damai_agent
 阶段 2 新增 PostgreSQL Session/Turn/Message/Checkpoint/Event 存储、Redis 租约/取消/有界排队，以及签名委托保护的 `/api/v2/turns` 和可用 `Last-Event-ID` 续传的 SSE。迁移脚本 `001`、`002`、`003` 须按序执行；分别通过 `postgres`、`redis` 可选依赖安装。设置 `DAMAI_AGENT_RUNTIME_BACKEND=durable` 后，旧匿名 `/api/v1/chat` 禁用，持久化入口只允许只读 Tool；默认本地配置仍用内存模式。中断恢复会保留已确认结果、把未知结果明确标记为未知并终结 Turn，不会盲目重放工具。外部请求的副作用不受数据库 fencing 保护，生产准入仍以真实 Java 链路、进程中断和多副本故障验收为前提。生产须配置独立账号、TLS、加密、保留期、备份与连接容量。详见[阶段 2 检查清单](docs/phase-2-checklist.md)和[操作说明](docs/phase-2-operations.md)。
 
 阶段 3 首批加入可选的模型暂时性故障重试与备用路由，默认关闭。流式输出一旦开始就不会重试或切换，以免客户端收到拼接的两次模型回复；详见[阶段 3 检查清单](docs/phase-3-checklist.md)。
+
+阶段 3 第二批增加可选的单 Turn Token/估算费用安全点预算，以及经内部密钥保护的 `GET /metrics` 实例级指标。费用以整数微美元返回，按版本化定价与模型上报 Usage 估算；租户级共享额度、供应商账单对账和完整 OTel 链路仍待后续实现。

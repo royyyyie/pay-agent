@@ -6,6 +6,7 @@ import hashlib
 import uuid
 from typing import List, Optional, Sequence
 
+from ..config import ModelPrice
 from ..models import (
     AgentRunResult,
     AgentRunSpec,
@@ -14,6 +15,7 @@ from ..models import (
     ToolRisk,
     ToolSpec,
 )
+from ..observability import RuntimeMetrics
 from ..providers import ModelProvider
 from ..session import InMemorySessionStore
 from ..tools import ToolRegistry
@@ -122,6 +124,7 @@ class TicketAgentLoop:
                 "answer": result.final_content,
                 "toolCalls": list(result.tools_used),
                 "usage": result.usage.to_dict(),
+                "costMicroUsd": result.cost_micro_usd,
                 "stopReason": result.stop_reason,
                 "errorCode": result.error_code.value if result.error_code else None,
                 "modelRoute": result.model_route,
@@ -167,6 +170,10 @@ class AgentRunner(TicketAgentLoop):
         hook_factories: Sequence[HookFactory] = (),
         max_context_chars: int = 80000,
         max_tool_result_chars: int = 16000,
+        max_turn_tokens: int = 0,
+        max_turn_cost_micro_usd: int = 0,
+        pricing_catalog: dict[str, ModelPrice] | None = None,
+        metrics: RuntimeMetrics | None = None,
     ) -> None:
         super().__init__(
             runner=ToolCallingRunner(
@@ -178,6 +185,10 @@ class AgentRunner(TicketAgentLoop):
                 hook_factories,
                 max_context_chars,
                 max_tool_result_chars,
+                max_turn_tokens,
+                max_turn_cost_micro_usd,
+                pricing_catalog,
+                metrics,
             ),
             sessions=sessions,
             max_tool_rounds=max_tool_rounds,
