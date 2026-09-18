@@ -20,12 +20,12 @@
 
 ## 后续批次
 
-- [x] PostgreSQL 活动 Checkpoint Repository、迁移和同一租户/Session 原子版本比较写入；CI 已配置 PostgreSQL 真实并发测试，待 GitHub 运行确认
-- [ ] PostgreSQL Session/Message/Turn Repository、Turn 与 Checkpoint 原子提交
+- [x] PostgreSQL 活动 Checkpoint Repository、迁移和同一租户/Session 原子版本比较写入；GitHub PostgreSQL 集成测试通过
+- [x] PostgreSQL Session/Message/Turn Repository、迁移和 Turn 完成/消息追加/Checkpoint 清理的单事务提交；新增测试待 CI 运行确认
 - [x] Redis 带 owner token 的 Session 租约锁、条件续租与条件释放；云端 Redis 验证过期旧 owner 不会释放新租约
 - [ ] Redis Pending Queue、取消标记和租约失效后的运行时中止
 - [ ] Runner 在工具执行前、每个结果完成后写 Checkpoint；恢复协议并保证任何未知写操作不盲目重放
-- [ ] Turn 幂等键与重复请求返回同一结果；冲突请求默认拒绝
+- [x] Repository 层 Turn 幂等键与重复请求返回同一结果；冲突请求默认拒绝，运行时/API 接入待办
 - [ ] 断线 SSE 事件持久化与续传、委托身份和请求级 Scope
 - [ ] PostgreSQL/Redis 故障、进程中断、多副本竞争和真实 Java Tool 注入验收
 
@@ -36,7 +36,7 @@
 - `PostgresCheckpointRepository` 使用独立短事务，不在模型或 Tool 网络调用期间持有数据库连接；数据库连接池与运行时接入尚未实现
 - `postgres` 为可选依赖；仅安装依赖不会把现有运行时切换到 PostgreSQL。生产接入前必须完成受控数据库账号、传输/静态加密、备份、保留期/清理与连接池容量设计
 - CI 的 PostgreSQL 只用于测试；它不替代云端服务。当前批次仍没有 Session/Message/Turn 持久化，也没有崩溃恢复的端到端证据
-- 本地检查：69 项通过，4 项真实 PostgreSQL 集成测试因没有测试 DSN 被跳过；Ruff、Mypy strict、OpenAPI/生成文件/兼容性检查通过。GitHub CI 结果尚待确认
+- 本地检查：69 项通过，4 项真实 PostgreSQL 集成测试因没有测试 DSN 被跳过；Ruff、Mypy strict、OpenAPI/生成文件/兼容性检查通过。GitHub [质量与 Java 契约检查](https://github.com/royyyyie/pay-agent/actions/runs/35343252226)均通过
 
 ## 第三批：Redis Session 租约基础
 
@@ -47,6 +47,16 @@
 - CI 已配置独立 Redis 服务，GitHub 运行待确认。该租约尚未接入 Agent Loop；单 Redis 租约不能代替数据库 fencing token，租约失效期间运行中的旧进程仍可能继续执行，故不能据此宣称多副本严格串行
 - Agent 工作流同时响应 `codex/phase-*` 分支推送，可在尚未创建 PR 时运行 PostgreSQL/Redis 验收
 - 全套本地测试加载现有云端 Redis 配置后为 74 项通过、4 项 PostgreSQL 测试因缺少测试 DSN 跳过，覆盖率 85.54%；Ruff、Mypy strict、OpenAPI 与契约兼容检查通过
+
+## 第四批：PostgreSQL Session/Turn 原子提交基础
+
+- `migrations/002_agent_session_turn.sql` 建立租户隔离的 Session、Turn 与 Message 表；每个 Session 同时只能有一个活动 Turn，完成后保留有序消息
+- `PostgresTurnRepository` 以幂等键和请求指纹区分重复请求与冲突请求：进行中的重复请求不取得写入代次，已完成的重复请求返回已存结果
+- Session 行锁串行化开始/接管/完成，递增 `fence_version`；恢复持有者接管同一 Turn 后，旧代次不能完成 Turn
+- Turn 完成、消息追加、活动 Checkpoint 清理在同一 PostgreSQL 事务中；Checkpoint 版本错误会整体回滚，不产生半完成消息
+- 最近消息按完整 Turn 选取，不从 Tool 调用与结果之间截断；读取时校验存储格式版本
+- 该层还未接入 Agent Loop/API，Redis 租约持有状态尚未由数据库方法验证，Checkpoint 的独立更新也尚未携带 fencing 代次；因此仍不能宣布跨副本严格串行或安全自动恢复
+- 新增的真实 PostgreSQL 并发、幂等、接管和原子回滚测试待 GitHub CI 验证；本机没有 PostgreSQL 测试库
 
 ## 阶段退出标准
 
