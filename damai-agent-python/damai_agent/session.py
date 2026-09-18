@@ -23,8 +23,19 @@ class InMemorySessionStore:
     async def append(self, session_key: str, messages: List[ChatMessage]) -> None:
         history = self._messages[session_key]
         history.extend(messages)
-        if len(history) > self._max_messages:
-            del history[: len(history) - self._max_messages]
+        while len(history) > self._max_messages:
+            next_user = next(
+                (
+                    index
+                    for index, message in enumerate(history[1:], start=1)
+                    if message.role == "user"
+                ),
+                None,
+            )
+            if next_user is None:
+                # Keep one whole turn even if it exceeds the soft message-count limit.
+                break
+            del history[:next_user]
 
     @asynccontextmanager
     async def turn_lock(self, session_key: str) -> AsyncIterator[None]:

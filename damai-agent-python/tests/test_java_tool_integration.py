@@ -6,7 +6,8 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict
 
-from damai_agent.models import ToolContext
+from damai_agent.generated.tool_models import RESPONSE_MODELS
+from damai_agent.models import AgentErrorCode, ToolContext
 from damai_agent.providers import DemoProvider
 from damai_agent.runner import AgentRunner
 from damai_agent.session import InMemorySessionStore
@@ -16,6 +17,7 @@ from damai_agent.tools import JavaToolClient, ToolRegistry, build_java_tools
 class StubJavaHandler(BaseHTTPRequestHandler):
     received: Dict[str, Any] = {}
     echo_traceparent = True
+    response_mode = "valid"
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -51,6 +53,10 @@ class StubJavaHandler(BaseHTTPRequestHandler):
             "retryable": False,
             "freshnessAt": "2026-09-03T08:00:00Z",
         }
+        if type(self).response_mode == "missing-envelope-field":
+            response.pop("freshnessAt")
+        elif type(self).response_mode == "mismatched-request-id":
+            response["requestId"] = "another-call"
         encoded = json.dumps(response, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -68,6 +74,7 @@ class JavaToolIntegrationTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         StubJavaHandler.received = {}
         StubJavaHandler.echo_traceparent = True
+        StubJavaHandler.response_mode = "valid"
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), StubJavaHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -129,6 +136,43 @@ class JavaToolIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.code, 502)
         self.assertIn("Trace", result.message)
+
+    async def test_malformed_success_response_is_rejected_by_generated_model(self) -> None:
+        StubJavaHandler.response_mode = "missing-envelope-field"
+
+        result = await self._post_validated_search()
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.code, 502)
+        self.assertEqual(result.error_code, AgentErrorCode.TOOL_RESULT_INVALID)
+
+    async def test_mismatched_tool_call_id_is_rejected(self) -> None:
+        StubJavaHandler.response_mode = "mismatched-request-id"
+
+        result = await self._post_validated_search()
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.code, 502)
+        self.assertEqual(result.error_code, AgentErrorCode.TOOL_RESULT_INVALID)
+
+    async def _post_validated_search(self):
+        host, port = self.server.server_address
+        client = JavaToolClient(
+            base_url=f"http://{host}:{port}",
+            api_key="integration-key",
+            timeout_seconds=2,
+        )
+        return await client.post(
+            "/internal/agent/v1/tools/programs/search",
+            {"keyword": "周杰伦"},
+            ToolContext(
+                session_key="session-integration",
+                turn_id="turn-integration",
+                tool_call_id="call-integration",
+                trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
+            ),
+            RESPONSE_MODELS["search_programs"],
+        )
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+from contextlib import suppress
 from typing import Any, AsyncIterator, Dict, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
@@ -29,6 +30,10 @@ class ChatResponse(BaseModel):
     traceId: str
     answer: str
     toolCalls: list[str]
+    usage: Dict[str, int]
+    stopReason: str
+    errorCode: Optional[str]
+    modelRoute: str
 
 
 def build_runner(settings: Settings) -> AgentRunner:
@@ -39,6 +44,7 @@ def build_runner(settings: Settings) -> AgentRunner:
             api_key=settings.llm_api_key,
             model=settings.llm_model,
             timeout_seconds=settings.llm_timeout_seconds,
+            stream_idle_timeout_seconds=settings.stream_idle_timeout_seconds,
         )
     else:
         provider = DemoProvider()
@@ -54,7 +60,10 @@ def build_runner(settings: Settings) -> AgentRunner:
         registry=registry,
         sessions=InMemorySessionStore(),
         max_tool_rounds=settings.max_tool_rounds,
+        max_concurrent_read_tools=settings.max_concurrent_read_tools,
         tool_timeout_seconds=settings.tool_timeout_seconds,
+        max_context_chars=settings.max_context_chars,
+        max_tool_result_chars=settings.max_tool_result_chars,
     )
 
 
@@ -99,13 +108,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         try:
             result = await runner.run(request.message, request.sessionKey)
         except ProviderError as error:
-            raise HTTPException(status_code=502, detail=str(error)) from error
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": "PROVIDER_UNAVAILABLE",
+                    "message": "模型服务暂时不可用，请稍后重试",
+                },
+            ) from error
         return ChatResponse(
             sessionKey=result.session_key,
             turnId=result.turn_id,
             traceId=result.trace_id,
             answer=result.answer,
             toolCalls=result.tool_calls,
+            usage=result.usage.to_dict(),
+            stopReason=result.stop_reason,
+            errorCode=result.error_code.value if result.error_code else None,
+            modelRoute=result.model_route,
         )
 
     @app.post(
@@ -122,15 +141,42 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             async def execute() -> None:
                 try:
                     await runner.run(request.message, request.sessionKey, sink)
-                except Exception as error:
-                    await queue.put({"type": "turn.failed", "message": str(error)[:500]})
+                except ProviderError:
+                    await queue.put(
+                        {
+                            "type": "turn.failed",
+                            "code": "PROVIDER_UNAVAILABLE",
+                            "message": "模型服务暂时不可用，请稍后重试",
+                        }
+                    )
+                except Exception:
+                    await queue.put(
+                        {
+                            "type": "turn.failed",
+                            "code": "INTERNAL_ERROR",
+                            "message": "Agent 执行失败，请稍后重试",
+                        }
+                    )
                 finally:
                     await queue.put(None)
 
             task = asyncio.create_task(execute())
             try:
                 while True:
-                    event = await queue.get()
+                    try:
+                        event = await asyncio.wait_for(
+                            queue.get(),
+                            timeout=resolved_settings.stream_idle_timeout_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        timeout_event = {
+                            "type": "turn.failed",
+                            "code": "STREAM_IDLE_TIMEOUT",
+                            "message": "Agent 流式响应超时，请稍后重试",
+                        }
+                        data = json.dumps(timeout_event, ensure_ascii=False)
+                        yield f"event: turn.failed\ndata: {data}\n\n"
+                        break
                     if event is None:
                         break
                     event_name = event.get("type", "message")
@@ -139,6 +185,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             finally:
                 if not task.done():
                     task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 

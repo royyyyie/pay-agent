@@ -1,15 +1,15 @@
 # Damai Agent 企业级开发设计与实施计划
 
-> 文档版本：1.1<br>
+> 文档版本：1.2<br>
 > 基线日期：2026-09-06<br>
-> 最近更新：2026-09-15<br>
+> 最近更新：2026-09-16<br>
 > 目标项目：`damai-agent-python` 0.1.0<br>
 > 参考实现：本机 `nanobot-ai` 0.3.0 源码<br>
 > 文档状态：开发基线，后续架构变更必须通过 ADR 更新
 
 ## 1. 结论
 
-`damai-agent-python` 已完成第一阶段最小闭环和阶段 0 本地工程基线：FastAPI 接入、模型—工具—模型循环、三项 Java 只读工具、进程内会话、普通 JSON/SSE 接口和 W3C Trace 上下文。现有 18 项 Python 测试与 6 项 Java 契约/Trace 测试全部通过，可以作为后续演进的可运行基线。
+`damai-agent-python` 已完成阶段 0 工程基线，并进入阶段 1：FastAPI 接入、三项 Java 只读工具、进程内会话、JSON/SSE、W3C Trace、运行契约、Loop/Runner 分层、Tool 输入/输出校验、Provider 真实流式、受控只读并发、基础 Hook 链和字符级上下文治理已落地。现有 Python 与 Java 契约/Trace 测试可作为后续演进的可运行基线；实时结果见阶段 1 清单和 CI。
 
 下一阶段不应直接复制 `nanobot`，也不应急于增加下单、支付或大量通用工具。建议吸收 `nanobot` 已验证的运行时分层思想，构建“领域受限、默认拒绝、可恢复、可观测”的购票 Agent：
 
@@ -25,31 +25,30 @@
 
 | 能力 | 当前实现 | 评价 |
 |---|---|---|
-| HTTP 服务 | `damai_agent/api.py` 提供健康检查、JSON Chat 和 SSE | 可运行，但没有认证、限流和生命周期治理 |
-| Agent 循环 | `damai_agent/runner.py` 最多执行 6 轮模型/工具迭代 | 最小闭环完整，尚无 Checkpoint、取消和上下文预算 |
-| Provider | Demo 与 OpenAI-compatible Chat Completions | 便于联调，缺少流式、重试、路由、降级和用量统计 |
-| Tool | 3 个 Java 只读工具与统一 `ToolResult` | Java 边界清晰，但 Python 端未执行 JSON Schema 校验 |
-| Session | `InMemorySessionStore`，同 Session 串行 | 适合单实例测试，不可跨进程恢复，锁和历史没有 TTL |
-| 契约 | `contracts/agent-tools-v1.openapi.yaml` | 已有良好起点，但 Python ToolSpec 仍为手写副本 |
+| HTTP 服务 | `damai_agent/api.py` 提供健康检查、JSON Chat、SSE 和生产内部密钥鉴权 | 可运行，但没有最终用户委托身份、限流和生命周期治理 |
+| Agent 循环 | `TicketAgentLoop` 编排生命周期，`ToolCallingRunner` 执行模型/工具循环 | 职责已拆分，具备字符级上下文预算；Checkpoint 契约已建但尚未接入运行时，仍无取消和 Token 级预算 |
+| Provider | Demo 与 OpenAI-compatible Chat Completions，支持文本/Tool 分片、结束原因、路由和 Usage | 真实流式已落地，仍缺少重试、降级和费用治理 |
+| Tool | 3 个 Java 只读工具、请求/响应模型校验、Scope/风险/次数策略、受控只读并发与独占屏障 | 输入输出边界默认拒绝；同步 Java 客户端的物理取消和跨进程独占仍待落地 |
+| Hook | 每轮独立的 Policy、Trace、Audit、Usage 链，可注入扩展 Hook 与审计 Sink | 默认仅输出脱敏元数据日志；持久、不可篡改审计仍待建设 |
+| Session | `InMemorySessionStore`，同 Session 串行，按完整轮次淘汰旧历史 | 适合单实例测试，不可跨进程恢复，锁和历史没有 TTL |
+| 契约 | `contracts/agent-tools-v1.openapi.yaml` 生成 Python ToolSpec、请求/响应 Pydantic 模型与执行元数据 | Python 契约已单一来源，并由 CI 检查漂移与兼容性 |
 | Java 网关 | API Key、统一响应、必填 Tool/Turn/Session Header、W3C `traceparent` | 具备内部调用基线，仍缺少租户和用户委托身份 |
-| 测试 | Python 单元/集成/契约测试与 Java 契约/Trace 测试 | Python 18 项、Java 6 项通过；仍需持续提升核心覆盖率和故障测试 |
+| 测试 | Python 单元/集成/契约测试与 Java 契约/Trace 测试 | 运行时 Hook 的拒绝、脱敏和故障隔离已有单测；仍需真实链路故障注入 |
 
 ### 2.2 主要缺口
 
 P0 阻断项：
 
-- Python ToolRegistry 只查找工具并设置超时，没有按 JSON Schema 拒绝缺失字段、错误类型或未知字段。
 - 对外 Chat API 没有身份认证、租户隔离、请求级 Tool Scope、限流和请求体审计。
 - Session、Turn 和运行中 Tool Call 都只存在于内存，进程退出后无法恢复。
-- SSE 只是生命周期事件流，模型调用本身不流式，无法提供稳定的首 Token 体验。
-- Provider 没有分类重试、`Retry-After`、总超时、空响应恢复、模型 fallback 和熔断。
+- Provider 已采集结束原因、路由与 Token Usage，但没有分类重试、`Retry-After`、空响应恢复、fallback 和熔断。
 - Java 内部接口默认密钥为 `change-me-local`，没有启动时拒绝弱密钥，也没有 mTLS 或短时委托令牌。
 - Java DTO 仍为手写实现；共享契约样例已进入双端测试，但后续仍可评估由 OpenAPI 生成 Java 契约类型。
-- 没有结构化日志、Metrics、OpenTelemetry Trace、Token/费用记录和不可抵赖审计。
+- 没有 Metrics、OpenTelemetry Span、费用记录和不可抵赖审计。
 
 P1 能力缺口：
 
-- 没有 AgentLoop 外层状态机、Pending Injection、取消、Checkpoint、Hook 和 Context Governor。
+- 没有 AgentLoop 外层状态机、Pending Injection、取消、持久化 Checkpoint 和模型专用 Token Governor；基础 Hook、字符级 Context Governor 与 Checkpoint 安全契约已落地，但尚无生产级投递保障。
 - 没有 Redis/PostgreSQL 会话持久化、分布式 Session 锁和幂等 Turn。
 - 没有 RAG、来源引用、长期偏好、历史压缩和离线 Agent Eval。
 - 没有监控任务、通知去重、购买意向、一次性确认授权和订单恢复协议。
