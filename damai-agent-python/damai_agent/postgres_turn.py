@@ -11,7 +11,10 @@ import psycopg
 from psycopg.types.json import Jsonb
 from pydantic import TypeAdapter, ValidationError
 
+from .checkpoint import AgentCheckpoint, CheckpointConflict, validate_checkpoint_update
 from .models import AgentRunResult, ChatMessage
+from .postgres_checkpoint import PostgresCheckpointRepository
+from .postgres_checkpoint import _encode as _checkpoint_payload
 
 _RESULT_ADAPTER = TypeAdapter(AgentRunResult)
 _MESSAGE_ADAPTER = TypeAdapter(ChatMessage)
@@ -213,6 +216,237 @@ class PostgresTurnRepository:
                     claim.fence_version + 1,
                 )
 
+    @staticmethod
+    async def _lock_writable_claim(cur: psycopg.AsyncCursor[Any], claim: TurnClaim) -> None:
+        if claim.state != "started" or claim.fence_version is None:
+            raise TurnConflict("turn claim is not writable")
+        await cur.execute(
+            """SELECT fence_version, active_turn_id FROM agent_session
+               WHERE tenant_id = %s AND session_key = %s FOR UPDATE""",
+            (claim.tenant_id, claim.session_key),
+        )
+        session = await cur.fetchone()
+        if session != (claim.fence_version, claim.turn_id):
+            raise TurnConflict("stale turn checkpoint write")
+        await cur.execute(
+            """SELECT status, fence_version FROM agent_turn
+               WHERE tenant_id = %s AND session_key = %s AND turn_id = %s FOR UPDATE""",
+            (claim.tenant_id, claim.session_key, claim.turn_id),
+        )
+        turn = await cur.fetchone()
+        if turn != ("running", claim.fence_version):
+            raise TurnConflict("stale turn checkpoint write")
+
+    async def create_checkpoint(self, claim: TurnClaim, checkpoint: AgentCheckpoint) -> None:
+        if (
+            checkpoint.tenant_id != claim.tenant_id
+            or checkpoint.session_key != claim.session_key
+            or checkpoint.turn_id != claim.turn_id
+            or checkpoint.version != 0
+        ):
+            raise CheckpointConflict("checkpoint does not match active turn")
+        payload = _checkpoint_payload(checkpoint)
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await self._lock_writable_claim(cur, claim)
+                await cur.execute(
+                    """INSERT INTO agent_active_checkpoint
+                       (tenant_id, session_key, turn_id, version, schema_version,
+                        payload, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (tenant_id, session_key) DO NOTHING""",
+                    (
+                        checkpoint.tenant_id,
+                        checkpoint.session_key,
+                        checkpoint.turn_id,
+                        checkpoint.version,
+                        1,
+                        Jsonb(payload),
+                        checkpoint.updated_at,
+                    ),
+                )
+                if cur.rowcount != 1:
+                    raise CheckpointConflict("active checkpoint already exists")
+
+    async def update_checkpoint(
+        self, claim: TurnClaim, checkpoint: AgentCheckpoint, expected_version: int
+    ) -> None:
+        if (
+            checkpoint.tenant_id != claim.tenant_id
+            or checkpoint.session_key != claim.session_key
+            or checkpoint.turn_id != claim.turn_id
+        ):
+            raise CheckpointConflict("checkpoint does not match active turn")
+        payload = _checkpoint_payload(checkpoint)
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await self._lock_writable_claim(cur, claim)
+                await cur.execute(
+                    """SELECT turn_id, version, schema_version, payload
+                       FROM agent_active_checkpoint
+                       WHERE tenant_id = %s AND session_key = %s FOR UPDATE""",
+                    (claim.tenant_id, claim.session_key),
+                )
+                row = await cur.fetchone()
+                current = (
+                    PostgresCheckpointRepository._read_row(row, claim.tenant_id, claim.session_key)
+                    if row is not None
+                    else None
+                )
+                validate_checkpoint_update(current, checkpoint, expected_version)
+                await cur.execute(
+                    """UPDATE agent_active_checkpoint
+                       SET version = %s, payload = %s, updated_at = %s
+                       WHERE tenant_id = %s AND session_key = %s
+                         AND turn_id = %s AND version = %s""",
+                    (
+                        checkpoint.version,
+                        Jsonb(payload),
+                        checkpoint.updated_at,
+                        claim.tenant_id,
+                        claim.session_key,
+                        claim.turn_id,
+                        expected_version,
+                    ),
+                )
+                if cur.rowcount != 1:
+                    raise CheckpointConflict("stale checkpoint update")
+
+    async def clear_checkpoint(self, claim: TurnClaim, expected_version: int) -> None:
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await self._lock_writable_claim(cur, claim)
+                await cur.execute(
+                    """DELETE FROM agent_active_checkpoint
+                       WHERE tenant_id = %s AND session_key = %s
+                         AND turn_id = %s AND version = %s""",
+                    (
+                        claim.tenant_id,
+                        claim.session_key,
+                        claim.turn_id,
+                        expected_version,
+                    ),
+                )
+                if cur.rowcount != 1:
+                    raise CheckpointConflict("stale checkpoint clear")
+
+    @staticmethod
+    async def _stored_turn_messages(
+        cur: psycopg.AsyncCursor[Any], claim: TurnClaim
+    ) -> tuple[ChatMessage, ...]:
+        await cur.execute(
+            """SELECT schema_version, payload FROM agent_message
+               WHERE tenant_id = %s AND session_key = %s AND turn_id = %s
+               ORDER BY ordinal""",
+            (claim.tenant_id, claim.session_key, claim.turn_id),
+        )
+        rows = await cur.fetchall()
+        if any(schema_version != _SCHEMA_VERSION for schema_version, _ in rows):
+            raise ValueError("unsupported stored message schema version")
+        return tuple(_read_message(payload) for _, payload in rows)
+
+    @staticmethod
+    async def _append_messages(
+        cur: psycopg.AsyncCursor[Any],
+        claim: TurnClaim,
+        messages: Sequence[ChatMessage],
+        sequence: int,
+        ordinal: int,
+    ) -> None:
+        for index, message in enumerate(messages):
+            await cur.execute(
+                """INSERT INTO agent_message
+                   (tenant_id, session_key, sequence, turn_id, ordinal,
+                    schema_version, payload)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    claim.tenant_id,
+                    claim.session_key,
+                    sequence + index,
+                    claim.turn_id,
+                    ordinal + index,
+                    _SCHEMA_VERSION,
+                    Jsonb(_message_payload(message)),
+                ),
+            )
+
+    async def append_tool_round_progress(
+        self,
+        claim: TurnClaim,
+        messages: Sequence[ChatMessage],
+        *,
+        expected_checkpoint_version: int,
+    ) -> None:
+        """Atomically persist a complete tool batch and retire its checkpoint."""
+
+        if not messages or messages[0].role != "user":
+            raise ValueError("tool-round progress must start with the current user message")
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await self._lock_writable_claim(cur, claim)
+                await cur.execute(
+                    """SELECT next_message_seq FROM agent_session
+                       WHERE tenant_id = %s AND session_key = %s""",
+                    (claim.tenant_id, claim.session_key),
+                )
+                session = await cur.fetchone()
+                if session is None:
+                    raise TurnConflict("session disappeared during progress commit")
+                sequence = session[0]
+                stored = await self._stored_turn_messages(cur, claim)
+                if len(stored) >= len(messages) or tuple(messages[: len(stored)]) != stored:
+                    raise TurnConflict("tool-round progress does not extend stored messages")
+                await cur.execute(
+                    """SELECT turn_id, version, schema_version, payload
+                       FROM agent_active_checkpoint
+                       WHERE tenant_id = %s AND session_key = %s FOR UPDATE""",
+                    (claim.tenant_id, claim.session_key),
+                )
+                row = await cur.fetchone()
+                if row is None:
+                    raise CheckpointConflict("active checkpoint is missing")
+                checkpoint = PostgresCheckpointRepository._read_row(
+                    row, claim.tenant_id, claim.session_key
+                )
+                if (
+                    checkpoint.turn_id != claim.turn_id
+                    or checkpoint.version != expected_checkpoint_version
+                    or checkpoint.phase != "ready_to_resume"
+                ):
+                    raise CheckpointConflict("tool batch is incomplete or stale")
+                repaired = checkpoint.repaired_messages()
+                if tuple(messages[-len(repaired) :]) != repaired:
+                    raise TurnConflict("tool messages do not match the checkpoint")
+                suffix = messages[len(stored) :]
+                await self._append_messages(cur, claim, suffix, sequence, len(stored))
+                await cur.execute(
+                    """DELETE FROM agent_active_checkpoint
+                       WHERE tenant_id = %s AND session_key = %s
+                         AND turn_id = %s AND version = %s""",
+                    (
+                        claim.tenant_id,
+                        claim.session_key,
+                        claim.turn_id,
+                        expected_checkpoint_version,
+                    ),
+                )
+                if cur.rowcount != 1:
+                    raise CheckpointConflict("checkpoint changed during progress commit")
+                await cur.execute(
+                    """UPDATE agent_session SET next_message_seq = %s
+                       WHERE tenant_id = %s AND session_key = %s
+                         AND fence_version = %s AND active_turn_id = %s""",
+                    (
+                        sequence + len(suffix),
+                        claim.tenant_id,
+                        claim.session_key,
+                        claim.fence_version,
+                        claim.turn_id,
+                    ),
+                )
+                if cur.rowcount != 1:
+                    raise TurnConflict("session changed during progress commit")
+
     async def complete_turn(
         self,
         claim: TurnClaim,
@@ -228,7 +462,10 @@ class PostgresTurnRepository:
         if not messages or (result.messages and tuple(messages) != result.messages):
             raise ValueError("committed messages do not match turn result")
         result_payload = _result_payload(result)
-        message_payloads = [_message_payload(message) for message in messages]
+        # Validate serialization before any writes; existing message prefix is checked in the
+        # transaction so a retry cannot silently overwrite prior tool results.
+        for message in messages:
+            _message_payload(message)
         async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -263,22 +500,11 @@ class PostgresTurnRepository:
                 elif checkpoint != (claim.turn_id, expected_checkpoint_version):
                     raise TurnConflict("checkpoint version changed before completion")
                 sequence = session[2]
-                for ordinal, payload in enumerate(message_payloads):
-                    await cur.execute(
-                        """INSERT INTO agent_message
-                           (tenant_id, session_key, sequence, turn_id, ordinal,
-                            schema_version, payload)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                        (
-                            claim.tenant_id,
-                            claim.session_key,
-                            sequence + ordinal,
-                            claim.turn_id,
-                            ordinal,
-                            _SCHEMA_VERSION,
-                            Jsonb(payload),
-                        ),
-                    )
+                stored = await self._stored_turn_messages(cur, claim)
+                if len(stored) > len(messages) or tuple(messages[: len(stored)]) != stored:
+                    raise TurnConflict("turn result does not extend stored messages")
+                suffix = messages[len(stored) :]
+                await self._append_messages(cur, claim, suffix, sequence, len(stored))
                 if expected_checkpoint_version is not None:
                     await cur.execute(
                         """DELETE FROM agent_active_checkpoint
@@ -314,7 +540,7 @@ class PostgresTurnRepository:
                        WHERE tenant_id = %s AND session_key = %s
                          AND fence_version = %s AND active_turn_id = %s""",
                     (
-                        sequence + len(message_payloads),
+                        sequence + len(suffix),
                         claim.tenant_id,
                         claim.session_key,
                         claim.fence_version,

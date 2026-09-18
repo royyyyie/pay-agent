@@ -59,6 +59,16 @@
 - 新增的真实 PostgreSQL 并发、幂等、接管和原子回滚测试已在 GitHub [分支推送](https://github.com/royyyyie/pay-agent/actions/runs/35344002000)与 [PR](https://github.com/royyyyie/pay-agent/actions/runs/35344006196) 的 `quality` 检查通过；`java-contract` 同时通过。本机仍无 PostgreSQL 测试库
 - 本地质量门禁：73 项通过、12 项数据库/Redis 集成测试因未注入测试连接而跳过，覆盖率 78.68%；Ruff、Mypy strict、OpenAPI/生成文件/兼容性检查通过
 
+## 第五批：Checkpoint 写入代次保护
+
+- `PostgresTurnRepository` 增加 `create_checkpoint`、`update_checkpoint`、`clear_checkpoint`，每次写入先按 Session→Turn 顺序锁行并检查当前 `fence_version` 与活动 Turn
+- 新 owner 接管同一 Turn 后，旧 owner 的 Checkpoint 更新和清理均被拒绝；新 owner 仍可在原版本基础上继续记录结果
+- 完成一批 Tool 后，`append_tool_round_progress` 校验 Checkpoint 全部结果及模型消息配对，在同一事务内保存本轮消息、递增序号并清理 Checkpoint；下一轮 Tool 可以再创建新的 Checkpoint
+- Turn 完成时只追加尚未持久化的消息，并校验已存前缀，防止重试覆盖早前 Tool 结果
+- 原有 `PostgresCheckpointRepository` 保留供基础测试/兼容使用，未绑定 Turn 代次；生产运行时接入时必须使用上述 fenced 写入方法
+- 当前仍未把 Runner、Redis 租约和 Repository 串成自动恢复链路；外部 Tool 的已发请求也不会因数据库 fencing 自动取消。新增真实 PostgreSQL 接管测试待 CI 验证
+- 本地检查：73 项通过、14 项外部数据库/Redis 测试因缺少测试连接跳过，覆盖率 74.83%；Ruff、Mypy strict、OpenAPI/生成文件/兼容性检查通过
+
 ## 阶段退出标准
 
 进程在模型/Tool 安全点中断后可恢复合法协议，Turn 不丢失；多副本中同 Session 不并发；未知写操作不会被重复执行；断线 SSE 可续传。必须有真实 PostgreSQL、Redis 和 Java 链路故障测试证据，单进程测试不能替代。

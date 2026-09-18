@@ -9,7 +9,7 @@ from pathlib import Path
 
 import psycopg
 
-from damai_agent.checkpoint import AgentCheckpoint
+from damai_agent.checkpoint import AgentCheckpoint, CheckpointConflict
 from damai_agent.models import AgentRunResult, ChatMessage, ToolCall, ToolResult
 from damai_agent.postgres_checkpoint import PostgresCheckpointRepository
 from damai_agent.postgres_turn import (
@@ -171,9 +171,9 @@ class PostgresTurnIntegrationTest(unittest.IsolatedAsyncioTestCase):
             policy_version="policy@1",
             model_route="demo/model",
         )
-        await self.checkpoints.create(checkpoint)
+        await self.repository.create_checkpoint(claim, checkpoint)
         updated = checkpoint.with_result("call-1", ToolResult(True, 0, "ok"))
-        await self.checkpoints.update(updated, expected_version=0)
+        await self.repository.update_checkpoint(claim, updated, expected_version=0)
         messages = (
             ChatMessage(role="user", content="查票"),
             assistant_call,
@@ -198,4 +198,114 @@ class PostgresTurnIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.checkpoints.get_active("tenant-1", self.session_key))
         self.assertEqual(
             await self.repository.load_recent_messages("tenant-1", self.session_key), messages
+        )
+
+    async def test_takeover_fences_checkpoint_writes(self) -> None:
+        old = await self.repository.begin_turn(
+            "tenant-1", self.session_key, "turn-1", "idem-1", self.fingerprint
+        )
+        checkpoint = AgentCheckpoint(
+            tenant_id="tenant-1",
+            session_key=self.session_key,
+            turn_id="turn-1",
+            iteration=1,
+            assistant_message=ChatMessage(
+                role="assistant", tool_calls=[ToolCall("call-1", "search", {})]
+            ),
+            prompt_version="prompt@1",
+            toolset_version="tools@1",
+            policy_version="policy@1",
+            model_route="demo/model",
+        )
+        await self.repository.create_checkpoint(old, checkpoint)
+        recovery = await self.repository.get_active_turn("tenant-1", self.session_key)
+        assert recovery is not None
+        current = await self.repository.take_over_turn(recovery)
+        updated = checkpoint.with_result("call-1", ToolResult(True, 0, "ok"))
+        with self.assertRaises(TurnConflict):
+            await self.repository.update_checkpoint(old, updated, expected_version=0)
+        with self.assertRaises(TurnConflict):
+            await self.repository.clear_checkpoint(old, expected_version=0)
+        self.assertEqual(
+            await self.checkpoints.get_active("tenant-1", self.session_key), checkpoint
+        )
+        await self.repository.update_checkpoint(current, updated, expected_version=0)
+        self.assertEqual(await self.checkpoints.get_active("tenant-1", self.session_key), updated)
+        with self.assertRaises(TurnConflict):
+            await self.repository.create_checkpoint(old, checkpoint)
+        await self.repository.clear_checkpoint(current, expected_version=1)
+        self.assertIsNone(await self.checkpoints.get_active("tenant-1", self.session_key))
+
+    async def test_tool_round_progress_is_atomic_and_supports_multiple_rounds(self) -> None:
+        claim = await self.repository.begin_turn(
+            "tenant-1", self.session_key, "turn-1", "idem-1", self.fingerprint
+        )
+        user = ChatMessage(role="user", content="查票")
+        first = AgentCheckpoint(
+            tenant_id="tenant-1",
+            session_key=self.session_key,
+            turn_id="turn-1",
+            iteration=1,
+            assistant_message=ChatMessage(
+                role="assistant", tool_calls=[ToolCall("call-1", "search", {})]
+            ),
+            prompt_version="prompt@1",
+            toolset_version="tools@1",
+            policy_version="policy@1",
+            model_route="demo/model",
+        )
+        await self.repository.create_checkpoint(claim, first)
+        incomplete = (user, *first.repaired_messages())
+        with self.assertRaises(CheckpointConflict):
+            await self.repository.append_tool_round_progress(
+                claim, incomplete, expected_checkpoint_version=0
+            )
+        self.assertEqual(
+            await self.repository.load_recent_messages("tenant-1", self.session_key), ()
+        )
+        self.assertEqual(await self.checkpoints.get_active("tenant-1", self.session_key), first)
+
+        first_done = first.with_result("call-1", ToolResult(True, 0, "found"))
+        await self.repository.update_checkpoint(claim, first_done, expected_version=0)
+        first_messages = (user, *first_done.repaired_messages())
+        with self.assertRaises(TurnConflict):
+            await self.repository.append_tool_round_progress(
+                claim,
+                (*first_messages[:-1], ChatMessage(role="tool", content="tampered")),
+                expected_checkpoint_version=1,
+            )
+        self.assertEqual(
+            await self.checkpoints.get_active("tenant-1", self.session_key), first_done
+        )
+        await self.repository.append_tool_round_progress(
+            claim, first_messages, expected_checkpoint_version=1
+        )
+        self.assertIsNone(await self.checkpoints.get_active("tenant-1", self.session_key))
+
+        second = AgentCheckpoint(
+            tenant_id="tenant-1",
+            session_key=self.session_key,
+            turn_id="turn-1",
+            iteration=2,
+            assistant_message=ChatMessage(
+                role="assistant", tool_calls=[ToolCall("call-2", "detail", {})]
+            ),
+            prompt_version="prompt@1",
+            toolset_version="tools@1",
+            policy_version="policy@1",
+            model_route="demo/model",
+        )
+        await self.repository.create_checkpoint(claim, second)
+        second_done = second.with_result("call-2", ToolResult(True, 0, "detail"))
+        await self.repository.update_checkpoint(claim, second_done, expected_version=0)
+        progress = (*first_messages, *second_done.repaired_messages())
+        await self.repository.append_tool_round_progress(
+            claim, progress, expected_checkpoint_version=1
+        )
+        final_messages = (*progress, ChatMessage(role="assistant", content="已查询"))
+        result = make_result(self.session_key, "turn-1", final_messages)
+        await self.repository.complete_turn(claim, result, final_messages)
+        self.assertEqual(
+            await self.repository.load_recent_messages("tenant-1", self.session_key),
+            final_messages,
         )
