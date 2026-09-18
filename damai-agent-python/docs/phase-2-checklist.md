@@ -4,7 +4,7 @@
 
 ## 目标与前置条件
 
-目标是让 Session/Turn 可持久化、可幂等、可安全恢复，并在多副本下保持同一租户与 Session 严格串行。阶段 1 的三个真实 Java Tool 端到端及故障注入验收仍未完成，不得据此宣布只读生产准入。
+目标是让 Session/Turn 可持久化、可幂等、可安全恢复，并在多副本下保持同一租户与 Session 严格串行。阶段 1 已记录三个真实 Java 只读 Tool 的云端调用，但超时原因和 Java 链路故障注入仍未完成，不得据此宣布只读生产准入。
 
 ## 第一批：Checkpoint 安全契约
 
@@ -23,11 +23,12 @@
 - [x] PostgreSQL 活动 Checkpoint Repository、迁移和同一租户/Session 原子版本比较写入；GitHub PostgreSQL 集成测试通过
 - [x] PostgreSQL Session/Message/Turn Repository、迁移和 Turn 完成/消息追加/Checkpoint 清理的单事务提交；新增真实数据库测试在 GitHub CI 通过
 - [x] Redis 带 owner token 的 Session 租约锁、条件续租与条件释放；云端 Redis 验证过期旧 owner 不会释放新租约
-- [ ] Redis Pending Queue、取消标记；显式持久化入口已在模型/Tool 安全点检查租约，运行中外部调用仍不能被强制取消
-- [x] 显式持久化 Runner 在工具执行前、每个结果完成后写 Checkpoint；未知状态的调用不自动重放，恢复协议仍待实现
+- [x] Redis 有界 Pending Queue、租约持有者和取消标记；队列只存请求指纹，客户端须保留正文并使用同一幂等键重试，非后台自动调度器
+- [x] 显式持久化 Runner 在工具执行前、每个结果完成后写 Checkpoint；中断 Turn 可由持有原请求的调用方显式终结恢复，未知状态的调用不自动重放
 - [x] Repository 层 Turn 幂等键与重复请求返回同一结果；显式持久化入口已接入，默认 Chat API 仍未切换
-- [ ] 断线 SSE 事件持久化与续传、委托身份和请求级 Scope
-- [ ] PostgreSQL/Redis 故障、进程中断、多副本竞争和真实 Java Tool 注入验收
+- [x] PostgreSQL 持久化事件与 `Last-Event-ID` 续传、短期签名委托身份和请求级只读 Scope；需按顺序执行第三个迁移
+- [x] 隔离 CI 中的 PostgreSQL/Redis 故障、进程强杀后恢复和多实例竞争验收
+- [ ] 真实 Java Tool 链路故障注入与云端部署验收
 
 ## 第二批：PostgreSQL 活动 Checkpoint
 
@@ -78,6 +79,25 @@
 - 当前没有自动恢复、Pending Queue、取消标记、SSE 续传或运行中外部请求强制取消。若异常发生在 Tool 发出之后，原 Turn 会保持 `running`，同一幂等键重试会被拒绝；须待后续显式恢复流程处理，不能把未知结果当作失败后立即重试
 - PostgreSQL/Redis 连接使用逐次建立的基础实现，尚未加入连接池与后台租约保活；长耗时模型或 Tool 调用可能使租约过期，随后在安全点停止。此批不能据此宣称生产可用或严格的端到端多副本串行
 - 新增单元测试覆盖 Checkpoint 创建失败、结果持久化失败、写权限上限拒绝；真实 PostgreSQL+Redis 集成测试覆盖正常完成/幂等、提交失败留存 Checkpoint、租约失效后停止。外部集成测试由 GitHub CI 执行，本机缺少测试连接时跳过
+
+## 第七批：显式终结恢复与取消安全点
+
+- `DurableTurnService.recover` 只处理已存在、仍在运行且与原用户输入、授权上下文、幂等键匹配的 Turn；不创建新 Turn。先拿 Redis Session 租约，再通过 PostgreSQL `take_over_turn` 提升 fencing 代次，旧写入者不能继续保存 Checkpoint 或完成 Turn
+- 恢复不调用模型或外部 Tool。对仍有 Checkpoint 的批次，保留已确认结果，把未确认结果写为 `TOOL_EXECUTION_UNKNOWN`，原子保存完整 Tool 观察并清除 Checkpoint；随后追加中断说明并完成 Turn。没有 Checkpoint 时，依据原请求与已保存前缀安全终结
+- 恢复中途再次失败时，已写入的未知结果仍留在 Checkpoint；重新取得租约后可继续完成，不会重放 Tool。已完成 Turn 通过原幂等请求读取结果，`recover` 本身不重复接管
+- 可选 `RedisTurnCancellationStore` 用短期、哈希隔离的 Turn 标记表达取消。`cancel` 必须匹配原请求指纹和 Turn ID；运行时在模型/Tool 安全点检查标记并停止。正在运行的外部网络调用无法强制撤销，取消后仍须显式恢复终结
+- 此机制是保守的“终结并允许用户重新提问”，不是自动续写原答案；不会把不明副作用当作已失败。仅允许只读工具的持久化入口，默认 Chat API 尚未接入。Pending Queue、SSE 续传、连接池、后台续租和进程强杀/真实 Java Tool 故障验收仍未完成
+- 新增 PostgreSQL/Redis 集成测试覆盖请求绑定、接管、Checkpoint 完整/不完整恢复、无 Checkpoint 恢复、取消前阻止工具派发以及结果不重放；GitHub [分支推送检查](https://github.com/royyyyie/pay-agent/actions/runs/35357485595)的 `quality` 与 `java-contract` 均通过。本机无测试连接时 79 项通过、23 项外部测试跳过，覆盖率 70.83%
+
+## 第八批：持久化 HTTP/SSE 与有界请求准入
+
+- `migrations/003_agent_turn_event.sql` 建立租户/Session/Turn 隔离的单调事件序号；运行事件先写 PostgreSQL 再转发给客户端，完成事件和 Turn 完成在同一数据库事务提交；旧 fencing 代次不能继续写事件
+- 建立持久化 Turn 时在同一事务保存原始用户消息；最近会话历史只读取已完成 Turn，避免当前用户输入重复进入模型上下文。即使第一批 Tool 前中断，原输入仍在数据库中
+- `GET /api/v2/turns/{turnId}/events` 使用 `Last-Event-ID` 按序续传，完成后关闭流；游标只对签名委托中的 Turn 有效，批量读取以避免一次请求过大
+- `RedisPendingTurnQueue` 用租户/Session 哈希键和请求指纹 token 建立有界 FIFO；重复排队返回同一位置，超额拒绝，过期项在读写时清理。队列不保存用户正文，也不是可靠的后台任务队列；请求方保留正文并以原幂等键重试
+- 可选的持久化 `/api/v2/turns`、`/recover`、`/cancel` 入口要求短期 HMAC 签名委托，限定 tenant、user、Session、Turn、请求级 Scope 与 `READ_ONLY` 风险上限；部署时还需内部 API 密钥。开启持久化后旧 `/api/v1/chat` 被禁用，避免落回匿名内存会话
+- 运行时增加后台租约续期，续期失败会取消当前协程；数据库 fencing 仍是最终写入保护。正在执行的外部只读请求可能无法在 Java 侧立即撤销，不能把租约当作外部调用的分布式事务
+- 外部资源需由有权限的迁移账号先建表；生产还须配置 TLS、最小权限账号、事件/消息保留期、Redis 持久化与连接池容量。隔离 GitHub [质量与 Java 契约检查](https://github.com/royyyyie/pay-agent/actions/runs/35360854887)均通过，覆盖真实 PostgreSQL/Redis、多实例竞争、协程中断与进程强杀恢复。云端真实 Java 故障注入及运营侧安全配置仍待专门验收；详见[阶段 2 操作说明](phase-2-operations.md)
 
 ## 阶段退出标准
 

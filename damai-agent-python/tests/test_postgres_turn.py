@@ -24,7 +24,11 @@ from damai_agent.postgres_turn import (
 _MIGRATION_DIR = Path(__file__).resolve().parents[1] / "migrations"
 _MIGRATIONS = tuple(
     (_MIGRATION_DIR / name).read_text(encoding="utf-8")
-    for name in ("001_agent_active_checkpoint.sql", "002_agent_session_turn.sql")
+    for name in (
+        "001_agent_active_checkpoint.sql",
+        "002_agent_session_turn.sql",
+        "003_agent_turn_event.sql",
+    )
 )
 
 
@@ -101,6 +105,29 @@ class PostgresTurnIntegrationTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TurnConflict):
             await self.repository.complete_turn(claim, result, messages)
 
+    async def test_initial_user_message_is_atomic_and_not_in_completed_history(self) -> None:
+        self.assertTrue(await self.repository.check_ready())
+        user = ChatMessage(role="user", content="查票")
+        claim = await self.repository.begin_turn(
+            "tenant-1",
+            self.session_key,
+            "turn-1",
+            "idem-1",
+            self.fingerprint,
+            user_message=user,
+        )
+        self.assertEqual(await self.repository.load_turn_messages(claim), (user,))
+        self.assertEqual(
+            await self.repository.load_recent_messages("tenant-1", self.session_key), ()
+        )
+        messages = (user, ChatMessage(role="assistant", content="已查询"))
+        result = make_result(self.session_key, "turn-1", messages)
+        await self.repository.complete_turn(claim, result, messages)
+        self.assertEqual(
+            await self.repository.load_recent_messages("tenant-1", self.session_key),
+            messages,
+        )
+
     async def test_busy_session_and_reused_idempotency_key_are_rejected(self) -> None:
         await self.repository.begin_turn(
             "tenant-1", self.session_key, "turn-1", "idem-1", self.fingerprint
@@ -152,6 +179,62 @@ class PostgresTurnIntegrationTest(unittest.IsolatedAsyncioTestCase):
         await self.repository.complete_turn(current, result, messages)
         self.assertEqual(
             await self.repository.load_recent_messages("tenant-1", self.session_key), messages
+        )
+
+    async def test_recovery_lookup_requires_matching_request_and_stays_read_only(self) -> None:
+        old = await self.repository.begin_turn(
+            "tenant-1", self.session_key, "turn-1", "idem-1", self.fingerprint
+        )
+        with self.assertRaises(TurnConflict):
+            await self.repository.get_recoverable_turn(
+                "tenant-1", self.session_key, "different", self.fingerprint
+            )
+        with self.assertRaises(TurnConflict):
+            await self.repository.get_recoverable_turn(
+                "tenant-1", self.session_key, "idem-1", "0" * 64
+            )
+        candidate = await self.repository.get_recoverable_turn(
+            "tenant-1", self.session_key, "idem-1", self.fingerprint
+        )
+        self.assertEqual(candidate.turn_id, old.turn_id)
+        self.assertEqual(candidate.fence_version, old.fence_version)
+        self.assertEqual(await self.repository.load_turn_messages(old), ())
+        self.assertEqual(
+            (await self.repository.get_active_turn("tenant-1", self.session_key)).fence_version,
+            old.fence_version,
+        )
+
+    async def test_event_replay_is_ordered_and_old_fence_cannot_append(self) -> None:
+        old = await self.repository.begin_turn(
+            "tenant-1", self.session_key, "turn-1", "idem-1", self.fingerprint
+        )
+        first = await self.repository.append_event(old, {"type": "turn.started"})
+        second = await self.repository.append_event(old, {"type": "model.completed"})
+        self.assertEqual([first["eventSeq"], second["eventSeq"]], [1, 2])
+        self.assertEqual(
+            await self.repository.load_events_after("tenant-1", self.session_key, "turn-1", 1),
+            (second,),
+        )
+        candidate = await self.repository.get_active_turn("tenant-1", self.session_key)
+        assert candidate is not None
+        current = await self.repository.take_over_turn(candidate)
+        with self.assertRaises(TurnConflict):
+            await self.repository.append_event(old, {"type": "stale"})
+        recovered = await self.repository.append_event(current, {"type": "turn.recovered"})
+        self.assertEqual(recovered["eventSeq"], 3)
+        messages = make_messages()
+        result = make_result(self.session_key, "turn-1", messages)
+        completed = await self.repository.complete_turn(
+            current,
+            result,
+            messages,
+            final_event={"type": "turn.completed"},
+        )
+        assert completed is not None
+        self.assertEqual(completed["eventSeq"], 4)
+        self.assertEqual(
+            await self.repository.load_events_after("tenant-1", self.session_key, "turn-1", 0),
+            (first, second, recovered, completed),
         )
 
     async def test_checkpoint_clear_and_turn_commit_are_atomic(self) -> None:

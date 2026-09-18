@@ -188,6 +188,7 @@ class TicketTurnContext:
     tool_scopes: frozenset[str]
     risk_ceiling: ToolRisk
     delegation_token_id: str
+    delegation_expires_at: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

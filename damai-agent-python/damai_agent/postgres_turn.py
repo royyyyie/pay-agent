@@ -75,6 +75,20 @@ class PostgresTurnRepository:
             raise ValueError("PostgreSQL DSN is required")
         self._dsn = dsn
 
+    async def check_ready(self) -> bool:
+        """Require all durable runtime tables before accepting traffic."""
+
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT to_regclass('agent_session'), to_regclass('agent_turn'),
+                              to_regclass('agent_message'),
+                              to_regclass('agent_active_checkpoint'),
+                              to_regclass('agent_turn_event')"""
+                )
+                row = await cur.fetchone()
+        return row is not None and all(item is not None for item in row)
+
     async def get_active_turn(self, tenant_id: str, session_key: str) -> TurnClaim | None:
         """Read recovery metadata; only a fresh lease holder may call take_over_turn."""
 
@@ -95,6 +109,61 @@ class PostgresTurnRepository:
             raise ValueError("inconsistent active turn state")
         return TurnClaim(tenant_id, session_key, row[0], "in_progress", row[1])
 
+    async def get_turn_status(
+        self, tenant_id: str, session_key: str, turn_id: str
+    ) -> Literal["running", "completed"] | None:
+        if not tenant_id or not session_key or not turn_id:
+            raise ValueError("turn identity is incomplete")
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT status FROM agent_turn
+                       WHERE tenant_id = %s AND session_key = %s AND turn_id = %s""",
+                    (tenant_id, session_key, turn_id),
+                )
+                row = await cur.fetchone()
+        if row is None:
+            return None
+        if row[0] == "running":
+            return "running"
+        if row[0] == "completed":
+            return "completed"
+        raise ValueError("invalid stored turn status")
+
+    async def get_recoverable_turn(
+        self,
+        tenant_id: str,
+        session_key: str,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> TurnClaim:
+        """Verify the original request before a lease holder takes over an active Turn."""
+
+        if not tenant_id or not session_key or not idempotency_key:
+            raise ValueError("incomplete turn identity")
+        if len(idempotency_key) > 200 or re.fullmatch(r"[0-9a-f]{64}", request_fingerprint) is None:
+            raise ValueError("invalid idempotency key or request fingerprint")
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT s.active_turn_id, s.fence_version, t.status,
+                              t.idempotency_key, t.request_fingerprint
+                       FROM agent_session s JOIN agent_turn t
+                         ON t.tenant_id = s.tenant_id AND t.session_key = s.session_key
+                        AND t.turn_id = s.active_turn_id
+                       WHERE s.tenant_id = %s AND s.session_key = %s""",
+                    (tenant_id, session_key),
+                )
+                row = await cur.fetchone()
+        if (
+            row is None
+            or row[2] != "running"
+            or row[3] != idempotency_key
+            or row[4] != request_fingerprint
+        ):
+            raise TurnConflict("no matching active turn to recover")
+        return TurnClaim(tenant_id, session_key, row[0], "in_progress", row[1])
+
     async def begin_turn(
         self,
         tenant_id: str,
@@ -102,11 +171,14 @@ class PostgresTurnRepository:
         turn_id: str,
         idempotency_key: str,
         request_fingerprint: str,
+        user_message: ChatMessage | None = None,
     ) -> TurnClaim:
         if not tenant_id or not session_key or not turn_id or not idempotency_key:
             raise ValueError("incomplete turn identity")
         if len(idempotency_key) > 200 or re.fullmatch(r"[0-9a-f]{64}", request_fingerprint) is None:
             raise ValueError("invalid idempotency key or request fingerprint")
+        if user_message is not None and (user_message.role != "user" or not user_message.content):
+            raise ValueError("initial turn message must be a nonempty user message")
         async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -115,14 +187,14 @@ class PostgresTurnRepository:
                     (tenant_id, session_key),
                 )
                 await cur.execute(
-                    """SELECT fence_version, active_turn_id FROM agent_session
+                    """SELECT fence_version, active_turn_id, next_message_seq FROM agent_session
                        WHERE tenant_id = %s AND session_key = %s FOR UPDATE""",
                     (tenant_id, session_key),
                 )
                 session = await cur.fetchone()
                 if session is None:
                     raise RuntimeError("session row disappeared")
-                fence_version, active_turn_id = session
+                fence_version, active_turn_id, next_sequence = session
                 await cur.execute(
                     """SELECT turn_id, request_fingerprint, status,
                               result_schema_version, result_payload
@@ -151,9 +223,16 @@ class PostgresTurnRepository:
                     raise TurnConflict("session already has an active turn")
                 new_fence = fence_version + 1
                 await cur.execute(
-                    """UPDATE agent_session SET fence_version = %s, active_turn_id = %s
+                    """UPDATE agent_session SET fence_version = %s, active_turn_id = %s,
+                          next_message_seq = %s
                        WHERE tenant_id = %s AND session_key = %s""",
-                    (new_fence, turn_id, tenant_id, session_key),
+                    (
+                        new_fence,
+                        turn_id,
+                        next_sequence + (1 if user_message is not None else 0),
+                        tenant_id,
+                        session_key,
+                    ),
                 )
                 await cur.execute(
                     """INSERT INTO agent_turn
@@ -172,7 +251,10 @@ class PostgresTurnRepository:
                 )
                 if cur.rowcount != 1:
                     raise TurnConflict("turn identity already exists")
-                return TurnClaim(tenant_id, session_key, turn_id, "started", new_fence)
+                claim = TurnClaim(tenant_id, session_key, turn_id, "started", new_fence)
+                if user_message is not None:
+                    await self._append_messages(cur, claim, (user_message,), next_sequence, 0)
+                return claim
 
     async def take_over_turn(self, claim: TurnClaim) -> TurnClaim:
         """Fence a crashed owner before recovery; caller must own a fresh Redis lease."""
@@ -267,6 +349,26 @@ class PostgresTurnRepository:
                 )
                 if cur.rowcount != 1:
                     raise CheckpointConflict("active checkpoint already exists")
+
+    async def get_checkpoint_for_turn(self, claim: TurnClaim) -> AgentCheckpoint | None:
+        """Read an active Checkpoint only while the caller still owns its DB fence."""
+
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await self._lock_writable_claim(cur, claim)
+                await cur.execute(
+                    """SELECT turn_id, version, schema_version, payload
+                       FROM agent_active_checkpoint
+                       WHERE tenant_id = %s AND session_key = %s""",
+                    (claim.tenant_id, claim.session_key),
+                )
+                row = await cur.fetchone()
+        if row is None:
+            return None
+        checkpoint = PostgresCheckpointRepository._read_row(row, claim.tenant_id, claim.session_key)
+        if checkpoint.turn_id != claim.turn_id:
+            raise CheckpointConflict("checkpoint belongs to another turn")
+        return checkpoint
 
     async def update_checkpoint(
         self, claim: TurnClaim, checkpoint: AgentCheckpoint, expected_version: int
@@ -370,6 +472,86 @@ class PostgresTurnRepository:
                 ),
             )
 
+    @staticmethod
+    async def _append_event(
+        cur: psycopg.AsyncCursor[Any], claim: TurnClaim, event: dict[str, Any]
+    ) -> dict[str, Any]:
+        if not isinstance(event.get("type"), str) or not event["type"]:
+            raise ValueError("event type is required")
+        await cur.execute(
+            """SELECT COALESCE(MAX(event_seq), 0) + 1 FROM agent_turn_event
+               WHERE tenant_id = %s AND session_key = %s AND turn_id = %s""",
+            (claim.tenant_id, claim.session_key, claim.turn_id),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise RuntimeError("event sequence allocation failed")
+        sequence = row[0]
+        recorded = {
+            **event,
+            "sessionKey": claim.session_key,
+            "turnId": claim.turn_id,
+            "eventSeq": sequence,
+            "eventId": str(sequence),
+        }
+        await cur.execute(
+            """INSERT INTO agent_turn_event
+               (tenant_id, session_key, turn_id, event_seq, schema_version, payload)
+               VALUES (%s, %s, %s, %s, 1, %s)""",
+            (
+                claim.tenant_id,
+                claim.session_key,
+                claim.turn_id,
+                sequence,
+                Jsonb(recorded),
+            ),
+        )
+        return recorded
+
+    async def append_event(self, claim: TurnClaim, event: dict[str, Any]) -> dict[str, Any]:
+        """Persist an event under the current Turn fence before delivering it."""
+
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await self._lock_writable_claim(cur, claim)
+                return await self._append_event(cur, claim, event)
+
+    async def load_events_after(
+        self,
+        tenant_id: str,
+        session_key: str,
+        turn_id: str,
+        after_sequence: int,
+        *,
+        limit: int = 200,
+    ) -> tuple[dict[str, Any], ...]:
+        if not tenant_id or not session_key or not turn_id:
+            raise ValueError("event identity is incomplete")
+        if after_sequence < 0 or not 1 <= limit <= 1000:
+            raise ValueError("invalid event cursor or limit")
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT event_seq, schema_version, payload FROM agent_turn_event
+                       WHERE tenant_id = %s AND session_key = %s AND turn_id = %s
+                         AND event_seq > %s ORDER BY event_seq LIMIT %s""",
+                    (tenant_id, session_key, turn_id, after_sequence, limit),
+                )
+                rows = await cur.fetchall()
+        events: list[dict[str, Any]] = []
+        for sequence, schema_version, payload in rows:
+            if (
+                schema_version != _SCHEMA_VERSION
+                or not isinstance(payload, dict)
+                or payload.get("eventSeq") != sequence
+                or payload.get("turnId") != turn_id
+                or payload.get("sessionKey") != session_key
+                or not isinstance(payload.get("type"), str)
+            ):
+                raise ValueError("invalid stored turn event")
+            events.append(payload)
+        return tuple(events)
+
     async def append_tool_round_progress(
         self,
         claim: TurnClaim,
@@ -454,7 +636,8 @@ class PostgresTurnRepository:
         messages: Sequence[ChatMessage],
         *,
         expected_checkpoint_version: int | None = None,
-    ) -> None:
+        final_event: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         if claim.state != "started" or claim.fence_version is None:
             raise TurnConflict("turn claim is not writable")
         if result.turn_id != claim.turn_id or result.session_key != claim.session_key:
@@ -535,6 +718,11 @@ class PostgresTurnRepository:
                 )
                 if cur.rowcount != 1:
                     raise TurnConflict("turn changed during completion")
+                recorded_final = (
+                    await self._append_event(cur, claim, final_event)
+                    if final_event is not None
+                    else None
+                )
                 await cur.execute(
                     """UPDATE agent_session SET active_turn_id = NULL, next_message_seq = %s
                        WHERE tenant_id = %s AND session_key = %s
@@ -549,6 +737,7 @@ class PostgresTurnRepository:
                 )
                 if cur.rowcount != 1:
                     raise TurnConflict("session changed during completion")
+                return recorded_final
 
     async def load_recent_messages(
         self, tenant_id: str, session_key: str, *, max_turns: int = 20
@@ -559,9 +748,12 @@ class PostgresTurnRepository:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """WITH recent AS (
-                           SELECT turn_id FROM agent_message
-                           WHERE tenant_id = %s AND session_key = %s
-                           GROUP BY turn_id ORDER BY max(sequence) DESC LIMIT %s
+                           SELECT m.turn_id FROM agent_message m JOIN agent_turn t
+                             ON t.tenant_id = m.tenant_id
+                            AND t.session_key = m.session_key AND t.turn_id = m.turn_id
+                           WHERE m.tenant_id = %s AND m.session_key = %s
+                             AND t.status = 'completed'
+                           GROUP BY m.turn_id ORDER BY max(m.sequence) DESC LIMIT %s
                        )
                        SELECT schema_version, payload FROM agent_message
                        WHERE tenant_id = %s AND session_key = %s
@@ -574,3 +766,10 @@ class PostgresTurnRepository:
             if schema_version != _SCHEMA_VERSION:
                 raise ValueError("unsupported stored message schema version")
         return tuple(_read_message(payload) for _, payload in rows)
+
+    async def load_turn_messages(self, claim: TurnClaim) -> tuple[ChatMessage, ...]:
+        """Load only this Turn's committed prefix, not previous Session history."""
+
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                return await self._stored_turn_messages(cur, claim)

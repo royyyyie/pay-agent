@@ -55,6 +55,10 @@ class TicketAgentLoop:
     def tool_names(self) -> List[str]:
         return self._runner.tool_names
 
+    @property
+    def core_runner(self) -> ToolCallingRunner:
+        return self._runner
+
     async def run(
         self,
         user_text: str,

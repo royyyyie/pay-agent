@@ -97,6 +97,29 @@ class SettingsTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             Settings(max_tool_result_chars=255)
 
+    def test_durable_runtime_requires_its_own_connections_and_delegation_key(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "DAMAI_AGENT_POSTGRES_DSN"):
+            Settings(runtime_backend="durable")
+        with self.assertRaisesRegex(ValidationError, "DAMAI_AGENT_REDIS_URL"):
+            Settings(
+                runtime_backend="durable",
+                postgres_dsn="postgresql://user:pass@db.example/test",
+            )
+        with self.assertRaisesRegex(ValidationError, "DAMAI_AGENT_DELEGATION_HMAC_KEY"):
+            Settings(
+                runtime_backend="durable",
+                postgres_dsn="postgresql://user:pass@db.example/test",
+                redis_url="rediss://cache.example:6379/0",
+            )
+        settings = Settings(
+            runtime_backend="durable",
+            postgres_dsn="postgresql://user:pass@db.example/test",
+            redis_url="rediss://cache.example:6379/0",
+            delegation_hmac_key="d" * 32,
+        )
+        self.assertNotIn("pass", repr(settings))
+        self.assertNotIn("d" * 32, repr(settings))
+
 
 if __name__ == "__main__":
     unittest.main()
