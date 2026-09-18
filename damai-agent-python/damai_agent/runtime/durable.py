@@ -9,6 +9,7 @@ from typing import Optional, Sequence
 
 from ..checkpoint import AgentCheckpoint
 from ..models import (
+    AgentErrorCode,
     AgentRunResult,
     AgentRunSpec,
     ChatMessage,
@@ -17,6 +18,7 @@ from ..models import (
     ToolRisk,
 )
 from ..postgres_turn import PostgresTurnRepository, TurnClaim, TurnConflict
+from ..redis_control import RedisTurnCancellationStore
 from ..redis_lease import RedisSessionLeaseStore, SessionLease
 from .events import EventSink, TurnEventEmitter
 from .loop import SYSTEM_PROMPT, toolset_version
@@ -25,6 +27,10 @@ from .runner import ToolCallingRunner
 
 class LeaseLost(RuntimeError):
     """The Redis lease expired, changed owner, or could not be renewed."""
+
+
+class TurnCancelled(RuntimeError):
+    """The active Turn was cancelled at a safe point."""
 
 
 class DurableTurnRecorder:
@@ -36,17 +42,23 @@ class DurableTurnRecorder:
         leases: RedisSessionLeaseStore,
         lease: SessionLease,
         claim: TurnClaim,
+        cancellations: RedisTurnCancellationStore | None = None,
     ) -> None:
         self._turns = turns
         self._leases = leases
         self._lease = lease
         self._claim = claim
+        self._cancellations = cancellations
         self._checkpoint: AgentCheckpoint | None = None
         self._result_lock = asyncio.Lock()
 
     async def ensure_active(self) -> None:
         if not await self._leases.renew(self._lease):
             raise LeaseLost("session lease is no longer owned")
+        if self._cancellations is not None and await self._cancellations.is_requested(
+            self._claim.tenant_id, self._claim.session_key, self._claim.turn_id
+        ):
+            raise TurnCancelled("turn was cancelled at a safe point")
 
     async def before_tool_round(
         self, spec: AgentRunSpec, iteration: int, assistant: ChatMessage, model_route: str
@@ -96,7 +108,7 @@ class DurableTurnRecorder:
 
 
 class DurableTurnService:
-    """Opt-in entry point. Crashed/in-progress turns require explicit recovery later."""
+    """Opt-in entry point with fail-closed Turn execution and terminal recovery."""
 
     def __init__(
         self,
@@ -104,6 +116,7 @@ class DurableTurnService:
         turns: PostgresTurnRepository,
         leases: RedisSessionLeaseStore,
         *,
+        cancellations: RedisTurnCancellationStore | None = None,
         lease_ttl_ms: int = 30_000,
         max_tool_rounds: int = 6,
         max_tool_calls: int = 12,
@@ -118,6 +131,7 @@ class DurableTurnService:
         self._runner = runner
         self._turns = turns
         self._leases = leases
+        self._cancellations = cancellations
         self._lease_ttl_ms = lease_ttl_ms
         self._max_tool_rounds = max_tool_rounds
         self._max_tool_calls = max_tool_calls
@@ -172,7 +186,9 @@ class DurableTurnService:
                 max_tool_calls=self._max_tool_calls,
             )
             emitter = TurnEventEmitter(context, event_sink)
-            recorder = DurableTurnRecorder(self._turns, self._leases, lease, claim)
+            recorder = DurableTurnRecorder(
+                self._turns, self._leases, lease, claim, self._cancellations
+            )
             await recorder.ensure_active()
             await emitter.emit(
                 "turn.started",
@@ -201,6 +217,111 @@ class DurableTurnService:
         finally:
             await self._leases.release(lease)
 
+    async def cancel(
+        self, user_text: str, context: TicketTurnContext, idempotency_key: str
+    ) -> bool:
+        """Signal the exact active request; the Runner stops at its next safe point."""
+
+        if self._cancellations is None:
+            raise ValueError("cancellation store is not configured")
+        if not user_text:
+            raise ValueError("user text is required")
+        try:
+            active = await self._turns.get_recoverable_turn(
+                context.tenant_id,
+                context.session_key,
+                idempotency_key,
+                self._request_fingerprint(user_text, context),
+            )
+        except TurnConflict:
+            return False
+        if active.turn_id != context.turn_id:
+            return False
+        await self._cancellations.request(context.tenant_id, context.session_key, active.turn_id)
+        return True
+
+    async def recover(
+        self,
+        user_text: str,
+        context: TicketTurnContext,
+        idempotency_key: str,
+    ) -> AgentRunResult:
+        """Fence and terminalize the exact interrupted request without invoking a Tool."""
+
+        if not user_text:
+            raise ValueError("user text is required")
+        if context.risk_ceiling is not ToolRisk.READ_ONLY:
+            raise ValueError("durable runtime currently accepts read-only turns only")
+        fingerprint = self._request_fingerprint(user_text, context)
+        lease = await self._leases.acquire(
+            context.tenant_id, context.session_key, ttl_ms=self._lease_ttl_ms
+        )
+        if lease is None:
+            raise TurnConflict("session lease is already held")
+        try:
+            candidate = await self._turns.get_recoverable_turn(
+                context.tenant_id, context.session_key, idempotency_key, fingerprint
+            )
+            claim = await self._turns.take_over_turn(candidate)
+            stored = await self._turns.load_turn_messages(claim)
+            user = ChatMessage(role="user", content=user_text)
+            if stored and (stored[0] != user or stored[-1].role != "tool"):
+                raise TurnConflict("stored turn prefix is not recoverable")
+            messages = (*stored,) if stored else (user,)
+            checkpoint = await self._turns.get_checkpoint_for_turn(claim)
+            model_route = self._runner.model_route
+            if checkpoint is not None:
+                model_route = checkpoint.model_route
+                for call_id in checkpoint.pending_tool_call_ids:
+                    if not await self._leases.renew(lease):
+                        raise LeaseLost("session lease is no longer owned")
+                    unknown = ToolResult(
+                        success=False,
+                        code=503,
+                        message="工具执行状态未确认；未自动重试",
+                        retryable=False,
+                        error_code=AgentErrorCode.TOOL_EXECUTION_UNKNOWN,
+                    )
+                    updated = checkpoint.with_result(call_id, unknown)
+                    await self._turns.update_checkpoint(claim, updated, checkpoint.version)
+                    checkpoint = updated
+                messages = (*messages, *checkpoint.repaired_messages())
+                if not await self._leases.renew(lease):
+                    raise LeaseLost("session lease is no longer owned")
+                await self._turns.append_tool_round_progress(
+                    claim, messages, expected_checkpoint_version=checkpoint.version
+                )
+            unknown_count = self._unknown_observation_count(messages)
+            if not await self._leases.renew(lease):
+                raise LeaseLost("session lease is no longer owned")
+            answer = (
+                "本轮执行已中断，部分工具状态未确认；未自动重试，请重新发起查询。"
+                if unknown_count
+                else "本轮执行已中断，已保存已确认的结果；请重新发起查询。"
+            )
+            final_messages = (*messages, ChatMessage(role="assistant", content=answer))
+            tools_used = tuple(
+                call.name
+                for message in messages
+                if message.role == "assistant"
+                for call in message.tool_calls
+            )
+            result = AgentRunResult(
+                session_key=claim.session_key,
+                turn_id=claim.turn_id,
+                trace_id=context.trace_id,
+                final_content=answer,
+                tools_used=tools_used,
+                messages=final_messages,
+                stop_reason="interrupted_recovered",
+                error_code=(AgentErrorCode.TOOL_EXECUTION_UNKNOWN if unknown_count else None),
+                model_route=model_route,
+            )
+            await self._turns.complete_turn(claim, result, final_messages)
+            return result
+        finally:
+            await self._leases.release(lease)
+
     @staticmethod
     def _request_fingerprint(user_text: str, context: TicketTurnContext) -> str:
         canonical = json.dumps(
@@ -217,3 +338,19 @@ class DurableTurnService:
             separators=(",", ":"),
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _unknown_observation_count(messages: Sequence[ChatMessage]) -> int:
+        count = 0
+        for message in messages:
+            if message.role != "tool":
+                continue
+            try:
+                observation = json.loads(message.content or "")
+            except (TypeError, ValueError) as exc:
+                raise TurnConflict("stored tool observation is invalid") from exc
+            if not isinstance(observation, dict):
+                raise TurnConflict("stored tool observation is invalid")
+            if observation.get("errorCode") == AgentErrorCode.TOOL_EXECUTION_UNKNOWN.value:
+                count += 1
+        return count

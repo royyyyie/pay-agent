@@ -95,6 +95,40 @@ class PostgresTurnRepository:
             raise ValueError("inconsistent active turn state")
         return TurnClaim(tenant_id, session_key, row[0], "in_progress", row[1])
 
+    async def get_recoverable_turn(
+        self,
+        tenant_id: str,
+        session_key: str,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> TurnClaim:
+        """Verify the original request before a lease holder takes over an active Turn."""
+
+        if not tenant_id or not session_key or not idempotency_key:
+            raise ValueError("incomplete turn identity")
+        if len(idempotency_key) > 200 or re.fullmatch(r"[0-9a-f]{64}", request_fingerprint) is None:
+            raise ValueError("invalid idempotency key or request fingerprint")
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """SELECT s.active_turn_id, s.fence_version, t.status,
+                              t.idempotency_key, t.request_fingerprint
+                       FROM agent_session s JOIN agent_turn t
+                         ON t.tenant_id = s.tenant_id AND t.session_key = s.session_key
+                        AND t.turn_id = s.active_turn_id
+                       WHERE s.tenant_id = %s AND s.session_key = %s""",
+                    (tenant_id, session_key),
+                )
+                row = await cur.fetchone()
+        if (
+            row is None
+            or row[2] != "running"
+            or row[3] != idempotency_key
+            or row[4] != request_fingerprint
+        ):
+            raise TurnConflict("no matching active turn to recover")
+        return TurnClaim(tenant_id, session_key, row[0], "in_progress", row[1])
+
     async def begin_turn(
         self,
         tenant_id: str,
@@ -267,6 +301,26 @@ class PostgresTurnRepository:
                 )
                 if cur.rowcount != 1:
                     raise CheckpointConflict("active checkpoint already exists")
+
+    async def get_checkpoint_for_turn(self, claim: TurnClaim) -> AgentCheckpoint | None:
+        """Read an active Checkpoint only while the caller still owns its DB fence."""
+
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                await self._lock_writable_claim(cur, claim)
+                await cur.execute(
+                    """SELECT turn_id, version, schema_version, payload
+                       FROM agent_active_checkpoint
+                       WHERE tenant_id = %s AND session_key = %s""",
+                    (claim.tenant_id, claim.session_key),
+                )
+                row = await cur.fetchone()
+        if row is None:
+            return None
+        checkpoint = PostgresCheckpointRepository._read_row(row, claim.tenant_id, claim.session_key)
+        if checkpoint.turn_id != claim.turn_id:
+            raise CheckpointConflict("checkpoint belongs to another turn")
+        return checkpoint
 
     async def update_checkpoint(
         self, claim: TurnClaim, checkpoint: AgentCheckpoint, expected_version: int
@@ -574,3 +628,10 @@ class PostgresTurnRepository:
             if schema_version != _SCHEMA_VERSION:
                 raise ValueError("unsupported stored message schema version")
         return tuple(_read_message(payload) for _, payload in rows)
+
+    async def load_turn_messages(self, claim: TurnClaim) -> tuple[ChatMessage, ...]:
+        """Load only this Turn's committed prefix, not previous Session history."""
+
+        async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
+            async with conn.cursor() as cur:
+                return await self._stored_turn_messages(cur, claim)

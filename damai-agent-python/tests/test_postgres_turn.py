@@ -154,6 +154,29 @@ class PostgresTurnIntegrationTest(unittest.IsolatedAsyncioTestCase):
             await self.repository.load_recent_messages("tenant-1", self.session_key), messages
         )
 
+    async def test_recovery_lookup_requires_matching_request_and_stays_read_only(self) -> None:
+        old = await self.repository.begin_turn(
+            "tenant-1", self.session_key, "turn-1", "idem-1", self.fingerprint
+        )
+        with self.assertRaises(TurnConflict):
+            await self.repository.get_recoverable_turn(
+                "tenant-1", self.session_key, "different", self.fingerprint
+            )
+        with self.assertRaises(TurnConflict):
+            await self.repository.get_recoverable_turn(
+                "tenant-1", self.session_key, "idem-1", "0" * 64
+            )
+        candidate = await self.repository.get_recoverable_turn(
+            "tenant-1", self.session_key, "idem-1", self.fingerprint
+        )
+        self.assertEqual(candidate.turn_id, old.turn_id)
+        self.assertEqual(candidate.fence_version, old.fence_version)
+        self.assertEqual(await self.repository.load_turn_messages(old), ())
+        self.assertEqual(
+            (await self.repository.get_active_turn("tenant-1", self.session_key)).fence_version,
+            old.fence_version,
+        )
+
     async def test_checkpoint_clear_and_turn_commit_are_atomic(self) -> None:
         claim = await self.repository.begin_turn(
             "tenant-1", self.session_key, "turn-1", "idem-1", self.fingerprint
