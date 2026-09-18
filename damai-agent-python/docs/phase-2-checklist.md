@@ -23,9 +23,9 @@
 - [x] PostgreSQL 活动 Checkpoint Repository、迁移和同一租户/Session 原子版本比较写入；GitHub PostgreSQL 集成测试通过
 - [x] PostgreSQL Session/Message/Turn Repository、迁移和 Turn 完成/消息追加/Checkpoint 清理的单事务提交；新增真实数据库测试在 GitHub CI 通过
 - [x] Redis 带 owner token 的 Session 租约锁、条件续租与条件释放；云端 Redis 验证过期旧 owner 不会释放新租约
-- [ ] Redis Pending Queue、取消标记和租约失效后的运行时中止
-- [ ] Runner 在工具执行前、每个结果完成后写 Checkpoint；恢复协议并保证任何未知写操作不盲目重放
-- [x] Repository 层 Turn 幂等键与重复请求返回同一结果；冲突请求默认拒绝，运行时/API 接入待办
+- [ ] Redis Pending Queue、取消标记；显式持久化入口已在模型/Tool 安全点检查租约，运行中外部调用仍不能被强制取消
+- [x] 显式持久化 Runner 在工具执行前、每个结果完成后写 Checkpoint；未知状态的调用不自动重放，恢复协议仍待实现
+- [x] Repository 层 Turn 幂等键与重复请求返回同一结果；显式持久化入口已接入，默认 Chat API 仍未切换
 - [ ] 断线 SSE 事件持久化与续传、委托身份和请求级 Scope
 - [ ] PostgreSQL/Redis 故障、进程中断、多副本竞争和真实 Java Tool 注入验收
 
@@ -68,6 +68,16 @@
 - 原有 `PostgresCheckpointRepository` 保留供基础测试/兼容使用，未绑定 Turn 代次；生产运行时接入时必须使用上述 fenced 写入方法
 - 当前仍未把 Runner、Redis 租约和 Repository 串成自动恢复链路；外部 Tool 的已发请求也不会因数据库 fencing 自动取消。新增真实 PostgreSQL 接管和多轮原子进度测试已在 GitHub [分支推送检查](https://github.com/royyyyie/pay-agent/actions/runs/35347773800)通过，`quality` 与 `java-contract` 均为绿色
 - 本地检查：73 项通过、14 项外部数据库/Redis 测试因缺少测试连接跳过，覆盖率 74.83%；Ruff、Mypy strict、OpenAPI/生成文件/兼容性检查通过
+
+## 第六批：显式启用的持久化 Runner
+
+- `DurableTurnService` 是独立入口，当前只接受 `READ_ONLY` 风险上限；默认 Chat API、现有 `TicketAgentLoop` 不自动切换，避免在恢复协议和故障验收完成前扩大运行面
+- 每次调用先取得 Redis Session 租约，再通过 PostgreSQL 建立带幂等键及 fencing 代次的 Turn；已完成的相同请求可返回原结果，进行中的请求拒绝自动接管或重放
+- Runner 在模型/Tool 安全点检查并续租，模型给出 Tool 批次后先写 Checkpoint，再执行 Tool；每个结果通过带代次校验的写入独立落库；整批完成后原子追加消息并清理 Checkpoint，最后完成 Turn
+- 并发只读 Tool 的结果可乱序完成，但模型消息仍按调用顺序排列；单个结果持久化失败或租约失效时，不进入下一次模型调用。Checkpoint 记录本轮实际模型路由
+- 当前没有自动恢复、Pending Queue、取消标记、SSE 续传或运行中外部请求强制取消。若异常发生在 Tool 发出之后，原 Turn 会保持 `running`，同一幂等键重试会被拒绝；须待后续显式恢复流程处理，不能把未知结果当作失败后立即重试
+- PostgreSQL/Redis 连接使用逐次建立的基础实现，尚未加入连接池与后台租约保活；长耗时模型或 Tool 调用可能使租约过期，随后在安全点停止。此批不能据此宣称生产可用或严格的端到端多副本串行
+- 新增单元测试覆盖 Checkpoint 创建失败、结果持久化失败、写权限上限拒绝；真实 PostgreSQL+Redis 集成测试覆盖正常完成/幂等、提交失败留存 Checkpoint、租约失效后停止。外部集成测试由 GitHub CI 执行，本机缺少测试连接时跳过
 
 ## 阶段退出标准
 

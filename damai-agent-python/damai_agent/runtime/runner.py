@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import List, Optional, Sequence
+from typing import List, Optional, Protocol, Sequence, cast
 
 from ..models import (
     AgentErrorCode,
@@ -37,6 +37,20 @@ from .hooks import (
 )
 
 REJECTED_FINISH_REASONS = frozenset({"content_filter", "error", "refusal"})
+
+
+class ToolRoundRecorder(Protocol):
+    """Fail-closed persistence boundary for an opt-in durable Turn."""
+
+    async def ensure_active(self) -> None: ...
+
+    async def before_tool_round(
+        self, spec: AgentRunSpec, iteration: int, assistant: ChatMessage, model_route: str
+    ) -> None: ...
+
+    async def record_tool_result(self, tool_call_id: str, result: ToolResult) -> None: ...
+
+    async def commit_tool_round(self, messages: Sequence[ChatMessage]) -> None: ...
 
 
 class ToolCallingRunner:
@@ -86,6 +100,8 @@ class ToolCallingRunner:
         self,
         spec: AgentRunSpec,
         emitter: TurnEventEmitter,
+        *,
+        recorder: ToolRoundRecorder | None = None,
     ) -> AgentRunResult:
         if not spec.messages or spec.messages[-1].role != "user":
             raise ValueError("AgentRunSpec.messages 必须以当前 user 消息结束")
@@ -106,6 +122,8 @@ class ToolCallingRunner:
         ledger = ToolCallLedger(max_calls=spec.max_tool_calls)
 
         for round_number in range(1, spec.max_tool_rounds + 1):
+            if recorder is not None:
+                await recorder.ensure_active()
             try:
                 prepared = self._context_governor.prepare(messages, available_specs)
             except ValueError:
@@ -189,6 +207,8 @@ class ToolCallingRunner:
                 )
 
             assistant = self._assistant_message(response)
+            if recorder is not None and response.tool_calls:
+                await recorder.before_tool_round(spec, round_number, assistant, model_route)
             messages.append(assistant)
             turn_messages.append(assistant)
 
@@ -213,6 +233,8 @@ class ToolCallingRunner:
                 if item.risk is ToolRisk.READ_ONLY and item.concurrency_safe and not item.exclusive
             }
             for batch in self._tool_batches(response.tool_calls, parallel_names):
+                if recorder is not None:
+                    await recorder.ensure_active()
                 for call in batch:
                     tools_used.append(call.name)
                     started = await emitter.emit(
@@ -221,9 +243,27 @@ class ToolCallingRunner:
                     tool_events.append(started)
 
                 # Keep provider call order even if individual read-only tools finish out of order.
-                results = await asyncio.gather(
-                    *(self._execute_call(call, spec, risk_by_name, ledger, hooks) for call in batch)
-                )
+                if recorder is None:
+                    results = await asyncio.gather(
+                        *(
+                            self._execute_call(call, spec, risk_by_name, ledger, hooks)
+                            for call in batch
+                        )
+                    )
+                else:
+                    outcomes = await asyncio.gather(
+                        *(
+                            self._execute_and_record(
+                                call, spec, risk_by_name, ledger, hooks, recorder
+                            )
+                            for call in batch
+                        ),
+                        return_exceptions=True,
+                    )
+                    for outcome in outcomes:
+                        if isinstance(outcome, BaseException):
+                            raise outcome
+                    results = [cast(ToolResult, outcome) for outcome in outcomes]
                 for call, tool_result in zip(batch, results, strict=True):
                     tool_message = ChatMessage(
                         role="tool",
@@ -247,6 +287,8 @@ class ToolCallingRunner:
                         },
                     )
                     tool_events.append(completed)
+            if recorder is not None:
+                await recorder.commit_tool_round(tuple(turn_messages))
 
         answer = "本轮调用工具次数已达到上限，请缩小查询范围后重试。"
         turn_messages.append(ChatMessage(role="assistant", content=answer))
@@ -309,6 +351,20 @@ class ToolCallingRunner:
         )
         result = self._context_governor.bound_tool_result(result)
         await hooks.after_tool(context, ToolOutcome.from_result(result, elapsed_ms(started_at)))
+        return result
+
+    async def _execute_and_record(
+        self,
+        call: ToolCall,
+        spec: AgentRunSpec,
+        risk_by_name: dict[str, ToolRisk],
+        ledger: ToolCallLedger,
+        hooks: HookChain,
+        recorder: ToolRoundRecorder,
+    ) -> ToolResult:
+        await recorder.ensure_active()
+        result = await self._execute_call(call, spec, risk_by_name, ledger, hooks)
+        await recorder.record_tool_result(call.id, result)
         return result
 
     def _governor_failure(
