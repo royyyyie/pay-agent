@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import unittest
 import uuid
 from pathlib import Path
@@ -34,6 +35,7 @@ from damai_agent.runtime.runner import ToolCallingRunner
 from damai_agent.tools import AgentTool, ToolRegistry
 
 _MIGRATION_DIR = Path(__file__).resolve().parents[1] / "migrations"
+_KILLABLE_CHILD = Path(__file__).resolve().parent / "helpers" / "killable_turn.py"
 _MIGRATIONS = tuple(
     (_MIGRATION_DIR / name).read_text(encoding="utf-8")
     for name in (
@@ -570,3 +572,49 @@ class DurableRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
         recovered = await service.recover(None, context, "idem-1")
         self.assertEqual(recovered.stop_reason, "interrupted_recovered")
         self.assertEqual(self.tool.calls, 0)
+
+    async def test_killed_process_recovers_unknown_tool_without_reexecution(self) -> None:
+        key_prefix = f"damai:agent:kill-test:{uuid.uuid4().hex}:"
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(_KILLABLE_CHILD),
+            self.session_key,
+            key_prefix,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        context = make_context(self.session_key, "turn-killed")
+        try:
+            for _ in range(200):
+                checkpoint = await self.checkpoints.get_active(context.tenant_id, self.session_key)
+                if checkpoint is not None:
+                    break
+                if process.returncode is not None:
+                    self.fail("child exited before creating a checkpoint")
+                await asyncio.sleep(0.05)
+            else:
+                self.fail("child did not create a checkpoint in time")
+            assert checkpoint is not None
+            self.assertEqual(checkpoint.phase, "awaiting_tools")
+            process.kill()
+            await asyncio.wait_for(process.wait(), timeout=5)
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+        await asyncio.sleep(0.8)
+        self.assertEqual(
+            await self.turns.get_turn_status(context.tenant_id, self.session_key, context.turn_id),
+            "running",
+        )
+        recovery = DurableTurnService(
+            self.runner,
+            self.turns,
+            RedisSessionLeaseStore(self.client, key_prefix=key_prefix),
+            lease_ttl_ms=300,
+        )
+        result = await recovery.recover(None, context, "idem-killed")
+        self.assertEqual(result.error_code.value, "TOOL_EXECUTION_UNKNOWN")
+        self.assertEqual(self.tool.calls, 0)
+        self.assertEqual(self.provider.calls, 0)
+        self.assertIsNone(await self.checkpoints.get_active(context.tenant_id, self.session_key))
