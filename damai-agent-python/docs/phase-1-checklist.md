@@ -105,6 +105,15 @@
 - SSE：`turn.started → model.completed → tool.started → tool.completed → model.completed → turn.completed`
 - SSE 序号：`1,2,3,4,5,6`，全程共享 Trace `fd311165f9b945038e7decf1737000e5`
 
+## 云端中间件真实链路补充验收
+
+- 日期：2026-09-18；通过现有云端 Nacos、Redis、Kafka、Elasticsearch 配置启动 Java Program Service，并启动 Python Agent；两侧健康状态均为 `UP`
+- 三个 Java 只读 Tool：`search_programs`、`get_program_detail`、`list_ticket_categories` 的真实调用均返回业务码 0，每种 Tool 各重复 3 次通过；Agent 对话/SSE 主链和事件连续性通过
+- 验收 Trace：`ecb6d3f79e3f419684aeb807cf733d94`；同一 Turn 中事件序号连续、Trace 一致；Java 错误密钥请求返回 401
+- 首次 `get_program_detail` 曾发生约 5 秒超时，重试通过；原因未查明，不能据此认定稳定性退出标准已满足
+- 尚未完成网络/进程故障注入、跨实例竞争与断线恢复验收；上方“真实 Java Tool E2E 与故障注入”总项仍保持未完成
+- 因 Java 服务默认监听所有网卡且本地密钥强度不足，验收后已停止本次启动的 Java 与 Python 进程；云端中间件未被修改
+
 ## 阶段退出标准
 
 现有三个 Tool 必须在认证链路下稳定流式工作；错误参数不得到达 Java；同 Session 串行；每个 Turn/Tool 都有 Trace 与 Usage；核心运行时通过单元、契约、集成和故障测试。

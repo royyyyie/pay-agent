@@ -113,4 +113,4 @@ uv run --frozen pytest --cov=damai_agent
 
 阶段 1 已完成运行契约、Tool 输入/输出边界、Provider 真实流式、受控只读 Tool 并发、基础 Hook 链和字符级上下文治理。审计当前仅为进程日志或由部署方提供的 Sink，尚无持久化、不可篡改和跨服务关联保证；模型 Token 级预算与真实链路故障验收仍在后续批次。
 
-阶段 2 已启动 Checkpoint 安全契约与单进程测试实现；尚未连接 PostgreSQL/Redis，也未接入运行时自动恢复，不具备进程崩溃后的持久恢复能力。
+阶段 2 已建立 Checkpoint 安全契约，并提供可选的 PostgreSQL 活动 Checkpoint Repository 和 Redis Session 租约原语。迁移脚本位于 `migrations/001_agent_active_checkpoint.sql`，需由有权限的迁移账号预先执行；分别通过 `postgres`、`redis` 可选依赖安装。现有 Agent 运行时仍使用进程内会话，尚未接入 PostgreSQL/Redis 自动恢复；Redis 租约也尚无数据库 fencing token，不能据此认定已有崩溃恢复或多副本严格串行能力。Checkpoint 可能包含用户输入及 Tool 参数/结果，生产使用前须完成数据库账号隔离、传输与静态加密、保留期和备份设计。详见[阶段 2 检查清单](docs/phase-2-checklist.md)。

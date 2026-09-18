@@ -125,6 +125,28 @@ class CheckpointRepository(Protocol):
     ) -> None: ...
 
 
+def validate_checkpoint_update(
+    current: AgentCheckpoint | None, checkpoint: AgentCheckpoint, expected_version: int
+) -> None:
+    """Apply the same monotonic, single-result CAS rule in every repository."""
+
+    if (
+        current is None
+        or current.turn_id != checkpoint.turn_id
+        or current.version != expected_version
+        or checkpoint.version != expected_version + 1
+        or checkpoint.iteration != current.iteration
+        or checkpoint.assistant_message != current.assistant_message
+        or checkpoint.prompt_version != current.prompt_version
+        or checkpoint.toolset_version != current.toolset_version
+        or checkpoint.policy_version != current.policy_version
+        or checkpoint.model_route != current.model_route
+        or checkpoint.completed_results[:-1] != current.completed_results
+        or len(checkpoint.completed_results) != len(current.completed_results) + 1
+    ):
+        raise CheckpointConflict("stale checkpoint update")
+
+
 class InMemoryCheckpointRepository:
     """Single-process test implementation; not a durable production repository."""
 
@@ -148,21 +170,7 @@ class InMemoryCheckpointRepository:
         key = (checkpoint.tenant_id, checkpoint.session_key)
         async with self._lock:
             current = self._active.get(key)
-            if (
-                current is None
-                or current.turn_id != checkpoint.turn_id
-                or current.version != expected_version
-                or checkpoint.version != expected_version + 1
-                or checkpoint.iteration != current.iteration
-                or checkpoint.assistant_message != current.assistant_message
-                or checkpoint.prompt_version != current.prompt_version
-                or checkpoint.toolset_version != current.toolset_version
-                or checkpoint.policy_version != current.policy_version
-                or checkpoint.model_route != current.model_route
-                or checkpoint.completed_results[:-1] != current.completed_results
-                or len(checkpoint.completed_results) != len(current.completed_results) + 1
-            ):
-                raise CheckpointConflict("stale checkpoint update")
+            validate_checkpoint_update(current, checkpoint, expected_version)
             self._active[key] = copy.deepcopy(checkpoint)
 
     async def clear(

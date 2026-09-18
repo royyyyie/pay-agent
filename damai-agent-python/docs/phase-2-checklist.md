@@ -20,12 +20,32 @@
 
 ## 后续批次
 
-- [ ] PostgreSQL Session/Message/Turn/Checkpoint Repository、迁移和原子提交
-- [ ] Redis 带 owner token 的 Session 租约锁、续租、Pending Queue 与取消标记
+- [x] PostgreSQL 活动 Checkpoint Repository、迁移和同一租户/Session 原子版本比较写入；CI 已配置 PostgreSQL 真实并发测试，待 PR 运行确认
+- [ ] PostgreSQL Session/Message/Turn Repository、Turn 与 Checkpoint 原子提交
+- [x] Redis 带 owner token 的 Session 租约锁、条件续租与条件释放；云端 Redis 验证过期旧 owner 不会释放新租约
+- [ ] Redis Pending Queue、取消标记和租约失效后的运行时中止
 - [ ] Runner 在工具执行前、每个结果完成后写 Checkpoint；恢复协议并保证任何未知写操作不盲目重放
 - [ ] Turn 幂等键与重复请求返回同一结果；冲突请求默认拒绝
 - [ ] 断线 SSE 事件持久化与续传、委托身份和请求级 Scope
 - [ ] PostgreSQL/Redis 故障、进程中断、多副本竞争和真实 Java Tool 注入验收
+
+## 第二批：PostgreSQL 活动 Checkpoint
+
+- 迁移脚本：`migrations/001_agent_active_checkpoint.sql`；按 `(tenant_id, session_key)` 唯一约束限制活动 Turn；数据库事务内锁行校验并执行版本比较更新
+- 存储格式由 `schema_version=1` 固定；读取时同时校验 JSON 结构、数据库行身份与版本，异常数据默认拒绝
+- `PostgresCheckpointRepository` 使用独立短事务，不在模型或 Tool 网络调用期间持有数据库连接；数据库连接池与运行时接入尚未实现
+- `postgres` 为可选依赖；仅安装依赖不会把现有运行时切换到 PostgreSQL。生产接入前必须完成受控数据库账号、传输/静态加密、备份、保留期/清理与连接池容量设计
+- CI 的 PostgreSQL 只用于测试；它不替代云端服务。当前批次仍没有 Session/Message/Turn 持久化，也没有崩溃恢复的端到端证据
+- 本地检查：69 项通过，4 项真实 PostgreSQL 集成测试因没有测试 DSN 被跳过；Ruff、Mypy strict、OpenAPI/生成文件/兼容性检查通过。PR 的 CI 结果尚待确认
+
+## 第三批：Redis Session 租约基础
+
+- `RedisSessionLeaseStore` 以租户和 Session 的哈希值构造隔离键；随机 owner token 与 TTL 一起原子抢占，续租和释放通过 Redis 脚本核对 owner 后执行
+- Redis 网络/认证错误向调用方抛出，不退化为“已获锁”；TTL 到期后，旧 owner 不能续租或释放新 owner 的键
+- 2026-09-18：使用现有云端 Redis 的随机测试命名空间和短期键验证，5 项测试通过，涵盖并发抢占、续租、过期接管、旧 owner 拒绝和租户隔离；未读取或修改业务键
+- 云端往返耗时使最初 3 秒竞争测试产生先后获锁的误判；测试改用 30 秒 TTL 后通过，过期接管使用独立测试验证
+- CI 已配置独立 Redis 服务，PR 运行待确认。该租约尚未接入 Agent Loop；单 Redis 租约不能代替数据库 fencing token，租约失效期间运行中的旧进程仍可能继续执行，故不能据此宣称多副本严格串行
+- 全套本地测试加载现有云端 Redis 配置后为 74 项通过、4 项 PostgreSQL 测试因缺少测试 DSN 跳过，覆盖率 85.54%；Ruff、Mypy strict、OpenAPI 与契约兼容检查通过
 
 ## 阶段退出标准
 

@@ -16,6 +16,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2,<4"]
+redis = ["redis>=7,<9"]
 dev = [
     "httpx>=0.28,<1.0",
     "mypy>=1.10,<2.0",
