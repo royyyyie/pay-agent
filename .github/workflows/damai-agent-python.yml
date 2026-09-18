@@ -11,7 +11,7 @@ on:
       - "damai-server/damai-program-service/src/test/java/com/damai/controller/agent/**"
       - ".github/workflows/damai-agent-python.yml"
   push:
-    branches: [main]
+    branches: [main, "codex/phase-*"]
     paths:
       - "damai-agent-python/**"
       - "contracts/**"
