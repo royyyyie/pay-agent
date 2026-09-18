@@ -12,6 +12,7 @@ from ..models import (
     ChatMessage,
     TicketTurnContext,
     ToolRisk,
+    ToolSpec,
 )
 from ..providers import ModelProvider
 from ..session import InMemorySessionStore
@@ -27,6 +28,14 @@ SYSTEM_PROMPT = """你是面向演出购票场景的智能助手。
 当前版本只允许查询，不得声称已经下单、锁座、支付或绕过排队与验证码。
 工具失败时如实说明，并根据 retryable 字段判断是否建议稍后重试。
 回答简洁清楚，涉及金额、日期和规则时保留工具返回的原值。"""
+
+
+def toolset_version(tool_specs: Sequence[ToolSpec]) -> str:
+    canonical = "|".join(
+        f"{spec.name}@{spec.version}" for spec in sorted(tool_specs, key=lambda item: item.name)
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return f"agent-tools-v1@sha256:{digest}"
 
 
 class TicketAgentLoop:
@@ -135,12 +144,7 @@ class TicketAgentLoop:
         )
 
     def _toolset_version(self) -> str:
-        canonical = "|".join(
-            f"{spec.name}@{spec.version}"
-            for spec in sorted(self._runner.registered_specs, key=lambda item: item.name)
-        )
-        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
-        return f"agent-tools-v1@sha256:{digest}"
+        return toolset_version(self._runner.registered_specs)
 
 
 class AgentRunner(TicketAgentLoop):
