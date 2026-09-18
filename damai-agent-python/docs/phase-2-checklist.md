@@ -91,6 +91,7 @@
 ## 第八批：持久化 HTTP/SSE 与有界请求准入
 
 - `migrations/003_agent_turn_event.sql` 建立租户/Session/Turn 隔离的单调事件序号；运行事件先写 PostgreSQL 再转发给客户端，完成事件和 Turn 完成在同一数据库事务提交；旧 fencing 代次不能继续写事件
+- 建立持久化 Turn 时在同一事务保存原始用户消息；最近会话历史只读取已完成 Turn，避免当前用户输入重复进入模型上下文。即使第一批 Tool 前中断，原输入仍在数据库中
 - `GET /api/v2/turns/{turnId}/events` 使用 `Last-Event-ID` 按序续传，完成后关闭流；游标只对签名委托中的 Turn 有效，批量读取以避免一次请求过大
 - `RedisPendingTurnQueue` 用租户/Session 哈希键和请求指纹 token 建立有界 FIFO；重复排队返回同一位置，超额拒绝，过期项在读写时清理。队列不保存用户正文，也不是可靠的后台任务队列；请求方保留正文并以原幂等键重试
 - 可选的持久化 `/api/v2/turns`、`/recover`、`/cancel` 入口要求短期 HMAC 签名委托，限定 tenant、user、Session、Turn、请求级 Scope 与 `READ_ONLY` 风险上限；部署时还需内部 API 密钥。开启持久化后旧 `/api/v1/chat` 被禁用，避免落回匿名内存会话

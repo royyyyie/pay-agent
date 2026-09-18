@@ -187,6 +187,7 @@ class DurableTurnService:
                 context.turn_id,
                 idempotency_key,
                 fingerprint,
+                user_message=ChatMessage(role="user", content=user_text),
             )
             if claim.state == "completed":
                 if claim.result is None:
@@ -298,18 +299,16 @@ class DurableTurnService:
 
     async def recover(
         self,
-        user_text: str,
+        user_text: str | None,
         context: TicketTurnContext,
         idempotency_key: str,
     ) -> AgentRunResult:
         """Fence and terminalize the exact interrupted request without invoking a Tool."""
 
-        if not user_text:
-            raise ValueError("user text is required")
+        if user_text == "":
+            raise ValueError("user text cannot be empty")
         if context.risk_ceiling is not ToolRisk.READ_ONLY:
             raise ValueError("durable runtime currently accepts read-only turns only")
-        fingerprint = self._request_fingerprint(user_text, context)
-        pending_token = RedisPendingTurnQueue.token_for(idempotency_key, fingerprint)
         lease = await self._leases.acquire(
             context.tenant_id, context.session_key, ttl_ms=self._lease_ttl_ms
         )
@@ -321,13 +320,23 @@ class DurableTurnService:
         heartbeat_failures: list[BaseException] = []
         heartbeat = asyncio.create_task(self._monitor_lease(lease, owner, heartbeat_failures))
         try:
+            if user_text is None:
+                active = await self._turns.get_active_turn(context.tenant_id, context.session_key)
+                if active is None or active.turn_id != context.turn_id:
+                    raise TurnConflict("no matching active turn to recover")
+                initial = await self._turns.load_turn_messages(active)
+                if not initial or initial[0].role != "user" or not initial[0].content:
+                    raise TurnConflict("active turn has no stored user request")
+                user_text = initial[0].content
+            fingerprint = self._request_fingerprint(user_text, context)
+            pending_token = RedisPendingTurnQueue.token_for(idempotency_key, fingerprint)
             candidate = await self._turns.get_recoverable_turn(
                 context.tenant_id, context.session_key, idempotency_key, fingerprint
             )
             claim = await self._turns.take_over_turn(candidate)
             stored = await self._turns.load_turn_messages(claim)
             user = ChatMessage(role="user", content=user_text)
-            if stored and (stored[0] != user or stored[-1].role != "tool"):
+            if stored and (stored[0] != user or stored[-1].role not in {"user", "tool"}):
                 raise TurnConflict("stored turn prefix is not recoverable")
             messages = (*stored,) if stored else (user,)
             checkpoint = await self._turns.get_checkpoint_for_turn(claim)

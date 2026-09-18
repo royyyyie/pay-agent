@@ -19,7 +19,7 @@
 
 - `POST /api/v2/turns`：正文为 `{"message":"...","sessionKey":"..."}`，另带 `Idempotency-Key` 和委托头。成功返回 Turn 结果；Session 正被占用时返回 202、`position` 和 `turnId`。请求方保留原正文并稍后以同一幂等键重试。队列容量和 TTL 由服务端限制，过期后需重新入队。
 - `POST /api/v2/turns/cancel`：同样的正文、幂等键和委托；仅对匹配的活动 Turn 标记取消，运行时在下一个安全点停止。外部 Java 请求已发出时不保证立即撤销。
-- `POST /api/v2/turns/recover`：原请求仍为 `running` 且原租约已释放/过期时调用。恢复先接管数据库代次，把未确认的 Tool 结果标为未知，再终结 Turn；不会调用模型或重新执行 Tool。已完成的 Turn 应重发原 `POST /api/v2/turns` 取得幂等结果。
+- `POST /api/v2/turns/recover`：原请求仍为 `running` 且原租约已释放/过期时调用。若调用方保留原正文，可发送同原请求；若正文已丢失，可只发送 `sessionKey`，但签名委托必须包含原 `turnId`，服务端从建立 Turn 时原子保存的用户消息读取正文并重新核对请求指纹。恢复先接管数据库代次，把未确认的 Tool 结果标为未知，再终结 Turn；不会调用模型或重新执行 Tool。已完成的 Turn 应重发原 `POST /api/v2/turns` 取得幂等结果。
 - 崩溃后若 Redis 不可用或数据库代次/Checkpoint 校验失败，保持原 Turn `running`，不得绕过恢复流程手动清理行或盲目重发工具。
 
 ## SSE 续传

@@ -157,11 +157,14 @@ class PostgresTurnRepository:
         turn_id: str,
         idempotency_key: str,
         request_fingerprint: str,
+        user_message: ChatMessage | None = None,
     ) -> TurnClaim:
         if not tenant_id or not session_key or not turn_id or not idempotency_key:
             raise ValueError("incomplete turn identity")
         if len(idempotency_key) > 200 or re.fullmatch(r"[0-9a-f]{64}", request_fingerprint) is None:
             raise ValueError("invalid idempotency key or request fingerprint")
+        if user_message is not None and (user_message.role != "user" or not user_message.content):
+            raise ValueError("initial turn message must be a nonempty user message")
         async with await psycopg.AsyncConnection.connect(self._dsn) as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -170,14 +173,14 @@ class PostgresTurnRepository:
                     (tenant_id, session_key),
                 )
                 await cur.execute(
-                    """SELECT fence_version, active_turn_id FROM agent_session
+                    """SELECT fence_version, active_turn_id, next_message_seq FROM agent_session
                        WHERE tenant_id = %s AND session_key = %s FOR UPDATE""",
                     (tenant_id, session_key),
                 )
                 session = await cur.fetchone()
                 if session is None:
                     raise RuntimeError("session row disappeared")
-                fence_version, active_turn_id = session
+                fence_version, active_turn_id, next_sequence = session
                 await cur.execute(
                     """SELECT turn_id, request_fingerprint, status,
                               result_schema_version, result_payload
@@ -206,9 +209,16 @@ class PostgresTurnRepository:
                     raise TurnConflict("session already has an active turn")
                 new_fence = fence_version + 1
                 await cur.execute(
-                    """UPDATE agent_session SET fence_version = %s, active_turn_id = %s
+                    """UPDATE agent_session SET fence_version = %s, active_turn_id = %s,
+                          next_message_seq = %s
                        WHERE tenant_id = %s AND session_key = %s""",
-                    (new_fence, turn_id, tenant_id, session_key),
+                    (
+                        new_fence,
+                        turn_id,
+                        next_sequence + (1 if user_message is not None else 0),
+                        tenant_id,
+                        session_key,
+                    ),
                 )
                 await cur.execute(
                     """INSERT INTO agent_turn
@@ -227,7 +237,10 @@ class PostgresTurnRepository:
                 )
                 if cur.rowcount != 1:
                     raise TurnConflict("turn identity already exists")
-                return TurnClaim(tenant_id, session_key, turn_id, "started", new_fence)
+                claim = TurnClaim(tenant_id, session_key, turn_id, "started", new_fence)
+                if user_message is not None:
+                    await self._append_messages(cur, claim, (user_message,), next_sequence, 0)
+                return claim
 
     async def take_over_turn(self, claim: TurnClaim) -> TurnClaim:
         """Fence a crashed owner before recovery; caller must own a fresh Redis lease."""
@@ -721,9 +734,12 @@ class PostgresTurnRepository:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """WITH recent AS (
-                           SELECT turn_id FROM agent_message
-                           WHERE tenant_id = %s AND session_key = %s
-                           GROUP BY turn_id ORDER BY max(sequence) DESC LIMIT %s
+                           SELECT m.turn_id FROM agent_message m JOIN agent_turn t
+                             ON t.tenant_id = m.tenant_id
+                            AND t.session_key = m.session_key AND t.turn_id = m.turn_id
+                           WHERE m.tenant_id = %s AND m.session_key = %s
+                             AND t.status = 'completed'
+                           GROUP BY m.turn_id ORDER BY max(m.sequence) DESC LIMIT %s
                        )
                        SELECT schema_version, payload FROM agent_message
                        WHERE tenant_id = %s AND session_key = %s

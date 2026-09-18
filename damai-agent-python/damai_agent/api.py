@@ -44,6 +44,11 @@ class DurableChatRequest(BaseModel):
     sessionKey: str = Field(min_length=1, max_length=200)
 
 
+class RecoverRequest(BaseModel):
+    sessionKey: str = Field(min_length=1, max_length=200)
+    message: Optional[str] = Field(default=None, min_length=1, max_length=2000)
+
+
 def _chat_response(result: AgentRunResult) -> ChatResponse:
     return ChatResponse(
         sessionKey=result.session_key,
@@ -308,11 +313,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.post("/api/v2/turns/recover", dependencies=[Depends(require_internal_api_key)])
     async def recover_turn(
-        request: DurableChatRequest,
+        request: RecoverRequest,
         context: TicketTurnContext = Depends(require_delegation),  # noqa: B008
         idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     ) -> ChatResponse:
-        check_durable_request(request, context)
+        if request.sessionKey != context.session_key:
+            raise HTTPException(status_code=403, detail="Session 与委托身份不匹配")
         if not idempotency_key or len(idempotency_key) > 200:
             raise HTTPException(status_code=400, detail="Idempotency-Key 无效")
         assert durable_service is not None

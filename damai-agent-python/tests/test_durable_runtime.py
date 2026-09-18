@@ -28,7 +28,7 @@ from damai_agent.postgres_turn import PostgresTurnRepository, TurnClaim, TurnCon
 from damai_agent.redis_control import RedisTurnCancellationStore
 from damai_agent.redis_lease import RedisSessionLeaseStore, SessionLease
 from damai_agent.redis_queue import RedisPendingTurnQueue
-from damai_agent.runtime.durable import DurableTurnService, LeaseLost, TurnCancelled
+from damai_agent.runtime.durable import DurableTurnService, LeaseLost, SessionBusy, TurnCancelled
 from damai_agent.runtime.events import TurnEventEmitter
 from damai_agent.runtime.runner import ToolCallingRunner
 from damai_agent.tools import AgentTool, ToolRegistry
@@ -486,7 +486,7 @@ class DurableRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             await service.cancel("查票", make_context(self.session_key, "wrong-turn"), "idem-1")
         )
-        recovered = await service.recover("查票", context, "idem-1")
+        recovered = await service.recover(None, context, "idem-1")
         self.assertEqual(recovered.stop_reason, "interrupted_recovered")
         self.assertEqual(self.tool.calls, 0)
 
@@ -501,3 +501,72 @@ class DurableRuntimeIntegrationTest(unittest.IsolatedAsyncioTestCase):
                 await self.service.run("查票", context, "idem-1")
         self.assertEqual(self.tool.calls, 0)
         self.assertIsNone(await self.checkpoints.get_active(context.tenant_id, self.session_key))
+
+    async def test_two_service_instances_never_start_same_session_together(self) -> None:
+        started = asyncio.Event()
+        finish_first = asyncio.Event()
+
+        class PausingProvider:
+            route_name = "test/pausing"
+
+            async def complete(
+                self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]
+            ) -> ProviderResponse:
+                started.set()
+                await finish_first.wait()
+                return ProviderResponse(content="first complete")
+
+        first_runner = ToolCallingRunner(PausingProvider(), ToolRegistry([CountingTool()]))
+        first_service = DurableTurnService(first_runner, self.turns, self.leases)
+        first_context = make_context(self.session_key, "turn-first")
+        second_context = make_context(self.session_key, "turn-second")
+        first_task = asyncio.create_task(first_service.run("第一问", first_context, "idem-first"))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            with self.assertRaises(SessionBusy):
+                await self.service.run("第二问", second_context, "idem-second")
+            self.assertEqual(self.provider.calls, 0)
+        finally:
+            finish_first.set()
+        first_result = await asyncio.wait_for(first_task, timeout=5)
+        self.assertEqual(first_result.final_content, "first complete")
+        second_result = await self.service.run("第二问", second_context, "idem-second")
+        self.assertEqual(second_result.final_content, "找到节目")
+        self.assertEqual(self.tool.calls, 1)
+        self.assertEqual(
+            await self.turns.get_turn_status(
+                second_context.tenant_id, self.session_key, second_context.turn_id
+            ),
+            "completed",
+        )
+
+    async def test_cancelled_worker_requires_safe_recovery(self) -> None:
+        started = asyncio.Event()
+
+        class PausingProvider:
+            route_name = "test/pausing"
+
+            async def complete(
+                self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]
+            ) -> ProviderResponse:
+                started.set()
+                await asyncio.sleep(30)
+                return ProviderResponse(content="never reached")
+
+        provider = PausingProvider()
+        service = DurableTurnService(
+            ToolCallingRunner(provider, ToolRegistry([self.tool])), self.turns, self.leases
+        )
+        context = make_context(self.session_key)
+        task = asyncio.create_task(service.run("查票", context, "idem-1"))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertEqual(
+            await self.turns.get_turn_status(context.tenant_id, self.session_key, context.turn_id),
+            "running",
+        )
+        recovered = await service.recover(None, context, "idem-1")
+        self.assertEqual(recovered.stop_reason, "interrupted_recovered")
+        self.assertEqual(self.tool.calls, 0)

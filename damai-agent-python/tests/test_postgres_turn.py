@@ -105,6 +105,28 @@ class PostgresTurnIntegrationTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TurnConflict):
             await self.repository.complete_turn(claim, result, messages)
 
+    async def test_initial_user_message_is_atomic_and_not_in_completed_history(self) -> None:
+        user = ChatMessage(role="user", content="查票")
+        claim = await self.repository.begin_turn(
+            "tenant-1",
+            self.session_key,
+            "turn-1",
+            "idem-1",
+            self.fingerprint,
+            user_message=user,
+        )
+        self.assertEqual(await self.repository.load_turn_messages(claim), (user,))
+        self.assertEqual(
+            await self.repository.load_recent_messages("tenant-1", self.session_key), ()
+        )
+        messages = (user, ChatMessage(role="assistant", content="已查询"))
+        result = make_result(self.session_key, "turn-1", messages)
+        await self.repository.complete_turn(claim, result, messages)
+        self.assertEqual(
+            await self.repository.load_recent_messages("tenant-1", self.session_key),
+            messages,
+        )
+
     async def test_busy_session_and_reused_idempotency_key_are_rejected(self) -> None:
         await self.repository.begin_turn(
             "tenant-1", self.session_key, "turn-1", "idem-1", self.fingerprint

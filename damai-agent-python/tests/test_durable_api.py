@@ -166,3 +166,21 @@ class DurableApiTest(DelegationTest):
         self.assertIn("id: 2", replay.text)
         self.assertIn("event: turn.completed", replay.text)
         self.assertEqual(load.await_args.args[-1], 1)
+
+    def test_recovery_can_use_stored_original_message(self) -> None:
+        result = AgentRunResult(
+            session_key="session-1",
+            turn_id="turn-1",
+            trace_id="trace-1",
+            final_content="已安全终结",
+            tools_used=(),
+        )
+        service = self.app.state.durable_service
+        with patch.object(service, "recover", new=AsyncMock(return_value=result)) as recover:
+            response = self.client.post(
+                "/api/v2/turns/recover",
+                headers=self.headers,
+                json={"sessionKey": "session-1"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(recover.await_args.args[0])
