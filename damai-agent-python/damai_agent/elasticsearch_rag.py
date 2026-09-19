@@ -10,8 +10,10 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Sequence
 from urllib.parse import quote, urlparse
+
+import httpx
 
 from .rag import KnowledgeDocument, KnowledgeHit, RetrievalProfile
 
@@ -24,19 +26,6 @@ _INFERENCE_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
 
 class ElasticsearchRetrievalError(RuntimeError):
     """A sanitized, retryable retrieval failure without response bodies or credentials."""
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(
-        self,
-        req: urllib.request.Request,
-        fp: Any,
-        code: int,
-        msg: str,
-        headers: Any,
-        newurl: str,
-    ) -> None:
-        return None
 
 
 class ElasticsearchKnowledgeRetriever:
@@ -55,6 +44,7 @@ class ElasticsearchKnowledgeRetriever:
         rank_window_size: int = 50,
         rank_constant: int = 60,
         opener: urllib.request.OpenerDirector | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         parsed = urlparse(base_url.rstrip("/"))
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -94,6 +84,8 @@ class ElasticsearchKnowledgeRetriever:
             raise ValueError("Elasticsearch rank window must be between 10 and 200")
         if not 1 <= rank_constant <= 1000:
             raise ValueError("Elasticsearch RRF rank constant must be between 1 and 1000")
+        if opener is not None and transport is not None:
+            raise ValueError("Elasticsearch test transports are mutually exclusive")
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._index_alias = index_alias
@@ -105,7 +97,28 @@ class ElasticsearchKnowledgeRetriever:
         self._rerank_inference_id = rerank_inference_id
         self._rank_window_size = rank_window_size
         self._rank_constant = rank_constant
-        self._opener = opener or urllib.request.build_opener(_NoRedirect())
+        self._opener = opener
+        self._http_client = (
+            None
+            if opener is not None
+            else httpx.AsyncClient(
+                base_url=self._base_url,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"ApiKey {self._api_key}",
+                },
+                timeout=httpx.Timeout(self._timeout_seconds),
+                limits=httpx.Limits(
+                    max_connections=64,
+                    max_keepalive_connections=32,
+                    keepalive_expiry=30,
+                ),
+                follow_redirects=False,
+                trust_env=False,
+                transport=transport,
+            )
+        )
         self._readiness_lock = asyncio.Lock()
         self._ready_until = 0.0
         self._ready_value = False
@@ -121,8 +134,7 @@ class ElasticsearchKnowledgeRetriever:
     async def acceptance_privileges(self) -> dict[str, bool]:
         """Return the bounded privileges required by semantic acceptance."""
 
-        payload = await asyncio.to_thread(
-            self._request_path,
+        payload = await self._request_path_async(
             "POST",
             "/_security/user/_has_privileges",
             {
@@ -148,6 +160,10 @@ class ElasticsearchKnowledgeRetriever:
             "viewIndexMetadata": target.get("view_index_metadata") is True,
         }
 
+    async def aclose(self) -> None:
+        if self._http_client is not None:
+            await self._http_client.aclose()
+
     async def check_ready(self) -> bool:
         if time.monotonic() < self._ready_until:
             return self._ready_value
@@ -163,8 +179,7 @@ class ElasticsearchKnowledgeRetriever:
 
         if self._retrieval_profile == "elastic-lexical":
             return {}
-        payload = await asyncio.to_thread(
-            self._request_path,
+        payload = await self._request_path_async(
             "GET",
             f"/{quote(self._index_alias, safe='')}/_mapping",
             None,
@@ -201,8 +216,7 @@ class ElasticsearchKnowledgeRetriever:
         if self._retrieval_profile != "elastic-lexical":
             query = {"match": {self._semantic_field: "知识检索就绪检查"}}
         try:
-            payload = await asyncio.to_thread(
-                self._request,
+            payload = await self._request(
                 {
                     "size": 0,
                     "track_total_hits": False,
@@ -312,7 +326,7 @@ class ElasticsearchKnowledgeRetriever:
                     }
                 },
             }
-        payload = await asyncio.to_thread(self._request, request_payload)
+        payload = await self._request(request_payload)
         hits_container = payload.get("hits")
         if not isinstance(hits_container, dict) or not isinstance(hits_container.get("hits"), list):
             raise ElasticsearchRetrievalError("Elasticsearch returned an invalid search envelope")
@@ -377,12 +391,36 @@ class ElasticsearchKnowledgeRetriever:
             raise ElasticsearchRetrievalError("Elasticsearch semantic passage exceeded the limit")
         return passage
 
-    def _request(self, payload: dict[str, object]) -> dict[str, object]:
-        return self._request_path(
+    async def _request(self, payload: dict[str, object]) -> dict[str, object]:
+        return await self._request_path_async(
             "POST",
             f"/{quote(self._index_alias, safe='')}/_search?allow_partial_search_results=false",
             payload,
         )
+
+    async def _request_path_async(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, object] | None,
+    ) -> dict[str, object]:
+        if self._http_client is None:
+            return await asyncio.to_thread(self._request_path, method, path, payload)
+        try:
+            async with self._http_client.stream(method, path, json=payload) as response:
+                response.raise_for_status()
+                raw = bytearray()
+                async for chunk in response.aiter_bytes():
+                    raw.extend(chunk)
+                    if len(raw) > _MAX_RESPONSE_BYTES:
+                        raise ElasticsearchRetrievalError(
+                            "Elasticsearch response exceeded the size limit"
+                        )
+        except ElasticsearchRetrievalError:
+            raise
+        except httpx.HTTPError as exc:
+            raise ElasticsearchRetrievalError("Elasticsearch knowledge search failed") from exc
+        return self._decode_response(bytes(raw))
 
     def _request_path(
         self,
@@ -405,6 +443,8 @@ class ElasticsearchKnowledgeRetriever:
                 "Authorization": f"ApiKey {self._api_key}",
             },
         )
+        if self._opener is None:
+            raise ElasticsearchRetrievalError("Elasticsearch transport is unavailable")
         try:
             with self._opener.open(request, timeout=self._timeout_seconds) as response:
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)
@@ -412,6 +452,10 @@ class ElasticsearchKnowledgeRetriever:
             raise ElasticsearchRetrievalError("Elasticsearch knowledge search failed") from exc
         if len(raw) > _MAX_RESPONSE_BYTES:
             raise ElasticsearchRetrievalError("Elasticsearch response exceeded the size limit")
+        return self._decode_response(raw)
+
+    @staticmethod
+    def _decode_response(raw: bytes) -> dict[str, object]:
         try:
             decoded = json.loads(raw.decode("utf-8"))
         except (UnicodeError, json.JSONDecodeError) as exc:

@@ -13,6 +13,7 @@ from typing import cast
 
 from damai_agent.elasticsearch_rag import ElasticsearchKnowledgeRetriever
 from damai_agent.rag import (
+    AsyncClosable,
     KnowledgeRetriever,
     RetrievalProfile,
     StableKnowledgeRag,
@@ -439,6 +440,8 @@ async def evaluate() -> int:
     print(json.dumps(acceptance, ensure_ascii=False, indent=2))
     if args.report_out is not None:
         await asyncio.to_thread(write_report, args.report_out, acceptance)
+    if isinstance(index, AsyncClosable):
+        await index.aclose()
     return 0 if acceptance["passed"] is True else 1
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import unittest
@@ -128,6 +129,25 @@ class PassageRetriever:
                 passage="真正相关的实名核验规则位于文档中间。",
             ),
         )
+
+
+class WarmupConcurrencyRetriever(PassageRetriever):
+    def __init__(self, warmup_requests: int) -> None:
+        self._warmup_requests = warmup_requests
+        self._started = 0
+        self._warmup_active = 0
+        self.max_warmup_active = 0
+
+    async def search(self, *_: object, **__: object) -> Sequence[KnowledgeHit]:
+        self._started += 1
+        is_warmup = self._started <= self._warmup_requests
+        if is_warmup:
+            self._warmup_active += 1
+            self.max_warmup_active = max(self.max_warmup_active, self._warmup_active)
+        await asyncio.sleep(0.01)
+        if is_warmup:
+            self._warmup_active -= 1
+        return await super().search()
 
 
 class KnowledgeIndexTest(unittest.IsolatedAsyncioTestCase):
@@ -389,6 +409,26 @@ class RagRunnerTest(unittest.IsolatedAsyncioTestCase):
 
 
 class RagOfflineEvalTest(unittest.IsolatedAsyncioTestCase):
+    async def test_benchmark_warms_connections_at_target_concurrency(self) -> None:
+        retriever = WarmupConcurrencyRetriever(warmup_requests=7)
+        rag = StableKnowledgeRag(retriever, top_k=1)  # type: ignore[arg-type]
+        await benchmark_rag(
+            rag,
+            (
+                RagEvalCase(
+                    case_id="stable-identity",
+                    query="实名购票有什么规定",
+                    tenant_id="tenant-a",
+                    expected_document_ids=("identity-policy",),
+                ),
+            ),
+            repetitions=1,
+            concurrency=4,
+            warmup_requests=7,
+            moment=NOW,
+        )
+        self.assertEqual(retriever.max_warmup_active, 4)
+
     async def test_retrieval_and_dynamic_red_lines(self) -> None:
         rag = StableKnowledgeRag(InMemoryKnowledgeIndex((document(),)))
         report = await evaluate_rag(

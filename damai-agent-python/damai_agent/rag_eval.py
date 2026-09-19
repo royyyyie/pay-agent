@@ -211,7 +211,7 @@ async def benchmark_rag(
         raise ValueError("RAG benchmark is limited to 50000 measured requests")
     observed_at = moment or datetime.now(timezone.utc)
 
-    for position in range(warmup_requests):
+    async def warmup(position: int) -> None:
         case = retrieval_cases[position % len(retrieval_cases)]
         await rag.prepare(
             case.query,
@@ -220,6 +220,16 @@ async def benchmark_rag(
             moment=observed_at,
             experiment_key=f"warmup-{position}-{case.case_id}",
         )
+
+    warmup_position = 0
+    warmup_width = 1
+    while warmup_position < warmup_requests:
+        batch_size = min(warmup_width, warmup_requests - warmup_position)
+        await asyncio.gather(
+            *(warmup(position) for position in range(warmup_position, warmup_position + batch_size))
+        )
+        warmup_position += batch_size
+        warmup_width = min(concurrency, warmup_width * 2)
 
     queue: asyncio.Queue[tuple[int, RagEvalCase]] = asyncio.Queue()
     for repetition in range(repetitions):

@@ -205,8 +205,9 @@ python scripts/evaluate_rag.py `
 - `semantic_rerank`：30 个真实检索请求，Recall 1.0、MRR 1.0、动态拦截率 1.0；负载 P95 1434.049 ms、5.860 QPS。
 - 将排名窗口从 50 收紧到 12、并发提高到 16 后，吞吐提升到 9.418 QPS，但负载 P95 上升到 1812.109 ms；不通过增加并发掩盖尾延迟问题。
 - 后续提供的数据面只读 Key 已通过身份认证，并具有目标索引 `read`；但 `monitor_inference=false`、`view_index_metadata=false`，语义查询返回 403。该 Key 对 Cloud 管理 API 返回 401，因此也不能读取组织账单。门禁已在压测前输出缺失权限，不会把普通文档读取误报为语义验收通过。
+- 新 Eval Key 以目标索引 `read` 和集群 `monitor_inference` 最小权限完成 100 请求实测。异步连接池、阶梯并发预热和禁用未审计环境代理后，`semantic_rerank` Recall 1.0、MRR 1.0、质量 P95 380.703 ms；负载 P95 603.274 ms、38.250 QPS，质量与性能门禁通过。报告仍因缺少真实费用证据而失败关闭。
 - 仓库资产复核只发现 3 条隔离测试文档和 5 条 Eval（其中 2 条检索、3 条动态阻断），未发现经过业务方审定、带来源和相关性标签的大规模知识目录；不得把测试 Fixture 记为正式业务集合。
-- 结论：功能和样例质量通过；原生产门槛 P95 ≤ 800 ms、吞吐 ≥ 10 QPS 未通过，Cloud Billing 费用证据和业务大规模集合仍缺失，因此保持 staged，不执行 promote。
+- 结论：测试 Fixture 上的功能、质量和性能门禁通过；Cloud Billing 费用证据和业务大规模集合仍缺失，因此保持 staged，不执行 promote。
 
 高级架构与不采用 GraphRAG/RAPTOR 作为默认路径的理由见 [ADR-011](adr/011-advanced-rag-retrieval.md)。
 

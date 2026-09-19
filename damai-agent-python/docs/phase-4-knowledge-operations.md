@@ -54,6 +54,8 @@ uv run --frozen python scripts/manage_knowledge_index.py stage `
 
 Bulk 按 500 文档/5 MiB 双上限自动分批，最后一批等待刷新。发布账号还需要使用指定 inference endpoint 的最小权限和容量；运行时只读账号不得获得索引写权限。失败响应正文不会进入异常消息。
 
+运行时使用有上限的异步连接池复用 Elasticsearch HTTPS 连接，并在关闭应用时释放连接。负载验收按 1、2、4 直至目标并发阶梯预热连接，预热请求不计入正式指标。客户端不继承系统环境代理，避免认证头未经部署配置流经非预期代理；必须使用企业代理时，应先在部署网络层显式配置、审计并单独验收。
+
 6. 使用只读 Eval Key 对“具体索引”而非活动别名执行质量和负载验收。语义查询会调用 Inference API，因此最小权限为目标具体索引的 `read` 和集群级 `monitor_inference`；直接读取 Mapping 时还需要 `view_index_metadata`。如果发布/上一轮验收已经留下 72 小时内、目标索引和内容版本完全一致的报告，可以通过 `--semantic-evidence-report` 复用其中的 Mapping 证据。新报告会记录旧报告 SHA-256，不要求 Eval Key 获得 `view_index_metadata`，但仍强制要求 `monitor_inference`。至少 30 个实测请求；正式集合应远大于该下限：
 
 ```json

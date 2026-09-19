@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Literal, Protocol, Sequence
+from typing import Literal, Protocol, Sequence, runtime_checkable
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -166,6 +166,11 @@ class KnowledgeRetriever(Protocol):
     ) -> Sequence[KnowledgeHit]: ...
 
 
+@runtime_checkable
+class AsyncClosable(Protocol):
+    async def aclose(self) -> None: ...
+
+
 def plan_chinese_queries(query: str) -> tuple[str, ...]:
     """Build a bounded set of deterministic lexical channels for Chinese retrieval."""
 
@@ -209,6 +214,10 @@ class ReciprocalRankFusionRetriever:
 
     async def check_ready(self) -> bool:
         return await self._retriever.check_ready()
+
+    async def aclose(self) -> None:
+        if isinstance(self._retriever, AsyncClosable):
+            await self._retriever.aclose()
 
     async def search(
         self,
@@ -388,6 +397,9 @@ class InMemoryKnowledgeIndex:
     async def check_ready(self) -> bool:
         return True
 
+    async def aclose(self) -> None:
+        return None
+
     async def search(
         self,
         query: str,
@@ -507,6 +519,10 @@ class StableKnowledgeRag:
 
     async def check_ready(self) -> bool:
         return await self._retriever.check_ready()
+
+    async def aclose(self) -> None:
+        if isinstance(self._retriever, AsyncClosable):
+            await self._retriever.aclose()
 
     async def prepare(
         self,
