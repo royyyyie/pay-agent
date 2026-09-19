@@ -248,6 +248,8 @@ class DurableTurnService:
                     "stopReason": result.stop_reason,
                     "errorCode": result.error_code.value if result.error_code else None,
                     "modelRoute": result.model_route,
+                    "citations": [item.to_dict() for item in result.citations],
+                    "knowledgeVersion": result.knowledge_version,
                 },
             )
             await self._acknowledge_pending(context, pending_token)

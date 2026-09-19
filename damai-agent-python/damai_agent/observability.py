@@ -9,6 +9,7 @@ from .models import ProviderUsage
 
 _BUCKETS = (0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
 _Outcome = Literal["success", "error", "rejected"]
+_KnowledgeOutcome = Literal["hit", "miss", "dynamic_blocked", "error"]
 
 
 class _Histogram:
@@ -36,6 +37,12 @@ class RuntimeMetrics:
         self._prompt_tokens = 0
         self._completion_tokens = 0
         self._cost_micro_usd = 0
+        self._knowledge: dict[_KnowledgeOutcome, int] = {
+            "hit": 0,
+            "miss": 0,
+            "dynamic_blocked": 0,
+            "error": 0,
+        }
 
     def observe_turn(self, outcome: _Outcome, duration_ms: int) -> None:
         with self._lock:
@@ -44,6 +51,10 @@ class RuntimeMetrics:
 
     def observe_tool(self, success: bool, duration_ms: int) -> None:
         self._observe("tool", success, duration_ms)
+
+    def observe_knowledge(self, outcome: _KnowledgeOutcome) -> None:
+        with self._lock:
+            self._knowledge[outcome] += 1
 
     def observe_model(
         self,
@@ -108,4 +119,11 @@ class RuntimeMetrics:
                 lines.append(f"# HELP damai_agent_{name}_total {description}")
                 lines.append(f"# TYPE damai_agent_{name}_total counter")
                 lines.append(f"damai_agent_{name}_total {value}")
+            lines.append("# HELP damai_agent_knowledge_retrieval_total RAG retrieval outcomes.")
+            lines.append("# TYPE damai_agent_knowledge_retrieval_total counter")
+            for knowledge_outcome, count in self._knowledge.items():
+                lines.append(
+                    "damai_agent_knowledge_retrieval_total"
+                    f'{{outcome="{knowledge_outcome}"}} {count}'
+                )
         return "\n".join(lines) + "\n"

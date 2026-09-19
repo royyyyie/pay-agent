@@ -10,7 +10,7 @@ from pathlib import Path
 import psycopg
 
 from damai_agent.checkpoint import AgentCheckpoint, CheckpointConflict
-from damai_agent.models import AgentRunResult, ChatMessage, ToolCall, ToolResult
+from damai_agent.models import AgentRunResult, ChatMessage, KnowledgeCitation, ToolCall, ToolResult
 from damai_agent.postgres_checkpoint import PostgresCheckpointRepository
 from damai_agent.postgres_turn import (
     PostgresTurnRepository,
@@ -49,6 +49,17 @@ def make_result(
         final_content="已查询",
         tools_used=(),
         messages=messages,
+        citations=(
+            KnowledgeCitation(
+                citation_id="K1",
+                document_id="policy",
+                version="v1",
+                title="Policy",
+                source="https://help.example.com/policy",
+                effective_from="2026-09-01T00:00:00+00:00",
+            ),
+        ),
+        knowledge_version="knowledge@sha256:1234567890abcdef",
     )
 
 

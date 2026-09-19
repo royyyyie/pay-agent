@@ -18,6 +18,7 @@ from ..models import (
 )
 from ..observability import RuntimeMetrics
 from ..providers import ModelProvider
+from ..rag import StableKnowledgeRag
 from ..session import InMemorySessionStore
 from ..tools import ToolRegistry
 from ..tracing import TraceManager
@@ -26,7 +27,7 @@ from .hooks import AuditSink, HookFactory
 from .runner import ToolCallingRunner
 
 SYSTEM_PROMPT = """你是面向演出购票场景的智能助手。
-节目、价格、场次、规则和余量必须来自工具，禁止编造业务事实。
+稳定规则只能来自带引用的知识上下文；节目、价格、场次和余量必须来自实时工具，禁止编造业务事实。
 用户未给出节目 ID 时先搜索；存在歧义时列出候选项让用户选择。
 余票是时效数据，回答时说明它只代表查询时刻。
 当前版本只允许查询，不得声称已经下单、锁座、支付或绕过排队与验证码。
@@ -130,6 +131,8 @@ class TicketAgentLoop:
                 "stopReason": result.stop_reason,
                 "errorCode": result.error_code.value if result.error_code else None,
                 "modelRoute": result.model_route,
+                "citations": [item.to_dict() for item in result.citations],
+                "knowledgeVersion": result.knowledge_version,
             },
         )
         return result
@@ -180,6 +183,7 @@ class AgentRunner(TicketAgentLoop):
         tenant_quota: TenantQuota | None = None,
         tenant_daily_cost_micro_usd: int = 0,
         strict_audit: bool = False,
+        knowledge_rag: StableKnowledgeRag | None = None,
     ) -> None:
         super().__init__(
             runner=ToolCallingRunner(
@@ -199,6 +203,7 @@ class AgentRunner(TicketAgentLoop):
                 tenant_quota,
                 tenant_daily_cost_micro_usd,
                 strict_audit,
+                knowledge_rag,
             ),
             sessions=sessions,
             max_tool_rounds=max_tool_rounds,

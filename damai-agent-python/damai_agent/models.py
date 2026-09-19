@@ -43,6 +43,8 @@ class AgentErrorCode(str, Enum):
     MODEL_ACCOUNTING_UNAVAILABLE = "MODEL_ACCOUNTING_UNAVAILABLE"
     TURN_BUDGET_EXCEEDED = "TURN_BUDGET_EXCEEDED"
     TENANT_QUOTA_EXCEEDED = "TENANT_QUOTA_EXCEEDED"
+    KNOWLEDGE_CITATION_INVALID = "KNOWLEDGE_CITATION_INVALID"
+    DYNAMIC_FACT_TOOL_REQUIRED = "DYNAMIC_FACT_TOOL_REQUIRED"
     TOOL_EXECUTION_UNKNOWN = "TOOL_EXECUTION_UNKNOWN"
 
 
@@ -273,6 +275,26 @@ class AgentEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeCitation:
+    citation_id: str
+    document_id: str
+    version: str
+    title: str
+    source: str
+    effective_from: str
+
+    def to_dict(self) -> Dict[str, str]:
+        return {
+            "citationId": self.citation_id,
+            "documentId": self.document_id,
+            "version": self.version,
+            "title": self.title,
+            "source": self.source,
+            "effectiveFrom": self.effective_from,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class AgentRunSpec:
     context: TicketTurnContext
     messages: Tuple[ChatMessage, ...]
@@ -302,6 +324,8 @@ class AgentRunResult:
     tool_events: Tuple[AgentEvent, ...] = ()
     model_route: str = ""
     had_injections: bool = False
+    citations: Tuple[KnowledgeCitation, ...] = ()
+    knowledge_version: str = ""
 
     @property
     def answer(self) -> str:
