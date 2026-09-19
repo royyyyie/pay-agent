@@ -130,6 +130,8 @@ class KnowledgeRetriever(Protocol):
     @property
     def index_version(self) -> str: ...
 
+    async def check_ready(self) -> bool: ...
+
     async def search(
         self,
         query: str,
@@ -203,6 +205,9 @@ class InMemoryKnowledgeIndex:
     @property
     def index_version(self) -> str:
         return self._index_version
+
+    async def check_ready(self) -> bool:
+        return True
 
     async def search(
         self,
@@ -300,6 +305,9 @@ class StableKnowledgeRag:
     @property
     def index_version(self) -> str:
         return self._retriever.index_version
+
+    async def check_ready(self) -> bool:
+        return await self._retriever.check_ready()
 
     async def prepare(
         self,

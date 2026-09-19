@@ -2,11 +2,14 @@ package com.damai.controller.agent.dto;
 
 import com.damai.dto.ProgramSearchDto;
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
+import java.math.BigDecimal;
 import java.util.Date;
 
 /**
@@ -28,6 +31,11 @@ public class AgentProgramSearchRequest {
 
     @Schema(description = "节目分类 id")
     private Long programCategoryId;
+
+    @DecimalMin(value = "0.00")
+    @Digits(integer = 9, fraction = 2)
+    @Schema(description = "推荐预算硬上限；最低票价超过该值的候选会被移除")
+    private BigDecimal maxPrice;
 
     @Min(0)
     @Max(5)

@@ -241,6 +241,41 @@ class SettingsTest(unittest.TestCase):
                 knowledge_source_hosts=("help..example.com",),
             )
 
+    def test_elasticsearch_rag_requires_read_only_connection_identity(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "配置不完整"):
+            Settings(
+                rag_enabled=True,
+                rag_backend="elasticsearch",
+                knowledge_source_hosts=("help.example.com",),
+            )
+        settings = Settings(
+            rag_enabled=True,
+            rag_backend="elasticsearch",
+            knowledge_source_hosts=("help.example.com",),
+            elasticsearch_url="http://es.example.com:9200",
+            elasticsearch_api_key="private-es-key",
+            elasticsearch_index_alias="damai-knowledge-read",
+            knowledge_index_version="knowledge-2026.09.19",
+        )
+        self.assertEqual(settings.rag_backend, "elasticsearch")
+        self.assertNotIn("private-es-key", repr(settings))
+        with self.assertRaisesRegex(ValidationError, "必须使用 HTTPS"):
+            Settings(
+                environment="production",
+                provider="openai_compatible",
+                internal_api_key="i" * 32,
+                java_tool_api_key="j" * 32,
+                llm_api_key="l" * 32,
+                llm_model="model-a",
+                rag_enabled=True,
+                rag_backend="elasticsearch",
+                knowledge_source_hosts=("help.example.com",),
+                elasticsearch_url="http://es.example.com:9200",
+                elasticsearch_api_key="private-es-key",
+                elasticsearch_index_alias="damai-knowledge-read",
+                knowledge_index_version="knowledge-2026.09.19",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

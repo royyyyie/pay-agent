@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .delegation import DelegationError, verify_delegation
+from .elasticsearch_rag import ElasticsearchKnowledgeRetriever
 from .governance import TenantQuota
 from .models import AgentRunResult, TicketTurnContext
 from .observability import RuntimeMetrics
@@ -81,6 +82,7 @@ def build_runner(
     tracing: TraceManager | None = None,
     tenant_quota: TenantQuota | None = None,
     audit_sink: AuditSink | None = None,
+    knowledge_rag: StableKnowledgeRag | None = None,
 ) -> AgentRunner:
     provider: ModelProvider
     if settings.provider == "openai_compatible":
@@ -121,19 +123,7 @@ def build_runner(
         timeout_seconds=settings.java_timeout_seconds,
     )
     registry = ToolRegistry(build_java_tools(java_client))
-    knowledge_rag = (
-        StableKnowledgeRag(
-            load_knowledge_catalog(
-                settings.knowledge_catalog_path,
-                allowed_source_hosts=settings.knowledge_source_hosts,
-            ),
-            top_k=settings.rag_top_k,
-            max_context_chars=settings.rag_max_context_chars,
-            min_score=settings.rag_min_score,
-        )
-        if settings.rag_enabled
-        else None
-    )
+    resolved_knowledge_rag = knowledge_rag or build_knowledge_rag(settings)
     return AgentRunner(
         provider=provider,
         registry=registry,
@@ -152,7 +142,33 @@ def build_runner(
         tenant_daily_cost_micro_usd=settings.tenant_daily_cost_micro_usd,
         audit_sink=audit_sink,
         strict_audit=settings.persist_tool_audit,
-        knowledge_rag=knowledge_rag,
+        knowledge_rag=resolved_knowledge_rag,
+    )
+
+
+def build_knowledge_rag(settings: Settings) -> StableKnowledgeRag | None:
+    if not settings.rag_enabled:
+        return None
+    retriever = (
+        load_knowledge_catalog(
+            settings.knowledge_catalog_path,
+            allowed_source_hosts=settings.knowledge_source_hosts,
+        )
+        if settings.rag_backend == "local"
+        else ElasticsearchKnowledgeRetriever(
+            settings.elasticsearch_url,
+            settings.elasticsearch_api_key,
+            settings.elasticsearch_index_alias,
+            settings.knowledge_index_version,
+            settings.knowledge_source_hosts,
+            timeout_seconds=settings.elasticsearch_timeout_seconds,
+        )
+    )
+    return StableKnowledgeRag(
+        retriever,
+        top_k=settings.rag_top_k,
+        max_context_chars=settings.rag_max_context_chars,
+        min_score=settings.rag_min_score,
     )
 
 
@@ -164,6 +180,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if resolved_settings.otlp_traces_endpoint
         else TraceManager()
     )
+    knowledge_rag = build_knowledge_rag(resolved_settings)
     durable_service = None
     durable_turns = None
     durable_redis = None
@@ -195,7 +212,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             if resolved_settings.persist_tool_audit
             else None
         )
-        runner = build_runner(resolved_settings, metrics, tracing, tenant_quota, audit_store)
+        runner = build_runner(
+            resolved_settings,
+            metrics,
+            tracing,
+            tenant_quota,
+            audit_store,
+            knowledge_rag,
+        )
         durable_turns = PostgresTurnRepository(resolved_settings.postgres_dsn)
         durable_service = DurableTurnService(
             runner.core_runner,
@@ -206,7 +230,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             max_tool_rounds=resolved_settings.max_tool_rounds,
         )
     else:
-        runner = build_runner(resolved_settings, metrics, tracing)
+        runner = build_runner(resolved_settings, metrics, tracing, knowledge_rag=knowledge_rag)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -231,6 +255,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.state.durable_turns = durable_turns
     app.state.durable_redis = durable_redis
     app.state.audit_store = audit_store
+    app.state.knowledge_rag = knowledge_rag
 
     async def require_internal_api_key(
         supplied_key: Optional[str] = Header(default=None, alias="X-Agent-Internal-Key"),
@@ -292,6 +317,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.get("/ready")
     async def ready() -> Dict[str, str]:
+        if knowledge_rag is not None:
+            try:
+                knowledge_ready = await knowledge_rag.check_ready()
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail="Agent 知识检索依赖不可用") from exc
+            if not knowledge_ready:
+                raise HTTPException(status_code=503, detail="Agent 知识检索依赖不可用")
         if durable_turns is not None and durable_redis is not None:
             try:
                 database_ready = await durable_turns.check_ready()

@@ -59,14 +59,37 @@ python scripts/evaluate_rag.py `
 
 每条 Eval 用例必须二选一：设置 `expected_document_ids` 检查召回，或设置 `must_block_as_dynamic=true` 检查动态事实红线。动态阻断率必须为 100%；正式发布还应按业务确认的集合规模设置 Recall 门槛。
 
-## 后续批次与退出标准
+## 第二批：云检索与推荐硬约束
 
-- [ ] 接入生产级检索后端（建议沿用云 Elasticsearch），保持相同租户、有效期和来源白名单契约
+- [x] 云 Elasticsearch 只读检索适配：固定索引别名、API Key、请求/响应大小与超时限制、禁止重定向
+- [x] Elasticsearch 查询在服务端过滤租户、Locale 和生效窗口，客户端再次校验结果及来源白名单
+- [x] `/ready` 检查知识索引可查询；错误不回传 Elasticsearch 响应正文、地址或凭据
+- [x] 提供 `dynamic=strict` 的知识索引 Mapping 和可选只读云环境验收测试
+- [x] 从用户原文确定性提取明确预算上限，模型遗漏或放宽 `maxPrice` 时自动注入/收紧
+- [x] Java Tool Gateway 对城市、分类、自定义日期和最低票价再次执行候选过滤；预算不合格项不返回模型
+
+Elasticsearch 使用官方 `POST /{index}/_search` API，并用 `bool.filter` 做隔离过滤、`multi_match` 搜索标题和正文。运行时 API Key 只应拥有目标读取别名的 `read` 权限，不得赋予索引管理或写权限。参考 [Search API](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-search.html)、[Query DSL filter context](https://www.elastic.co/guide/en/elasticsearch/reference/current/query-filter-context.html/) 和 [API Key 认证](https://www.elastic.co/docs/api/doc/elasticsearch/authentication)。
+
+```dotenv
+DAMAI_AGENT_RAG_BACKEND=elasticsearch
+DAMAI_AGENT_ELASTICSEARCH_URL=https://your-deployment.example.com:9243
+DAMAI_AGENT_ELASTICSEARCH_API_KEY=<read-only-api-key>
+DAMAI_AGENT_ELASTICSEARCH_INDEX_ALIAS=damai-knowledge-read
+DAMAI_AGENT_KNOWLEDGE_INDEX_VERSION=knowledge-2026.09.19
+DAMAI_AGENT_ELASTICSEARCH_TIMEOUT_SECONDS=3
+```
+
+索引结构见 `docs/elasticsearch-knowledge-index.json`。`DAMAI_AGENT_ELASTICSEARCH_INDEX_ALIAS` 只接受精确名称，不允许通配符、多索引或请求路径；staging/production 强制 HTTPS。`KNOWLEDGE_INDEX_VERSION` 是发布流水线提供的不可变版本，写入 Turn 结果用于审计和重放。
+
+云环境只读验收使用独立测试索引和只读 API Key，不会写入或删除数据。配置以下 `DAMAI_TEST_ELASTICSEARCH_*` 环境变量后单独运行 `pytest tests/test_elasticsearch_live_acceptance.py -v`：URL、API Key、索引别名、索引版本、允许的来源主机、查询词、租户和预期文档 ID。凭据只放在本机环境变量或 CI Secret，不写入仓库和测试报告。
+
+## 剩余退出标准
+
 - [ ] 建立知识发布、审核、回滚、过期清理和索引别名切换流程
 - [ ] 中文语义/混合检索、重排和大规模 Eval；验证召回、引用正确率、延迟和成本
-- [ ] 基于 Java 实时候选集实现城市、日期、预算、可售状态等硬约束过滤
+- [ ] 在返回最终推荐前逐候选核验实时票档余量；当前搜索阶段只保证城市、分类、自定义日期和最低票价预算
 - [ ] 在硬约束结果上做可解释偏好排序；无合格候选时不得放宽用户条件
 - [ ] 推荐离线 Eval、安全红线、A/B 灰度和人工验收
 - [ ] 测试专用环境完成端到端 RAG/Java Trace、故障降级和 SLO 验收
 
-第一批完成代表 RAG 安全骨架可用，不代表阶段 4 或生产级知识检索已经完成。
+第二批完成代表云检索适配和推荐硬约束已经建立，不代表阶段 4 或生产级知识检索已经完成。
