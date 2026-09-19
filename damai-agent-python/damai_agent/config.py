@@ -56,11 +56,17 @@ _ENV_FIELDS = {
     "tenant_daily_cost_micro_usd": "DAMAI_AGENT_TENANT_DAILY_COST_MICRO_USD",
     "persist_tool_audit": "DAMAI_AGENT_PERSIST_TOOL_AUDIT",
     "rag_enabled": "DAMAI_AGENT_RAG_ENABLED",
+    "rag_backend": "DAMAI_AGENT_RAG_BACKEND",
     "knowledge_catalog_path": "DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH",
     "knowledge_source_hosts": "DAMAI_AGENT_KNOWLEDGE_SOURCE_HOSTS",
     "rag_top_k": "DAMAI_AGENT_RAG_TOP_K",
     "rag_max_context_chars": "DAMAI_AGENT_RAG_MAX_CONTEXT_CHARS",
     "rag_min_score": "DAMAI_AGENT_RAG_MIN_SCORE",
+    "elasticsearch_url": "DAMAI_AGENT_ELASTICSEARCH_URL",
+    "elasticsearch_api_key": "DAMAI_AGENT_ELASTICSEARCH_API_KEY",
+    "elasticsearch_index_alias": "DAMAI_AGENT_ELASTICSEARCH_INDEX_ALIAS",
+    "knowledge_index_version": "DAMAI_AGENT_KNOWLEDGE_INDEX_VERSION",
+    "elasticsearch_timeout_seconds": "DAMAI_AGENT_ELASTICSEARCH_TIMEOUT_SECONDS",
 }
 
 _WEAK_SECRETS = {"", "change-me", "change-me-local", "changeme", "secret"}
@@ -140,18 +146,24 @@ class Settings(BaseModel):
     tenant_daily_cost_micro_usd: int = Field(default=0, ge=0, le=1000000000000)
     persist_tool_audit: bool = False
     rag_enabled: bool = False
+    rag_backend: Literal["local", "elasticsearch"] = "local"
     knowledge_catalog_path: str = ""
     knowledge_source_hosts: tuple[str, ...] = ()
     rag_top_k: int = Field(default=4, ge=1, le=10)
     rag_max_context_chars: int = Field(default=8000, ge=512, le=32000)
     rag_min_score: float = Field(default=0.01, ge=0, le=1)
+    elasticsearch_url: str = ""
+    elasticsearch_api_key: str = Field(default="", repr=False, max_length=8192)
+    elasticsearch_index_alias: str = ""
+    knowledge_index_version: str = ""
+    elasticsearch_timeout_seconds: float = Field(default=3.0, ge=0.1, le=30)
 
     @field_validator("environment", mode="before")
     @classmethod
     def normalize_environment(cls, value: object) -> object:
         return value.strip().lower() if isinstance(value, str) else value
 
-    @field_validator("provider", mode="before")
+    @field_validator("provider", "rag_backend", mode="before")
     @classmethod
     def normalize_provider(cls, value: object) -> object:
         return value.strip().lower() if isinstance(value, str) else value
@@ -167,7 +179,7 @@ class Settings(BaseModel):
             raise ValueError("URL 中禁止包含用户名或密码")
         return normalized
 
-    @field_validator("llm_fallback_base_url", "otlp_traces_endpoint")
+    @field_validator("llm_fallback_base_url", "otlp_traces_endpoint", "elasticsearch_url")
     @classmethod
     def validate_optional_http_url(cls, value: str) -> str:
         return cls.validate_http_url(value) if value else ""
@@ -230,10 +242,24 @@ class Settings(BaseModel):
                 raise ValueError("租户额度需要 durable runtime 和模型定价")
         if self.persist_tool_audit and self.runtime_backend != "durable":
             raise ValueError("持久化 Tool 审计需要 durable runtime")
-        if self.rag_enabled and not self.knowledge_catalog_path:
-            raise ValueError("启用 RAG 必须配置 DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH")
+        if self.rag_enabled and self.rag_backend == "local" and not self.knowledge_catalog_path:
+            raise ValueError("本地 RAG 必须配置 DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH")
         if self.rag_enabled and not self.knowledge_source_hosts:
             raise ValueError("启用 RAG 必须配置 DAMAI_AGENT_KNOWLEDGE_SOURCE_HOSTS")
+        if self.rag_enabled and self.rag_backend == "elasticsearch":
+            if not all(
+                (
+                    self.elasticsearch_url,
+                    self.elasticsearch_api_key,
+                    self.elasticsearch_index_alias,
+                    self.knowledge_index_version,
+                )
+            ):
+                raise ValueError("Elasticsearch RAG 配置不完整")
+            if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,254}", self.elasticsearch_index_alias) is None:
+                raise ValueError("Elasticsearch 索引别名格式无效")
+            if re.fullmatch(r"[A-Za-z0-9._:@-]{1,128}", self.knowledge_index_version) is None:
+                raise ValueError("知识索引版本格式无效")
         if len(self.knowledge_source_hosts) > 32 or any(
             len(host) > 253
             or any(
@@ -247,6 +273,12 @@ class Settings(BaseModel):
         if self.environment in {Environment.STAGING, Environment.PRODUCTION}:
             if self.otlp_traces_endpoint and urlparse(self.otlp_traces_endpoint).scheme != "https":
                 raise ValueError("staging/production OTLP traces endpoint 必须使用 HTTPS")
+            if (
+                self.rag_enabled
+                and self.rag_backend == "elasticsearch"
+                and urlparse(self.elasticsearch_url).scheme != "https"
+            ):
+                raise ValueError("staging/production Elasticsearch 必须使用 HTTPS")
             if self.provider == "demo":
                 raise ValueError("staging/production 禁止使用 demo Provider")
             self._require_strong_secret(

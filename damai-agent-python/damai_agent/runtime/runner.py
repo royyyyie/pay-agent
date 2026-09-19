@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from typing import List, Optional, Protocol, Sequence, cast
 
 from ..config import ModelPrice
@@ -27,6 +28,7 @@ from ..models import (
 from ..observability import RuntimeMetrics
 from ..providers import ModelProvider, ProviderStreamAccumulator
 from ..rag import RagBundle, StableKnowledgeRag, requires_live_tool
+from ..recommendation import RecommendationConstraintGuard
 from ..tools import ToolCallLedger, ToolRegistry
 from ..tracing import TraceManager
 from .context import ContextGovernor, valid_tool_calls
@@ -192,6 +194,9 @@ class ToolCallingRunner:
         model_route = spec.model_route
         ledger = ToolCallLedger(max_calls=spec.max_tool_calls)
         dynamic_fact_query = requires_live_tool(spec.messages[-1].content or "")
+        recommendation_guard = RecommendationConstraintGuard.from_user_text(
+            spec.messages[-1].content or ""
+        )
         rag_bundle = RagBundle()
         if self._knowledge_rag is not None:
             try:
@@ -282,11 +287,19 @@ class ToolCallingRunner:
                         emitter,
                         round_number,
                         buffer_text=rag_bundle.citation_required or dynamic_fact_query,
+                        buffer_tool_calls=recommendation_guard.active,
                     )
             except BaseException:
                 if self._metrics is not None:
                     self._metrics.observe_model(False, elapsed_ms(model_started_at))
                 raise
+            hardened_calls, hardened_count = recommendation_guard.apply(response.tool_calls)
+            if hardened_count:
+                response = replace(response, tool_calls=list(hardened_calls))
+                await emitter.emit(
+                    "recommendation.constraints.applied",
+                    {"types": ["maxPrice"], "toolCalls": hardened_count},
+                )
             model_route = response.model_route or model_route
             model_duration_ms = elapsed_ms(model_started_at)
             await hooks.after_model(
@@ -631,6 +644,7 @@ class ToolCallingRunner:
         round_number: int,
         *,
         buffer_text: bool = False,
+        buffer_tool_calls: bool = False,
     ) -> ProviderResponse:
         stream = getattr(self._provider, "stream", None)
         if not callable(stream):
@@ -648,7 +662,10 @@ class ToolCallingRunner:
                     "model.text.delta",
                     {"round": round_number, "delta": event.text_delta},
                 )
-            elif event.event_type is ProviderStreamEventType.TOOL_CALL_DELTA:
+            elif (
+                event.event_type is ProviderStreamEventType.TOOL_CALL_DELTA
+                and not buffer_tool_calls
+            ):
                 await emitter.emit(
                     "model.tool_call.delta",
                     {

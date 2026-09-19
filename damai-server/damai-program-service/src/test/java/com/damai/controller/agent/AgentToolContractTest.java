@@ -2,6 +2,8 @@ package com.damai.controller.agent;
 
 import com.damai.controller.agent.dto.AgentProgramSearchRequest;
 import com.damai.controller.agent.vo.AgentToolResponse;
+import com.damai.page.PageVo;
+import com.damai.vo.ProgramListVo;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.ConstraintViolation;
@@ -13,8 +15,10 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -50,6 +54,7 @@ class AgentToolContractTest {
         assertEquals(310000L, request.getAreaId());
         assertEquals(3, request.getTimeType());
         assertEquals(5, request.getPageSize());
+        assertEquals(new BigDecimal("800"), request.getMaxPrice());
     }
 
     @Test
@@ -70,6 +75,33 @@ class AgentToolContractTest {
 
         assertEnvelope(response, true);
         assertEquals("call_contract_test", response.path("requestId").asText());
+    }
+
+    @Test
+    void recommendationBudgetAndAreaAreHardFilters() {
+        AgentProgramSearchRequest request = new AgentProgramSearchRequest();
+        request.setAreaId(310000L);
+        request.setMaxPrice(new BigDecimal("500"));
+
+        ProgramListVo eligible = program(1L, 310000L, "380");
+        ProgramListVo overBudget = program(2L, 310000L, "680");
+        ProgramListVo wrongArea = program(3L, 110000L, "180");
+        PageVo<ProgramListVo> page = new PageVo<>(1, 20, 3, List.of(
+                eligible, overBudget, wrongArea));
+
+        PageVo<ProgramListVo> filtered =
+                AgentProgramToolController.applyHardConstraints(page, request);
+
+        assertEquals(List.of(eligible), filtered.getList());
+        assertEquals(1, filtered.getTotalSize());
+    }
+
+    private static ProgramListVo program(long id, long areaId, String minPrice) {
+        ProgramListVo program = new ProgramListVo();
+        program.setId(id);
+        program.setAreaId(areaId);
+        program.setMinPrice(new BigDecimal(minPrice));
+        return program;
     }
 
     private static Path fixture(String name) {

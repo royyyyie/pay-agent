@@ -13,6 +13,7 @@ class ProgramSearchRequest(BaseModel):
     areaId: int = Field(cast(Any, None), description='城市或区域 ID')
     parentProgramCategoryId: int = Field(cast(Any, None), description='父节目分类 ID')
     programCategoryId: int = Field(cast(Any, None), description='节目分类 ID')
+    maxPrice: float = Field(cast(Any, None), ge=0, le=999999999.99, description='推荐预算硬上限；Java 会移除最低票价超过该值的候选节目')
     timeType: Literal[0, 1, 2, 3, 4, 5] = Field(0, description='0 全部、1 今天、2 明天、3 一周内、4 一月内、5 自定义')
     startDateTime: str = Field(cast(Any, None), description='自定义开始时间，格式 yyyy-MM-dd HH:mm:ss')
     endDateTime: str = Field(cast(Any, None), description='自定义结束时间，格式 yyyy-MM-dd HH:mm:ss')

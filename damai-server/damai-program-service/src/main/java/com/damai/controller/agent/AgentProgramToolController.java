@@ -27,7 +27,10 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -57,9 +60,8 @@ public class AgentProgramToolController {
             @RequestHeader(value = REQUEST_ID_HEADER, required = false) String requestId,
             @Valid @RequestBody AgentProgramSearchRequest request) {
         String normalizedRequestId = normalizeRequestId(requestId);
-        return AgentToolResponse.ok(
-                normalizedRequestId,
-                programService.search(request.toProgramSearchDto()));
+        PageVo<ProgramListVo> programs = programService.search(request.toProgramSearchDto());
+        return AgentToolResponse.ok(normalizedRequestId, applyHardConstraints(programs, request));
     }
 
     @Operation(summary = "查询节目详情")
@@ -122,5 +124,63 @@ public class AgentProgramToolController {
         return Optional.ofNullable(requestId)
                 .filter(value -> !value.isBlank())
                 .orElseGet(() -> UUID.randomUUID().toString());
+    }
+
+    static PageVo<ProgramListVo> applyHardConstraints(
+            PageVo<ProgramListVo> page,
+            AgentProgramSearchRequest request) {
+        if (page == null || page.getList() == null) {
+            return page;
+        }
+        List<ProgramListVo> original = page.getList();
+        List<ProgramListVo> filtered = new ArrayList<>();
+        for (ProgramListVo program : original) {
+            if (matchesHardConstraints(program, request)) {
+                filtered.add(program);
+            }
+        }
+        page.setList(filtered);
+        if (filtered.size() != original.size()) {
+            // The upstream total includes candidates removed by the Agent-only budget guard.
+            // Returning the bounded page count is conservative and never overstates eligibility.
+            page.setTotalSize(filtered.size());
+        }
+        return page;
+    }
+
+    private static boolean matchesHardConstraints(
+            ProgramListVo program,
+            AgentProgramSearchRequest request) {
+        if (program == null) {
+            return false;
+        }
+        if (request.getAreaId() != null && !Objects.equals(request.getAreaId(), program.getAreaId())) {
+            return false;
+        }
+        if (request.getParentProgramCategoryId() != null
+                && !Objects.equals(
+                        request.getParentProgramCategoryId(), program.getParentProgramCategoryId())) {
+            return false;
+        }
+        if (request.getProgramCategoryId() != null
+                && !Objects.equals(request.getProgramCategoryId(), program.getProgramCategoryId())) {
+            return false;
+        }
+        if (request.getMaxPrice() != null
+                && (program.getMinPrice() == null
+                        || program.getMinPrice().compareTo(request.getMaxPrice()) > 0)) {
+            return false;
+        }
+        if (Integer.valueOf(5).equals(request.getTimeType())) {
+            Date showTime = program.getShowTime();
+            if (showTime == null
+                    || (request.getStartDateTime() != null
+                            && showTime.before(request.getStartDateTime()))
+                    || (request.getEndDateTime() != null
+                            && showTime.after(request.getEndDateTime()))) {
+                return false;
+            }
+        }
+        return true;
     }
 }

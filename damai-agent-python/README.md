@@ -127,3 +127,5 @@ uv run --frozen pytest --cov=damai_agent
 只读链路的告警查询、故障处置和未完成的真实验收证据见[阶段 3 SLO 手册](docs/phase-3-slo-runbook.md)。
 
 阶段 4 第一批加入租户隔离的稳定知识检索、动态事实隔离、来源白名单和强制引用门禁。无有效引用的 RAG 回答不会返回；流式内容在引用校验前会被缓冲。启用方式、知识目录结构及离线 Eval 见[阶段 4 检查清单](docs/phase-4-checklist.md)。
+
+阶段 4 第二批加入云 Elasticsearch 只读检索、索引别名与版本约束、双重租户/时效/来源校验，以及推荐预算硬上限。Python 会从用户明确表达中注入或收紧 `maxPrice`，Java Tool Gateway 会再次过滤城市、分类、自定义日期和最低票价；实时余票逐候选核验与偏好排序仍属于后续批次。
