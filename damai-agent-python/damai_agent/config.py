@@ -55,6 +55,7 @@ _ENV_FIELDS = {
     "otlp_traces_endpoint": "DAMAI_AGENT_OTLP_TRACES_ENDPOINT",
     "tenant_daily_cost_micro_usd": "DAMAI_AGENT_TENANT_DAILY_COST_MICRO_USD",
     "persist_tool_audit": "DAMAI_AGENT_PERSIST_TOOL_AUDIT",
+    "watch_rules_enabled": "DAMAI_AGENT_WATCH_RULES_ENABLED",
     "rag_enabled": "DAMAI_AGENT_RAG_ENABLED",
     "rag_backend": "DAMAI_AGENT_RAG_BACKEND",
     "knowledge_catalog_path": "DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH",
@@ -154,6 +155,7 @@ class Settings(BaseModel):
     otlp_traces_endpoint: str = ""
     tenant_daily_cost_micro_usd: int = Field(default=0, ge=0, le=1000000000000)
     persist_tool_audit: bool = False
+    watch_rules_enabled: bool = False
     rag_enabled: bool = False
     rag_backend: Literal["local", "elasticsearch"] = "local"
     knowledge_catalog_path: str = ""
@@ -262,6 +264,10 @@ class Settings(BaseModel):
                 raise ValueError("租户额度需要 durable runtime 和模型定价")
         if self.persist_tool_audit and self.runtime_backend != "durable":
             raise ValueError("持久化 Tool 审计需要 durable runtime")
+        if self.watch_rules_enabled and (
+            self.runtime_backend != "durable" or not self.persist_tool_audit
+        ):
+            raise ValueError("监控规则需要 durable runtime 和持久化 Tool 审计")
         if self.rag_enabled and self.rag_backend == "local" and not self.knowledge_catalog_path:
             raise ValueError("本地 RAG 必须配置 DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH")
         if self.rag_enabled and not self.knowledge_source_hosts:

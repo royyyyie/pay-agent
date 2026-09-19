@@ -750,6 +750,8 @@ ADR-007 Provider 路由、重试和 fallback 语义
 ADR-008 W3C Trace、审计与 PII 处理
 ADR-009 HTTP+SSE 到事件总线的演进门槛
 ADR-010 仅使用官方或获授权票务接口
+ADR-011 高级 RAG 检索树与降级边界
+ADR-012 监控规则归属、持久化和调度边界
 ```
 
 ## 23. 风险登记

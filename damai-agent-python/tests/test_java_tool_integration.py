@@ -30,6 +30,10 @@ class StubJavaHandler(BaseHTTPRequestHandler):
             "api_key": self.headers.get("X-Agent-Key"),
             "turn_id": self.headers.get("X-Agent-Turn-Id"),
             "tool_call_id": self.headers.get("X-Agent-Tool-Call-Id"),
+            "tenant_id": self.headers.get("X-Agent-Tenant-Id"),
+            "user_id": self.headers.get("X-Agent-User-Id"),
+            "delegation": self.headers.get("X-Agent-Delegation"),
+            "delegation_signature": self.headers.get("X-Agent-Delegation-Signature"),
             "traceparent": self.headers.get("traceparent"),
         }
         response = {
@@ -114,9 +118,33 @@ class JavaToolIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(StubJavaHandler.received["body"]["keyword"], "周杰伦")
         self.assertTrue(StubJavaHandler.received["turn_id"].startswith("turn-"))
         self.assertTrue(StubJavaHandler.received["tool_call_id"].startswith("demo-"))
+        self.assertEqual(StubJavaHandler.received["tenant_id"], "local")
+        self.assertEqual(StubJavaHandler.received["user_id"], "anonymous")
         traceparent = StubJavaHandler.received["traceparent"]
         self.assertRegex(traceparent, r"^00-[0-9a-f]{32}-[0-9a-f]{16}-01$")
         self.assertEqual(result.trace_id, traceparent.split("-")[1])
+
+    async def test_original_delegation_is_forwarded_to_java_for_reverification(self) -> None:
+        host, port = self.server.server_address
+        client = JavaToolClient(f"http://{host}:{port}", "integration-key", 2)
+
+        await client.post(
+            "/internal/agent/v1/tools/programs/search",
+            {"keyword": "周杰伦"},
+            ToolContext(
+                session_key="session-integration",
+                turn_id="turn-integration",
+                tool_call_id="call-integration",
+                trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
+                tenant_id="tenant-1",
+                user_id="user-1",
+                delegation_encoded="signed-claims",
+                delegation_signature="a" * 64,
+            ),
+        )
+
+        self.assertEqual(StubJavaHandler.received["delegation"], "signed-claims")
+        self.assertEqual(StubJavaHandler.received["delegation_signature"], "a" * 64)
 
     async def test_success_response_without_trace_echo_is_rejected(self) -> None:
         StubJavaHandler.echo_traceparent = False

@@ -33,7 +33,10 @@ public class AgentToolRequestContextFilter extends OncePerRequestFilter {
     static final String TOOL_CALL_ID_HEADER = "X-Agent-Tool-Call-Id";
     static final String TURN_ID_HEADER = "X-Agent-Turn-Id";
     static final String SESSION_KEY_HEADER = "X-Agent-Session-Key";
+    static final String TENANT_ID_HEADER = "X-Agent-Tenant-Id";
+    static final String USER_ID_HEADER = "X-Agent-User-Id";
     static final String TRACEPARENT_HEADER = "traceparent";
+    static final String WATCH_RULE_PATH_PREFIX = "/internal/agent/v1/tools/watch-rules/";
 
     private static final int MAX_CONTEXT_ID_LENGTH = 128;
     private static final Pattern TRACEPARENT_PATTERN = Pattern.compile(
@@ -54,6 +57,8 @@ public class AgentToolRequestContextFilter extends OncePerRequestFilter {
         String toolCallId = request.getHeader(TOOL_CALL_ID_HEADER);
         String turnId = request.getHeader(TURN_ID_HEADER);
         String sessionKey = request.getHeader(SESSION_KEY_HEADER);
+        String tenantId = request.getHeader(TENANT_ID_HEADER);
+        String userId = request.getHeader(USER_ID_HEADER);
         String traceparent = request.getHeader(TRACEPARENT_HEADER);
         Matcher traceparentMatcher = traceparent == null
                 ? null
@@ -62,6 +67,8 @@ public class AgentToolRequestContextFilter extends OncePerRequestFilter {
         if (!isValidContextId(toolCallId)
                 || !isValidContextId(turnId)
                 || !isValidContextId(sessionKey)
+                || (request.getRequestURI().startsWith(WATCH_RULE_PATH_PREFIX)
+                        && (!isValidOwnerId(tenantId) || !isValidOwnerId(userId)))
                 || !isValidTraceparent(traceparentMatcher)) {
             writeBadRequest(response, toolCallId);
             return;
@@ -91,6 +98,10 @@ public class AgentToolRequestContextFilter extends OncePerRequestFilter {
 
     private boolean isValidContextId(String value) {
         return value != null && !value.isBlank() && value.length() <= MAX_CONTEXT_ID_LENGTH;
+    }
+
+    private boolean isValidOwnerId(String value) {
+        return value != null && !value.isBlank() && value.length() <= 200;
     }
 
     private boolean isValidTraceparent(Matcher matcher) {

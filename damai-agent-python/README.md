@@ -110,13 +110,14 @@ uv run --frozen pytest --cov=damai_agent
 - [阶段 2 持久化入口操作说明](docs/phase-2-operations.md)
 - [阶段 3 检查清单](docs/phase-3-checklist.md)
 - [阶段 4 检查清单](docs/phase-4-checklist.md)
+- [阶段 5 检查清单](docs/phase-5-checklist.md)
 - [Architecture Decision Records](docs/adr/README.md)
 
 阶段 0 将 Python 运行基线提升到 3.11，并建立配置 Profile、生产启动保护、OpenAPI 单一来源、Tool Schema 生成与 CI 质量门禁。
 
 阶段 1 已完成运行契约、Tool 输入/输出边界、Provider 真实流式、受控只读 Tool 并发、基础 Hook 链和字符级上下文治理。审计当前仅为进程日志或由部署方提供的 Sink，尚无持久化、不可篡改和跨服务关联保证；模型 Token 级预算与真实链路故障验收仍在后续批次。
 
-阶段 2 新增 PostgreSQL Session/Turn/Message/Checkpoint/Event 存储、Redis 租约/取消/有界排队，以及签名委托保护的 `/api/v2/turns` 和可用 `Last-Event-ID` 续传的 SSE。迁移脚本 `001`、`002`、`003` 须按序执行；分别通过 `postgres`、`redis` 可选依赖安装。设置 `DAMAI_AGENT_RUNTIME_BACKEND=durable` 后，旧匿名 `/api/v1/chat` 禁用，持久化入口只允许只读 Tool；默认本地配置仍用内存模式。中断恢复会保留已确认结果、把未知结果明确标记为未知并终结 Turn，不会盲目重放工具。外部请求的副作用不受数据库 fencing 保护，生产准入仍以真实 Java 链路、进程中断和多副本故障验收为前提。生产须配置独立账号、TLS、加密、保留期、备份与连接容量。详见[阶段 2 检查清单](docs/phase-2-checklist.md)和[操作说明](docs/phase-2-operations.md)。
+阶段 2 新增 PostgreSQL Session/Turn/Message/Checkpoint/Event 存储、Redis 租约/取消/有界排队，以及签名委托保护的 `/api/v2/turns` 和可用 `Last-Event-ID` 续传的 SSE。迁移脚本 `001`、`002`、`003` 须按序执行；分别通过 `postgres`、`redis` 可选依赖安装。设置 `DAMAI_AGENT_RUNTIME_BACKEND=durable` 后，旧匿名 `/api/v1/chat` 禁用；默认本地配置仍用内存模式。阶段 5 起持久化入口可在显式开关、Scope 和审计保护下接受可撤销监控写操作，仍拒绝订单写入。中断恢复会保留已确认结果、把未知结果明确标记为未知并终结 Turn，不会盲目重放工具。外部请求的副作用不受数据库 fencing 保护，生产准入仍以真实 Java 链路、进程中断和多副本故障验收为前提。生产须配置独立账号、TLS、加密、保留期、备份与连接容量。详见[阶段 2 检查清单](docs/phase-2-checklist.md)和[操作说明](docs/phase-2-operations.md)。
 
 阶段 3 首批加入可选的模型暂时性故障重试与备用路由，默认关闭。流式输出一旦开始就不会重试或切换，以免客户端收到拼接的两次模型回复；详见[阶段 3 检查清单](docs/phase-3-checklist.md)。
 
@@ -135,3 +136,5 @@ uv run --frozen pytest --cov=damai_agent
 阶段 4 第四批新增中文多路词法检索与 RRF 融合、可审计的确定性重排，以及按 `sessionKey` 稳定分桶的灰度开关。`knowledge.retrieved` 事件、Trace 和 Prometheus 指标会记录实验组及检索延迟。RAG 发布门禁现可检查 Recall、MRR、引用精度/完整性、租户泄漏红线和 P95；推荐门禁检查实时 Tool 路由、预算、偏好和实时核验。配置与命令见[阶段 4 检查清单](docs/phase-4-checklist.md)。
 
 阶段 4 第五批采用高级 RAG 检索树：Elasticsearch `semantic_text` 自动分块和向量化，BM25 与语义召回在服务端经 RRF 合并，并可选用 Cross-Encoder 进行二阶段重排。语义高亮片段进入有界上下文，引用仍绑定审核过的父文档；旧索引继续使用 `lexical` Profile。架构约束见 [ADR-011](docs/adr/011-advanced-rag-retrieval.md)。
+
+阶段 5 第一批建立票务监控安全控制面：规则由 Java 持久化，Python 仅通过 `REVERSIBLE_WRITE` Tool 管理；受信租户/用户身份不进入模型参数，原始 HMAC 委托会在 Java 再验证，创建具备幂等键，修改使用乐观版本。Java 与 Python 双侧默认关闭，启用前必须执行 MySQL 迁移、打开持久化 Tool 审计，并由 Java BFF 签发 `watch:*` Scope。当前尚未交付调度 Worker 和通知 Outbox，因此不会把“规则已创建”描述为“通知闭环已完成”。详见[阶段 5 检查清单](docs/phase-5-checklist.md)和 [ADR-012](docs/adr/012-watch-rule-ownership.md)。

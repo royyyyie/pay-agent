@@ -38,18 +38,37 @@ class ContractGenerationTest(unittest.TestCase):
                 "recommend_programs",
                 "get_program_detail",
                 "list_ticket_categories",
+                "create_watch_rule",
+                "update_watch_rule",
+                "set_watch_rule_status",
+                "list_watch_rules",
             },
         )
         for spec in registry.specs:
-            self.assertEqual(spec.version, "1.0.0")
-            self.assertEqual(spec.risk, "READ_ONLY")
-            self.assertEqual(spec.required_scope, "programs:read")
+            self.assertEqual(spec.version, "1.1.0")
             self.assertFalse(spec.parameters["additionalProperties"])
-            self.assertEqual(spec.max_calls_per_turn, 3)
-            self.assertTrue(spec.concurrency_safe)
-            self.assertFalse(spec.exclusive)
             self.assertIs(spec.request_model, REQUEST_MODELS[spec.name])
             self.assertIs(spec.response_model, RESPONSE_MODELS[spec.name])
+            if spec.name in {
+                "create_watch_rule",
+                "update_watch_rule",
+                "set_watch_rule_status",
+            }:
+                self.assertEqual(spec.risk, "REVERSIBLE_WRITE")
+                self.assertEqual(spec.required_scope, "watch:write")
+                self.assertEqual(spec.max_calls_per_turn, 1)
+                self.assertFalse(spec.concurrency_safe)
+                self.assertTrue(spec.exclusive)
+            elif spec.name == "list_watch_rules":
+                self.assertEqual(spec.risk, "READ_ONLY")
+                self.assertEqual(spec.required_scope, "watch:read")
+                self.assertTrue(spec.concurrency_safe)
+            else:
+                self.assertEqual(spec.risk, "READ_ONLY")
+                self.assertEqual(spec.required_scope, "programs:read")
+                self.assertEqual(spec.max_calls_per_turn, 3)
+                self.assertTrue(spec.concurrency_safe)
+                self.assertFalse(spec.exclusive)
 
     def test_generated_request_model_applies_defaults_and_rejects_unknown_fields(self) -> None:
         request_model = REQUEST_MODELS["search_programs"]
@@ -91,6 +110,30 @@ class ContractGenerationTest(unittest.TestCase):
         validated_response = RESPONSE_MODELS["recommend_programs"].model_validate(response)
         self.assertEqual(validated_response.data.list[0].rank, 1)
         self.assertEqual(validated_response.data.list[0].totalRemaining, 25)
+
+    def test_watch_contract_enforces_shard_version_and_bounded_mutations(self) -> None:
+        create_model = REQUEST_MODELS["create_watch_rule"]
+        created = create_model.model_validate({"programId": 1001})
+        self.assertEqual(created.minRemaining, 1)
+        self.assertEqual(created.checkIntervalSeconds, 300)
+        self.assertEqual(created.notificationChannel, "IN_APP")
+        with self.assertRaises(ValidationError):
+            create_model.model_validate({"programId": 1001, "ticketCategoryIds": list(range(21))})
+
+        update_model = REQUEST_MODELS["update_watch_rule"]
+        update = update_model.model_validate(
+            {"ruleId": 9, "programId": 1001, "expectedVersion": 2, "maxPrice": 680}
+        )
+        self.assertEqual(update.expectedVersion, 2)
+        with self.assertRaises(ValidationError):
+            update_model.model_validate(
+                {
+                    "ruleId": 9,
+                    "programId": 1001,
+                    "expectedVersion": 2,
+                    "tenantId": "forged",
+                }
+            )
 
 
 if __name__ == "__main__":

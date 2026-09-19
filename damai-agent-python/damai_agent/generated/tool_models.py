@@ -41,6 +41,66 @@ class ProgramRecommendationRequest(BaseModel):
     preference: Literal['RELEVANCE', 'LOWEST_PRICE', 'EARLIEST_SHOW', 'MOST_AVAILABLE'] = Field('RELEVANCE', description='仅在硬约束和实时余票过滤后应用的软排序偏好')
     candidateLimit: int = Field(3, ge=1, le=5, description='最多返回候选数量；服务端最多扫描前 10 个搜索结果')
 
+class WatchRuleCreateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    programId: int = Field(..., ge=1, description='已由节目查询确认的节目 ID，也是监控规则分片键')
+    name: str = Field(cast(Any, None), min_length=1, max_length=100, description='用户可识别的规则名称')
+    ticketCategoryIds: List[int] = Field(cast(Any, None), max_length=20, description='可选票档白名单；空集合表示监控节目下全部票档')
+    maxPrice: float = Field(cast(Any, None), ge=0, le=999999999.99, description='只在可售价格不高于该值时触发；不设置表示不限价格')
+    minRemaining: int = Field(1, ge=1, le=1000000, description='满足条件的票档最少剩余数量')
+    checkIntervalSeconds: int = Field(300, ge=30, le=86400, description='Java 可靠调度器的目标检查间隔，不承诺精确触发时刻')
+    notificationChannel: Literal['IN_APP'] = Field('IN_APP', description='阶段 5 首批仅开放站内通知')
+
+class WatchRuleUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    ruleId: int = Field(..., ge=1)
+    programId: int = Field(..., ge=1, description='从 list_watch_rules 获得的不可变分片键')
+    expectedVersion: int = Field(..., ge=1, description='乐观锁版本；冲突后必须重新查询，禁止盲目覆盖')
+    name: str = Field(cast(Any, None), min_length=1, max_length=100)
+    ticketCategoryIds: List[int] = Field(cast(Any, None), max_length=20)
+    maxPrice: float = Field(cast(Any, None), ge=0, le=999999999.99)
+    clearMaxPrice: bool = Field(False, description='显式移除价格上限；不能与 maxPrice 同时为真')
+    minRemaining: int = Field(cast(Any, None), ge=1, le=1000000)
+    checkIntervalSeconds: int = Field(cast(Any, None), ge=30, le=86400)
+
+class WatchRuleStatusRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    ruleId: int = Field(..., ge=1)
+    programId: int = Field(..., ge=1, description='从 list_watch_rules 获得的不可变分片键')
+    expectedVersion: int = Field(..., ge=1)
+    targetStatus: Literal['ACTIVE', 'PAUSED'] = Field(...)
+
+class WatchRuleListRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    ruleStatus: Literal['ACTIVE', 'PAUSED'] = Field(cast(Any, None))
+    pageNumber: int = Field(1, ge=1, le=1000)
+    pageSize: int = Field(10, ge=1, le=20)
+
+class WatchRule(BaseModel):
+    model_config = ConfigDict(extra='allow', populate_by_name=True)
+    ruleId: int = Field(...)
+    programId: int = Field(...)
+    name: str = Field(cast(Any, None))
+    ticketCategoryIds: List[int] = Field(cast(Any, None))
+    maxPrice: float = Field(cast(Any, None))
+    minRemaining: int = Field(...)
+    checkIntervalSeconds: int = Field(...)
+    notificationChannel: Literal['IN_APP'] = Field(...)
+    ruleStatus: Literal['ACTIVE', 'PAUSED'] = Field(...)
+    version: int = Field(..., ge=1)
+    nextCheckAt: str = Field(...)
+    lastCheckedAt: str = Field(cast(Any, None))
+    lastTriggeredAt: str = Field(cast(Any, None))
+    createdAt: str = Field(...)
+    updatedAt: str = Field(...)
+
+class WatchRulePage(BaseModel):
+    model_config = ConfigDict(extra='allow', populate_by_name=True)
+    pageNumber: int = Field(...)
+    pageSize: int = Field(...)
+    totalSize: int = Field(...)
+    list: List[WatchRule] = Field(..., max_length=20)
+
 class ToolResponse(BaseModel):
     model_config = ConfigDict(extra='allow', populate_by_name=True)
     requestId: str = Field(...)
@@ -58,6 +118,26 @@ class ProgramSearchResponse(BaseModel):
     code: int = Field(...)
     message: str = Field(...)
     data: ProgramPage = Field(cast(Any, None))
+    retryable: bool = Field(...)
+    freshnessAt: datetime = Field(...)
+
+class WatchRuleResponse(BaseModel):
+    model_config = ConfigDict(extra='allow', populate_by_name=True)
+    requestId: str = Field(...)
+    success: bool = Field(...)
+    code: int = Field(...)
+    message: str = Field(...)
+    data: WatchRule = Field(...)
+    retryable: bool = Field(...)
+    freshnessAt: datetime = Field(...)
+
+class WatchRulePageResponse(BaseModel):
+    model_config = ConfigDict(extra='allow', populate_by_name=True)
+    requestId: str = Field(...)
+    success: bool = Field(...)
+    code: int = Field(...)
+    message: str = Field(...)
+    data: WatchRulePage = Field(...)
     retryable: bool = Field(...)
     freshnessAt: datetime = Field(...)
 
@@ -160,7 +240,7 @@ class ListTicketCategoriesResponse(BaseModel):
     retryable: bool = Field(...)
     freshnessAt: datetime = Field(...)
 
-GENERATED_MODELS = (ProgramSearchRequest, ProgramIdRequest, ProgramRecommendationRequest, ToolResponse, ProgramSearchResponse, ProgramPage, ProgramSummary, ProgramRecommendationCandidate, ProgramRecommendationPage, ProgramDetail, TicketCategory, ProgramRecommendationResponse, GetProgramDetailResponse, ListTicketCategoriesResponse,)
+GENERATED_MODELS = (ProgramSearchRequest, ProgramIdRequest, ProgramRecommendationRequest, WatchRuleCreateRequest, WatchRuleUpdateRequest, WatchRuleStatusRequest, WatchRuleListRequest, WatchRule, WatchRulePage, ToolResponse, ProgramSearchResponse, WatchRuleResponse, WatchRulePageResponse, ProgramPage, ProgramSummary, ProgramRecommendationCandidate, ProgramRecommendationPage, ProgramDetail, TicketCategory, ProgramRecommendationResponse, GetProgramDetailResponse, ListTicketCategoriesResponse,)
 for _model in GENERATED_MODELS:
     _model.model_rebuild()
 
@@ -169,6 +249,10 @@ REQUEST_MODELS: Dict[str, type[BaseModel]] = {
     'recommend_programs': ProgramRecommendationRequest,
     'search_programs': ProgramSearchRequest,
     'list_ticket_categories': ProgramIdRequest,
+    'create_watch_rule': WatchRuleCreateRequest,
+    'list_watch_rules': WatchRuleListRequest,
+    'set_watch_rule_status': WatchRuleStatusRequest,
+    'update_watch_rule': WatchRuleUpdateRequest,
 }
 
 RESPONSE_MODELS: Dict[str, type[BaseModel]] = {
@@ -176,4 +260,8 @@ RESPONSE_MODELS: Dict[str, type[BaseModel]] = {
     'recommend_programs': ProgramRecommendationResponse,
     'search_programs': ProgramSearchResponse,
     'list_ticket_categories': ListTicketCategoriesResponse,
+    'create_watch_rule': WatchRuleResponse,
+    'list_watch_rules': WatchRulePageResponse,
+    'set_watch_rule_status': WatchRuleResponse,
+    'update_watch_rule': WatchRuleResponse,
 }
