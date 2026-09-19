@@ -1,0 +1,35 @@
+{
+  "requestId": "call_recommend_001",
+  "success": true,
+  "code": 0,
+  "message": "success",
+  "data": {
+    "scannedCount": 6,
+    "eligibleCount": 2,
+    "preference": "LOWEST_PRICE",
+    "list": [
+      {
+        "id": 1001,
+        "title": "示例音乐剧",
+        "actor": "示例演员",
+        "place": "示例剧院",
+        "areaName": "上海",
+        "programCategoryName": "音乐剧",
+        "showTime": "2026-10-01 19:30:00",
+        "minPrice": 380,
+        "maxPrice": 1280,
+        "rank": 1,
+        "availableTicketCategoryCount": 2,
+        "lowestAvailablePrice": 380,
+        "totalRemaining": 25,
+        "reasonCodes": [
+          "LIVE_INVENTORY_CONFIRMED",
+          "BUDGET_VERIFIED",
+          "RANKED_BY_LOWEST_PRICE"
+        ]
+      }
+    ]
+  },
+  "retryable": false,
+  "freshnessAt": "2026-09-19T10:00:00Z"
+}

@@ -206,6 +206,10 @@ class InMemoryKnowledgeIndex:
     def index_version(self) -> str:
         return self._index_version
 
+    @property
+    def documents(self) -> tuple[KnowledgeDocument, ...]:
+        return self._documents
+
     async def check_ready(self) -> bool:
         return True
 

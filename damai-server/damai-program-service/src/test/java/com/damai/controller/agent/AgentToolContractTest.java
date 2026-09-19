@@ -1,9 +1,14 @@
 package com.damai.controller.agent;
 
+import com.damai.controller.agent.dto.AgentProgramRecommendationRequest;
 import com.damai.controller.agent.dto.AgentProgramSearchRequest;
+import com.damai.controller.agent.dto.AgentRecommendationPreference;
+import com.damai.controller.agent.vo.AgentProgramRecommendationPageVo;
+import com.damai.controller.agent.vo.AgentProgramRecommendationVo;
 import com.damai.controller.agent.vo.AgentToolResponse;
 import com.damai.page.PageVo;
 import com.damai.vo.ProgramListVo;
+import com.damai.vo.TicketCategoryDetailVo;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.ConstraintViolation;
@@ -19,6 +24,7 @@ import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -55,6 +61,21 @@ class AgentToolContractTest {
         assertEquals(3, request.getTimeType());
         assertEquals(5, request.getPageSize());
         assertEquals(new BigDecimal("800"), request.getMaxPrice());
+    }
+
+    @Test
+    void sharedRecommendationRequestFixtureBindsToJavaDto() throws IOException {
+        AgentProgramRecommendationRequest request = OBJECT_MAPPER.readValue(
+                fixture("recommendation-request.json").toFile(),
+                AgentProgramRecommendationRequest.class);
+        Set<ConstraintViolation<AgentProgramRecommendationRequest>> violations =
+                validator.validate(request);
+
+        assertTrue(violations.isEmpty());
+        assertEquals(AgentRecommendationPreference.LOWEST_PRICE, request.getPreference());
+        assertEquals(3, request.getCandidateLimit());
+        assertEquals(new BigDecimal("800"), request.getMaxPrice());
+        assertEquals(6, request.toRecommendationSearchDto().getPageSize());
     }
 
     @Test
@@ -96,12 +117,67 @@ class AgentToolContractTest {
         assertEquals(1, filtered.getTotalSize());
     }
 
+    @Test
+    void customDateRangeRequiresBothOrderedBoundaries() {
+        AgentProgramSearchRequest request = new AgentProgramSearchRequest();
+        request.setTimeType(5);
+
+        assertFalse(validator.validate(request).isEmpty());
+        request.setStartDateTime(new java.util.Date(2_000));
+        request.setEndDateTime(new java.util.Date(1_000));
+        assertFalse(validator.validate(request).isEmpty());
+        request.setEndDateTime(new java.util.Date(3_000));
+        assertTrue(validator.validate(request).isEmpty());
+    }
+
+    @Test
+    void recommendationRequiresLiveInventoryAndRanksEligibleCandidates() {
+        AgentProgramRecommendationRequest request = new AgentProgramRecommendationRequest();
+        request.setMaxPrice(new BigDecimal("500"));
+        request.setPreference(AgentRecommendationPreference.LOWEST_PRICE);
+        request.setCandidateLimit(2);
+
+        ProgramListVo first = program(1L, 310000L, "380");
+        ProgramListVo soldOutOrOverBudget = program(2L, 310000L, "200");
+        ProgramListVo cheaper = program(3L, 310000L, "300");
+        Map<Long, List<TicketCategoryDetailVo>> inventory = Map.of(
+                1L, List.of(ticket(1L, "380", 5)),
+                2L, List.of(ticket(2L, "200", 0), ticket(2L, "680", 9)),
+                3L, List.of(ticket(3L, "300", 2)));
+
+        AgentProgramRecommendationPageVo result = AgentProgramToolController.buildRecommendations(
+                List.of(first, soldOutOrOverBudget, cheaper), inventory, request);
+
+        assertEquals(3, result.getScannedCount());
+        assertEquals(2, result.getEligibleCount());
+        assertEquals(List.of(3L, 1L), result.getList().stream()
+                .map(AgentProgramRecommendationVo::getId)
+                .toList());
+        assertEquals(1, result.getList().get(0).getRank());
+        assertEquals(new BigDecimal("300"), result.getList().get(0).getLowestAvailablePrice());
+        assertEquals(2L, result.getList().get(0).getTotalRemaining());
+        assertEquals(
+                List.of(
+                        "LIVE_INVENTORY_CONFIRMED",
+                        "BUDGET_VERIFIED",
+                        "RANKED_BY_LOWEST_PRICE"),
+                result.getList().get(0).getReasonCodes());
+    }
+
     private static ProgramListVo program(long id, long areaId, String minPrice) {
         ProgramListVo program = new ProgramListVo();
         program.setId(id);
         program.setAreaId(areaId);
         program.setMinPrice(new BigDecimal(minPrice));
         return program;
+    }
+
+    private static TicketCategoryDetailVo ticket(long programId, String price, long remaining) {
+        TicketCategoryDetailVo ticket = new TicketCategoryDetailVo();
+        ticket.setProgramId(programId);
+        ticket.setPrice(new BigDecimal(price));
+        ticket.setRemainNumber(remaining);
+        return ticket;
     }
 
     private static Path fixture(String name) {

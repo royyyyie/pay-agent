@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import unittest
@@ -11,6 +12,7 @@ from damai_agent.generated.tool_models import REQUEST_MODELS, RESPONSE_MODELS
 from damai_agent.tools import JavaToolClient, ToolRegistry, build_java_tools
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CONTRACT_EXAMPLES = PROJECT_ROOT.parent / "contracts" / "examples" / "agent-tools-v1"
 
 
 class ContractGenerationTest(unittest.TestCase):
@@ -31,7 +33,12 @@ class ContractGenerationTest(unittest.TestCase):
 
         self.assertEqual(
             set(registry.names),
-            {"search_programs", "get_program_detail", "list_ticket_categories"},
+            {
+                "search_programs",
+                "recommend_programs",
+                "get_program_detail",
+                "list_ticket_categories",
+            },
         )
         for spec in registry.specs:
             self.assertEqual(spec.version, "1.0.0")
@@ -69,6 +76,21 @@ class ContractGenerationTest(unittest.TestCase):
                     "retryable": False,
                 }
             )
+
+    def test_recommendation_contract_is_bounded_and_defaults_to_relevance(self) -> None:
+        request_model = REQUEST_MODELS["recommend_programs"]
+        validated = request_model.model_validate({"keyword": "音乐剧"})
+        self.assertEqual(validated.preference, "RELEVANCE")
+        self.assertEqual(validated.candidateLimit, 3)
+        with self.assertRaises(ValidationError):
+            request_model.model_validate({"candidateLimit": 6})
+
+        response = json.loads(
+            (CONTRACT_EXAMPLES / "recommendation-response.json").read_text(encoding="utf-8")
+        )
+        validated_response = RESPONSE_MODELS["recommend_programs"].model_validate(response)
+        self.assertEqual(validated_response.data.list[0].rank, 1)
+        self.assertEqual(validated_response.data.list[0].totalRemaining, 25)
 
 
 if __name__ == "__main__":

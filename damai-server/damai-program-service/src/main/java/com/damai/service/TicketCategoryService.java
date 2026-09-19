@@ -33,6 +33,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Date;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -186,5 +188,30 @@ public class TicketCategoryService extends ServiceImpl<TicketCategoryMapper, Tic
             BeanUtil.copyProperties(ticketCategory,ticketCategoryDetailVo);
             return ticketCategoryDetailVo;
         }).collect(Collectors.toList());
+    }
+
+    /**
+     * 为有界推荐候选批量读取票档，避免逐节目查询造成 N+1。
+     */
+    public Map<Long, List<TicketCategoryDetailVo>> selectListByPrograms(List<Long> programIds) {
+        List<Long> uniqueProgramIds = programIds.stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .limit(10)
+                .collect(Collectors.toList());
+        if (uniqueProgramIds.isEmpty()) {
+            return Map.of();
+        }
+        List<TicketCategory> ticketCategories = ticketCategoryMapper.selectList(
+                Wrappers.lambdaQuery(TicketCategory.class)
+                        .in(TicketCategory::getProgramId, uniqueProgramIds));
+        Map<Long, List<TicketCategoryDetailVo>> result = new LinkedHashMap<>();
+        for (TicketCategory ticketCategory : ticketCategories) {
+            TicketCategoryDetailVo detail = new TicketCategoryDetailVo();
+            BeanUtil.copyProperties(ticketCategory, detail);
+            result.computeIfAbsent(detail.getProgramId(), ignored -> new ArrayList<>())
+                    .add(detail);
+        }
+        return result;
     }
 }
