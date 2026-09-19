@@ -25,6 +25,16 @@ class RagReleaseGateTest(unittest.TestCase):
             "retrievalProfile": "semantic_hybrid",
             "evalSetSha256": "a" * 64,
             "benchmarkReportSha256": "b" * 64,
+            "benchmarkConfiguration": {
+                "backend": "elasticsearch",
+                "topK": 4,
+                "candidateK": 12,
+                "rankWindowSize": 20,
+                "rrfRankConstant": 60,
+                "repetitions": 10,
+                "concurrency": 8,
+                "warmupRequests": 10,
+            },
             "semanticConfiguration": {
                 "inferenceId": "embedding-v1",
                 "chunkingSettings": {
@@ -94,6 +104,27 @@ class RagReleaseGateTest(unittest.TestCase):
                 path = Path(directory) / "acceptance.json"
                 path.write_text(json.dumps(report), encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "report"):
+                    verify_acceptance_report(
+                        SimpleNamespace(acceptance_report=path, max_report_age_hours=72),
+                        index_name,
+                    )
+
+    def test_promotion_rejects_unbounded_or_missing_benchmark_configuration(self) -> None:
+        index_name = "damai-knowledge-read-v-semantic-001"
+        for mutation in ("missing", "undersized-window", "excessive-concurrency"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                report = self.report(index_name)
+                benchmark = report["benchmarkConfiguration"]
+                assert isinstance(benchmark, dict)
+                if mutation == "missing":
+                    report.pop("benchmarkConfiguration")
+                elif mutation == "undersized-window":
+                    benchmark["rankWindowSize"] = 10
+                else:
+                    benchmark["concurrency"] = 1000
+                path = Path(directory) / "acceptance.json"
+                path.write_text(json.dumps(report), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "benchmark evidence"):
                     verify_acceptance_report(
                         SimpleNamespace(acceptance_report=path, max_report_age_hours=72),
                         index_name,

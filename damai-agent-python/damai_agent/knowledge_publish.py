@@ -119,6 +119,7 @@ class KnowledgeReleaseReceipt:
     bulk_batches: int = 0
     indexing_duration_ms: float = 0.0
     alias_switched: bool = False
+    deployment_mode: str = "stateful"
 
 
 class ElasticsearchKnowledgePublisher:
@@ -131,7 +132,7 @@ class ElasticsearchKnowledgePublisher:
         index_alias: str,
         *,
         timeout_seconds: float = 10.0,
-        serverless: bool = False,
+        serverless: bool | None = False,
         opener: urllib.request.OpenerDirector | None = None,
     ) -> None:
         parsed = urlparse(base_url.rstrip("/"))
@@ -159,6 +160,19 @@ class ElasticsearchKnowledgePublisher:
         self._serverless = serverless
         self._opener = opener or urllib.request.build_opener(_NoRedirect())
 
+    def is_serverless(self) -> bool:
+        """Resolve and cache the deployment flavor without exposing credentials."""
+
+        if self._serverless is not None:
+            return self._serverless
+        payload = self._request_json("GET", "/")
+        version = payload.get("version") if payload is not None else None
+        build_flavor = version.get("build_flavor") if isinstance(version, dict) else None
+        if not isinstance(build_flavor, str) or not build_flavor:
+            raise KnowledgePublicationError("Elasticsearch deployment flavor is unavailable")
+        self._serverless = build_flavor == "serverless"
+        return self._serverless
+
     def publish(
         self,
         index_name: str,
@@ -183,6 +197,7 @@ class ElasticsearchKnowledgePublisher:
             bulk_batches=staged.bulk_batches,
             indexing_duration_ms=staged.indexing_duration_ms,
             alias_switched=True,
+            deployment_mode=staged.deployment_mode,
         )
 
     def stage(
@@ -205,6 +220,12 @@ class ElasticsearchKnowledgePublisher:
             or mappings.get("dynamic") != "strict"
         ):
             raise ValueError("knowledge index definition must contain strict mappings only")
+
+        serverless = self.is_serverless()
+        if serverless:
+            index_definition = configure_serverless_index_definition(index_definition)
+            mappings = index_definition.get("mappings")
+            assert isinstance(mappings, dict)
 
         semantic = self._semantic_mapping(index_definition)
         inference_id = ""
@@ -257,6 +278,7 @@ class ElasticsearchKnowledgePublisher:
             bulk_batches=len(batches),
             indexing_duration_ms=indexing_duration_ms,
             alias_switched=False,
+            deployment_mode="serverless" if serverless else "stateful",
         )
 
     def verify_inference_endpoint(self, inference_id: str) -> str:
@@ -379,7 +401,7 @@ class ElasticsearchKnowledgePublisher:
                 )
 
         vector_chunk_count: int | None = None
-        if not self._serverless:
+        if not self.is_serverless():
             stats = self._request_json(
                 "GET",
                 f"/{quote(index_name, safe='')}/_stats/docs,store"

@@ -15,7 +15,6 @@ from urllib.parse import urlparse
 from damai_agent.knowledge_publish import (
     ElasticsearchKnowledgePublisher,
     configure_semantic_mapping,
-    configure_serverless_index_definition,
 )
 from damai_agent.rag import InMemoryKnowledgeIndex, load_knowledge_catalog
 
@@ -42,10 +41,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-report-age-hours", type=int, default=72)
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
     parser.add_argument("--allow-http", action="store_true")
-    parser.add_argument(
+    deployment = parser.add_mutually_exclusive_group()
+    deployment.add_argument(
         "--serverless",
         action="store_true",
-        help="Remove shard and replica settings managed by Elasticsearch Serverless.",
+        help="Treat the target as Serverless without deployment auto-detection.",
+    )
+    deployment.add_argument(
+        "--stateful",
+        action="store_true",
+        help="Treat the target as Stateful/self-managed without auto-detection.",
     )
     parser.add_argument(
         "--semantic-inference-id",
@@ -84,12 +89,13 @@ def build_publisher(args: argparse.Namespace) -> ElasticsearchKnowledgePublisher
         raise ValueError("publisher URL and API key are required")
     if urlparse(args.url).scheme != "https" and not args.allow_http:
         raise ValueError("publisher URL must use HTTPS unless --allow-http is explicit")
+    serverless = True if args.serverless else False if args.stateful else None
     return ElasticsearchKnowledgePublisher(
         args.url,
         api_key,
         args.alias,
         timeout_seconds=args.timeout_seconds,
-        serverless=args.serverless,
+        serverless=serverless,
     )
 
 
@@ -109,6 +115,7 @@ def verify_acceptance_report(args: argparse.Namespace, index_name: str) -> str:
     if report.get("retrievalProfile") not in {"semantic_hybrid", "semantic_rerank"}:
         raise ValueError("acceptance report did not exercise a semantic profile")
     semantic = report.get("semanticConfiguration")
+    benchmark = report.get("benchmarkConfiguration")
     inference_id = semantic.get("inferenceId") if isinstance(semantic, dict) else None
     chunking = semantic.get("chunkingSettings") if isinstance(semantic, dict) else None
     chunking_strategy = chunking.get("strategy") if isinstance(chunking, dict) else None
@@ -116,6 +123,13 @@ def verify_acceptance_report(args: argparse.Namespace, index_name: str) -> str:
     overlap_key = "sentence_overlap" if chunking_strategy == "sentence" else "overlap"
     chunk_overlap = chunking.get(overlap_key) if isinstance(chunking, dict) else None
     rerank_inference_id = semantic.get("rerankInferenceId") if isinstance(semantic, dict) else None
+    top_k = benchmark.get("topK") if isinstance(benchmark, dict) else None
+    candidate_k = benchmark.get("candidateK") if isinstance(benchmark, dict) else None
+    rank_window_size = benchmark.get("rankWindowSize") if isinstance(benchmark, dict) else None
+    rank_constant = benchmark.get("rrfRankConstant") if isinstance(benchmark, dict) else None
+    repetitions = benchmark.get("repetitions") if isinstance(benchmark, dict) else None
+    concurrency = benchmark.get("concurrency") if isinstance(benchmark, dict) else None
+    warmup_requests = benchmark.get("warmupRequests") if isinstance(benchmark, dict) else None
     if (
         not isinstance(inference_id, str)
         or _INFERENCE_PATTERN.fullmatch(inference_id) is None
@@ -136,8 +150,31 @@ def verify_acceptance_report(args: argparse.Namespace, index_name: str) -> str:
                 or _INFERENCE_PATTERN.fullmatch(rerank_inference_id) is None
             )
         )
+        or not isinstance(benchmark, dict)
+        or benchmark.get("backend") != "elasticsearch"
+        or isinstance(top_k, bool)
+        or not isinstance(top_k, int)
+        or not 1 <= top_k <= 20
+        or isinstance(candidate_k, bool)
+        or not isinstance(candidate_k, int)
+        or not top_k <= candidate_k <= 100
+        or isinstance(rank_window_size, bool)
+        or not isinstance(rank_window_size, int)
+        or not max(10, candidate_k) <= rank_window_size <= 200
+        or isinstance(rank_constant, bool)
+        or not isinstance(rank_constant, int)
+        or not 1 <= rank_constant <= 1000
+        or isinstance(repetitions, bool)
+        or not isinstance(repetitions, int)
+        or not 1 <= repetitions <= 100
+        or isinstance(concurrency, bool)
+        or not isinstance(concurrency, int)
+        or not 1 <= concurrency <= 64
+        or isinstance(warmup_requests, bool)
+        or not isinstance(warmup_requests, int)
+        or not 0 <= warmup_requests <= 1000
     ):
-        raise ValueError("acceptance report lacks semantic mapping evidence")
+        raise ValueError("acceptance report lacks semantic mapping or benchmark evidence")
     eval_hash = report.get("evalSetSha256")
     benchmark_hash = report.get("benchmarkReportSha256")
     if (
@@ -291,8 +328,6 @@ def main() -> int:
         mapping = json.loads(args.mapping.read_text(encoding="utf-8"))
         if not isinstance(mapping, dict):
             raise ValueError("mapping must be a JSON object")
-        if args.serverless:
-            mapping = configure_serverless_index_definition(mapping)
         mappings = mapping.get("mappings")
         properties = mappings.get("properties") if isinstance(mappings, dict) else None
         semantic = properties.get("semantic_content") if isinstance(properties, dict) else None
@@ -335,6 +370,7 @@ def main() -> int:
                     "bulkBatches": receipt.bulk_batches,
                     "indexingDurationMs": round(receipt.indexing_duration_ms, 3),
                     "aliasSwitched": receipt.alias_switched,
+                    "deploymentMode": receipt.deployment_mode,
                     "readyForEvaluation": not receipt.alias_switched,
                 },
                 ensure_ascii=False,

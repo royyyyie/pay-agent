@@ -33,6 +33,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate-k", type=int, default=12)
     parser.add_argument("--hybrid", action="store_true")
     parser.add_argument("--rrf-rank-constant", type=int, default=60)
+    parser.add_argument(
+        "--rank-window-size",
+        type=int,
+        default=int(os.environ.get("DAMAI_EVAL_ELASTICSEARCH_RANK_WINDOW_SIZE", "50")),
+    )
     parser.add_argument("--rerank", action="store_true")
     parser.add_argument("--min-recall", type=float, default=0.9)
     parser.add_argument("--min-mrr", type=float, default=0.8)
@@ -124,6 +129,10 @@ def sha256_file(path: str) -> str:
 
 async def evaluate() -> int:
     args = parse_args()
+    if not 10 <= args.rank_window_size <= 200:
+        raise ValueError("Elasticsearch rank window must be between 10 and 200")
+    if args.rank_window_size < max(args.top_k, args.candidate_k):
+        raise ValueError("Elasticsearch rank window must cover top-k and candidate-k")
     index: KnowledgeRetriever
     target_index = "local"
     semantic_configuration: dict[str, object] = {}
@@ -153,7 +162,7 @@ async def evaluate() -> int:
             retrieval_profile=profile,
             semantic_field=args.semantic_field,
             rerank_inference_id=args.rerank_inference_id,
-            rank_window_size=max(50, args.candidate_k),
+            rank_window_size=args.rank_window_size,
             rank_constant=args.rrf_rank_constant,
         )
         if not await index.check_ready():
@@ -260,6 +269,16 @@ async def evaluate() -> int:
         else index.index_version,
         "retrievalProfile": args.retrieval_profile,
         "evalSetSha256": eval_set_sha256,
+        "benchmarkConfiguration": {
+            "backend": args.backend,
+            "topK": args.top_k,
+            "candidateK": args.candidate_k,
+            "rankWindowSize": args.rank_window_size,
+            "rrfRankConstant": args.rrf_rank_constant,
+            "repetitions": args.benchmark_repetitions,
+            "concurrency": args.benchmark_concurrency,
+            "warmupRequests": args.warmup_requests,
+        },
         "semanticConfiguration": semantic_configuration,
         "quality": quality_payload,
         "load": load_payload,

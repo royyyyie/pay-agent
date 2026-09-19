@@ -57,7 +57,9 @@ class FakeOpener:
         return FakeResponse(response)
 
 
-def publisher(opener: FakeOpener, *, serverless: bool = False) -> ElasticsearchKnowledgePublisher:
+def publisher(
+    opener: FakeOpener, *, serverless: bool | None = False
+) -> ElasticsearchKnowledgePublisher:
     return ElasticsearchKnowledgePublisher(
         "https://es.example.com",
         "publisher-secret",
@@ -191,7 +193,6 @@ class KnowledgePublisherTest(unittest.TestCase):
             Path(__file__).parents[1] / "docs" / "elasticsearch-knowledge-index-semantic.json"
         )
         mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
-        mapping = configure_serverless_index_definition(mapping)
         index_name = "damai-knowledge-read-v-serverless-001"
         opener = FakeOpener(
             [
@@ -219,7 +220,46 @@ class KnowledgePublisherTest(unittest.TestCase):
         )
 
         self.assertIsNone(receipt.vector_chunk_count)
+        self.assertEqual(receipt.deployment_mode, "serverless")
         self.assertFalse(any("/_stats/" in request.full_url for request in opener.requests))
+        created = json.loads(opener.requests[2].data or b"{}")
+        self.assertEqual(created["settings"], {"refresh_interval": "30s"})
+
+    def test_stage_auto_detects_and_caches_serverless_deployment(self) -> None:
+        mapping_path = (
+            Path(__file__).parents[1] / "docs" / "elasticsearch-knowledge-index-semantic.json"
+        )
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        index_name = "damai-knowledge-read-v-serverless-auto"
+        opener = FakeOpener(
+            [
+                {"name": "serverless", "version": {"build_flavor": "serverless"}},
+                {
+                    "endpoints": [
+                        {
+                            "inference_id": ".multilingual-e5-small-elasticsearch",
+                            "task_type": "text_embedding",
+                        }
+                    ]
+                },
+                {"text_embedding": [{"embedding": [0.1, 0.2]}]},
+                {"acknowledged": True},
+                {"errors": False, "items": []},
+                {"count": 1},
+                {index_name: {"mappings": mapping["mappings"]}},
+                {"hits": {"hits": [{"_id": "public:faq-1:2026.09"}]}},
+            ]
+        )
+        instance = publisher(opener, serverless=None)
+
+        receipt = instance.stage(index_name, (document("faq-1"),), mapping)
+
+        self.assertEqual(receipt.deployment_mode, "serverless")
+        self.assertTrue(instance.is_serverless())
+        self.assertEqual(
+            sum(request.full_url == "https://es.example.com/" for request in opener.requests),
+            1,
+        )
 
     def test_semantic_release_cannot_bypass_acceptance_with_legacy_publish(self) -> None:
         mapping_path = (

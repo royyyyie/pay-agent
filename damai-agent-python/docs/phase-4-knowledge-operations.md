@@ -50,7 +50,7 @@ uv run --frozen python scripts/manage_knowledge_index.py stage `
 
 模板内置可自托管的中文基线 `.multilingual-e5-small-elasticsearch`。`--semantic-inference-id` 会在内存中绑定经过评测的版本化端点而不改写模板；示例端点是否可用取决于 Elastic Cloud 区域和许可。工具在创建索引前读取端点元数据并发起一次真实 Embedding；Bulk 写入触发 `semantic_text` 自动分块、Embedding 和向量存储。随后工具核对父文档数、隐藏向量块数、实际 Mapping、存储大小并执行语义查询冒烟测试。任一步失败都不会切换读别名。
 
-Elastic Cloud Serverless 会托管分片和副本拓扑，发布时必须增加 `--serverless`。工具只会从内存中的索引定义移除 `number_of_shards` 和 `number_of_replicas`，不会改写受审模板；Stateful/self-managed 部署不要使用该参数。Serverless 不开放索引 `_stats`，因此回执中的 `vectorChunkCount` 为 `null`，发布门禁改为核对父文档数量、实际 `semantic_text` Mapping，并要求真实语义查询至少命中一条；Stateful 部署仍额外核对隐藏向量块计数和存储大小。
+工具默认读取根端点的 `version.build_flavor` 自动识别 Elastic Cloud Serverless；根端点受代理限制时，可用 `--serverless` 或 `--stateful` 显式指定并跳过探测。Serverless 会托管分片和副本拓扑，工具只会从内存中的索引定义移除 `number_of_shards` 和 `number_of_replicas`，不会改写受审模板。Serverless 不开放索引 `_stats`，因此回执中的 `vectorChunkCount` 为 `null`，发布门禁改为核对父文档数量、实际 `semantic_text` Mapping，并要求真实语义查询至少命中一条；Stateful 部署仍额外核对隐藏向量块计数和存储大小。回执会记录 `deploymentMode`，供审批系统确认发布目标符合预期。
 
 Bulk 按 500 文档/5 MiB 双上限自动分批，最后一批等待刷新。发布账号还需要使用指定 inference endpoint 的最小权限和容量；运行时只读账号不得获得索引写权限。失败响应正文不会进入异常消息。
 
@@ -69,6 +69,7 @@ uv run --frozen python scripts/evaluate_rag.py `
   --index-version knowledge-2026.09.19-semantic `
   --eval-set C:\secure\knowledge-eval.json `
   --source-host help.example.com `
+  --rank-window-size 20 `
   --benchmark-repetitions 10 `
   --benchmark-concurrency 8 `
   --warmup-requests 10 `
@@ -81,6 +82,21 @@ uv run --frozen python scripts/evaluate_rag.py `
 ```
 
 无费用证据时报告会保留 Recall、MRR、P95 和吞吐结果但返回非零，不允许晋级。查询 Elastic/推理供应商账单或 Usage 导出，取得同一测试窗口的索引 Embedding 和查询/重排实际费用后，生成新的费用证明报告：
+
+Elasticsearch 项目 API Key 不能读取组织账单。自动采集必须另建只读 Elastic Cloud API Key，通过环境变量注入；组织 ID 同样不放入命令行。采集器调用官方 Cloud Billing v2 `costs/instances`，只保留目标项目并记录原始响应 SHA-256：
+
+```powershell
+$env:ELASTIC_CLOUD_API_KEY = "<billing-read-cloud-api-key>"
+$env:ELASTIC_CLOUD_ORGANIZATION_ID = "<organization-id>"
+
+uv run --frozen python scripts/collect_elastic_billing.py `
+  --project-id <serverless-project-id> `
+  --from-time 2026-09-19T11:30:00Z `
+  --to-time 2026-09-19T12:00:00Z `
+  --report-out C:\secure\elastic-billing-20260919.json
+```
+
+证据保留 Elastic 原始 ECU 和产品行项目，不自动假设 ECU 与 USD 的换算关系。应按组织合同或 Billing Usage 导出的实际币种分别确认索引窗口和查询窗口费用，再交给费用证明工具。Cloud Key 的创建和权限见 [Elastic Cloud API keys](https://www.elastic.co/docs/deploy-manage/api-keys/elastic-cloud-api-keys)，账单接口见 [Cloud Billing API](https://www.elastic.co/docs/api/doc/cloud-billing/operation/operation-getcostsbyinstancesv2)。
 
 ```powershell
 uv run --frozen python scripts/attest_rag_cost.py `

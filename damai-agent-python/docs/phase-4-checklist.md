@@ -185,6 +185,7 @@ python scripts/evaluate_rag.py `
   --index-name damai-knowledge-read-v-20260919-001 `
   --eval-set C:\secure\knowledge-eval.json `
   --source-host help.example.com `
+  --rank-window-size 20 `
   --benchmark-repetitions 10 --benchmark-concurrency 8 `
   --min-benchmark-requests 100 --min-throughput-qps 10 `
   --min-recall 0.9 --min-mrr 0.8 --min-precision 0.5 `
@@ -193,6 +194,16 @@ python scripts/evaluate_rag.py `
 ```
 
 费用二次证明与晋级命令见[知识索引发布与回滚](phase-4-knowledge-operations.md)。Elasticsearch Search 响应不提供统一的跨供应商账单金额，因此工具不会把字符数估算伪装成真实费用；最终报告必须引用同一窗口的 Elastic Billing 或推理供应商 Usage 导出。
+
+### 2026-09-19 Elastic Cloud Serverless 实测
+
+- Cloud Serverless 9.6.0、Enterprise 许可证和 API Key 鉴权通过；根端点、Inference 元数据和真实推理均可用。
+- `.jina-embeddings-v5-text-small` 返回 1024 维向量；`.jina-reranker-v3.5` 把实名证件规则排在第一位。
+- 暂存索引 `damai-knowledge-read-v-cloud-20260919-001` 成功写入 3 个隔离测试父文档，`semantic_text` 自动分块、Embedding、向量存储和语义查询通过；未切换 `damai-knowledge-read` 别名。
+- `semantic_hybrid`：Recall 1.0、MRR 1.0、动态拦截率 1.0；负载 P95 1211.515 ms、3.472 QPS，且只有 20 个真实检索请求。
+- `semantic_rerank`：30 个真实检索请求，Recall 1.0、MRR 1.0、动态拦截率 1.0；负载 P95 1434.049 ms、5.860 QPS。
+- 将排名窗口从 50 收紧到 12、并发提高到 16 后，吞吐提升到 9.418 QPS，但负载 P95 上升到 1812.109 ms；不通过增加并发掩盖尾延迟问题。
+- 结论：功能和样例质量通过；原生产门槛 P95 ≤ 800 ms、吞吐 ≥ 10 QPS 未通过，Cloud Billing 费用证据和业务大规模集合仍缺失，因此保持 staged，不执行 promote。
 
 高级架构与不采用 GraphRAG/RAPTOR 作为默认路径的理由见 [ADR-011](adr/011-advanced-rag-retrieval.md)。
 
