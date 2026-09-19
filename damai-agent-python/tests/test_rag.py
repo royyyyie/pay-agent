@@ -111,7 +111,39 @@ class StreamingRagProvider:
         )
 
 
+class PassageRetriever:
+    index_version = "knowledge-semantic-v1"
+    profile = "semantic-hybrid"
+
+    async def check_ready(self) -> bool:
+        return True
+
+    async def search(self, *_: object, **__: object) -> Sequence[KnowledgeHit]:
+        return (
+            KnowledgeHit(
+                document(
+                    content="父文档开头内容。真正相关的实名核验规则位于文档中间。父文档结尾内容。"
+                ),
+                score=1,
+                passage="真正相关的实名核验规则位于文档中间。",
+            ),
+        )
+
+
 class KnowledgeIndexTest(unittest.IsolatedAsyncioTestCase):
+    async def test_semantic_passage_enters_context_while_citation_keeps_parent(self) -> None:
+        rag = StableKnowledgeRag(PassageRetriever(), top_k=1)  # type: ignore[arg-type]
+        bundle = await rag.prepare(
+            "身份认证怎么办",
+            tenant_id="tenant-a",
+            locale="zh-CN",
+            moment=NOW,
+        )
+        self.assertEqual(bundle.retrieval_profile, "semantic-hybrid")
+        self.assertIn("真正相关的实名核验规则", bundle.context)
+        self.assertNotIn("父文档开头内容", bundle.context)
+        self.assertEqual(bundle.citations[0].document_id, "identity-policy")
+
     async def test_chinese_query_planning_and_rrf_are_bounded(self) -> None:
         queries = plan_chinese_queries("请问 实名购票怎么核验")
         self.assertEqual(queries[0], "请问 实名购票怎么核验")
@@ -287,15 +319,21 @@ class RagRunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.citation_id for item in result.citations], ["K1"])
         self.assertTrue(result.knowledge_version.startswith("knowledge@sha256:"))
         self.assertEqual(result.knowledge_variant, "control")
+        self.assertEqual(result.knowledge_profile, "local-lexical")
         self.assertIn("retrieved_knowledge", provider.messages[0].content or "")
         knowledge_event = next(event for event in events if event["type"] == "knowledge.retrieved")
         self.assertEqual(knowledge_event["variant"], "control")
+        self.assertEqual(knowledge_event["profile"], "local-lexical")
         self.assertIn(
             'damai_agent_knowledge_retrieval_total{outcome="hit"} 1',
             metrics.render_prometheus(),
         )
         self.assertIn(
             'damai_agent_knowledge_variant_total{variant="control"} 1',
+            metrics.render_prometheus(),
+        )
+        self.assertIn(
+            'damai_agent_knowledge_profile_total{profile="local-lexical"} 1',
             metrics.render_prometheus(),
         )
 

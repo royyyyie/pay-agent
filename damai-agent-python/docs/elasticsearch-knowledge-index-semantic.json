@@ -1,0 +1,26 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1,
+    "refresh_interval": "30s"
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "document_id": { "type": "keyword", "ignore_above": 128 },
+      "version": { "type": "keyword", "ignore_above": 64 },
+      "tenant_id": { "type": "keyword", "ignore_above": 128 },
+      "locale": { "type": "keyword", "ignore_above": 35 },
+      "category": { "type": "keyword" },
+      "title": { "type": "text", "copy_to": "semantic_content" },
+      "content": { "type": "text", "copy_to": "semantic_content" },
+      "semantic_content": {
+        "type": "semantic_text",
+        "inference_id": ".multilingual-e5-small-elasticsearch"
+      },
+      "source": { "type": "keyword", "index": false, "doc_values": false },
+      "effective_from": { "type": "date" },
+      "effective_to": { "type": "date" }
+    }
+  }
+}

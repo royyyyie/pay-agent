@@ -134,9 +134,55 @@ python scripts/evaluate_recommendations.py `
 
 仓库 Fixture 只验证门禁机制，不代表业务大规模 Eval 已完成。正式集合应由业务方维护，覆盖各租户、Locale、同义表达、无答案问题、越权文档和边界预算；结果需要按控制组/实验组分别留档。
 
+## 第五批：高级语义 RAG 检索树
+
+- [x] 新增 `semantic_text` 中文语义索引模板，标题和正文自动复制到显式推理端点；发布时可绑定经过 Eval 的版本化模型
+- [x] `semantic_hybrid` 在单次 Elasticsearch Search 中执行 BM25/短语与 Dense 语义召回，并由服务端 RRF 合并
+- [x] 两个召回分支都执行租户、Locale 和有效期预过滤；Python 继续执行结果二次隔离校验
+- [x] `semantic_rerank` 在混合候选上增加可配置 Cross-Encoder inference endpoint 与有界排名窗口
+- [x] 使用语义高亮的相关子片段构建上下文，引用仍绑定父文档，片段和总上下文均有长度上限
+- [x] `/ready` 在语义 Profile 下实际执行语义查询，索引字段或 Embedding endpoint 不可用时拒绝就绪
+- [x] API、完成事件、Trace 和 Prometheus 增加有界 `knowledgeProfile`，区分本地/Elastic 词法、语义混合和语义重排
+- [x] 保留 `lexical` 兼容 Profile；高级路径默认关闭，未经云 Eval/SLO 验收不会自动切换
+
+中文语义索引使用 `docs/elasticsearch-knowledge-index-semantic.json`。发布到新具体索引并完成别名切换后，运行时配置示例：
+
+```dotenv
+DAMAI_AGENT_RAG_BACKEND=elasticsearch
+DAMAI_AGENT_RAG_RETRIEVAL_PROFILE=semantic_hybrid
+DAMAI_AGENT_ELASTICSEARCH_SEMANTIC_FIELD=semantic_content
+DAMAI_AGENT_ELASTICSEARCH_RANK_WINDOW_SIZE=50
+```
+
+Cross-Encoder 验收通过后才切换：
+
+```dotenv
+DAMAI_AGENT_RAG_RETRIEVAL_PROFILE=semantic_rerank
+DAMAI_AGENT_ELASTICSEARCH_RERANK_INFERENCE_ID=<versioned-rerank-endpoint>
+```
+
+云 Eval 的 API Key 只通过 `DAMAI_EVAL_ELASTICSEARCH_API_KEY` 注入，不放入命令行。对同一集合依次运行 `semantic_hybrid` 与 `semantic_rerank`，比较 Recall、MRR、P95 和实际推理费用：
+
+```powershell
+$env:DAMAI_EVAL_ELASTICSEARCH_URL = "https://your-deployment.example.com:9243"
+$env:DAMAI_EVAL_ELASTICSEARCH_API_KEY = "<read-only-eval-key>"
+$env:DAMAI_EVAL_ELASTICSEARCH_INDEX_ALIAS = "damai-knowledge-read"
+$env:DAMAI_EVAL_ELASTICSEARCH_INDEX_VERSION = "knowledge-2026.09.19-semantic"
+
+python scripts/evaluate_rag.py `
+  --backend elasticsearch `
+  --retrieval-profile semantic_hybrid `
+  --eval-set C:\secure\knowledge-eval.json `
+  --source-host help.example.com `
+  --min-recall 0.9 --min-mrr 0.8 --min-precision 0.5 `
+  --max-p95-latency-ms 800
+```
+
+高级架构与不采用 GraphRAG/RAPTOR 作为默认路径的理由见 [ADR-011](adr/011-advanced-rag-retrieval.md)。
+
 ## 剩余退出标准
 
-- [ ] 接入经安全评审的中文向量/语义通道，并在云测试索引完成维度、模型版本、延迟与成本验收
+- [ ] 在云测试索引发布中文语义 Mapping，验证推理端点、模型版本、召回、延迟、吞吐与成本
 - [ ] 用业务方大规模集合运行 RAG/推荐 Eval，完成控制组与实验组统计显著性、人工相关性和安全验收
 - [ ] 测试专用环境完成端到端 RAG/Java Trace、故障降级和 SLO 验收
 

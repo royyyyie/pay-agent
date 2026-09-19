@@ -19,6 +19,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .models import KnowledgeCitation
 
+RetrievalProfile = Literal[
+    "local-lexical",
+    "elastic-lexical",
+    "semantic-hybrid",
+    "semantic-rerank",
+]
+
 _MAX_CATALOG_BYTES = 10 * 1024 * 1024
 _MAX_DOCUMENTS = 10_000
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+|[\u4e00-\u9fff]")
@@ -136,11 +143,15 @@ class KnowledgeDocument(BaseModel):
 class KnowledgeHit:
     document: KnowledgeDocument
     score: float
+    passage: str = ""
 
 
 class KnowledgeRetriever(Protocol):
     @property
     def index_version(self) -> str: ...
+
+    @property
+    def profile(self) -> RetrievalProfile: ...
 
     async def check_ready(self) -> bool: ...
 
@@ -192,6 +203,10 @@ class ReciprocalRankFusionRetriever:
     def index_version(self) -> str:
         return self._retriever.index_version
 
+    @property
+    def profile(self) -> RetrievalProfile:
+        return self._retriever.profile
+
     async def check_ready(self) -> bool:
         return await self._retriever.check_ready()
 
@@ -220,6 +235,7 @@ class ReciprocalRankFusionRetriever:
             )
         )
         documents: dict[tuple[str, str, str], KnowledgeDocument] = {}
+        passages: dict[tuple[str, str, str], str] = {}
         scores: dict[tuple[str, str, str], float] = {}
         maximum = len(channels) / (self._rank_constant + 1)
         for hits in channels:
@@ -230,9 +246,15 @@ class ReciprocalRankFusionRetriever:
                     hit.document.version,
                 )
                 documents[identity] = hit.document
+                if hit.passage and identity not in passages:
+                    passages[identity] = hit.passage
                 scores[identity] = scores.get(identity, 0.0) + 1 / (self._rank_constant + rank)
         fused = (
-            KnowledgeHit(document=documents[identity], score=score / maximum)
+            KnowledgeHit(
+                document=documents[identity],
+                score=score / maximum,
+                passage=passages.get(identity, ""),
+            )
             for identity, score in scores.items()
         )
         return tuple(
@@ -262,12 +284,12 @@ class DeterministicKnowledgeReranker:
         ranked: list[KnowledgeHit] = []
         for rank, hit in enumerate(hits, start=1):
             title_tokens = set(_tokens(hit.document.title))
-            content_tokens = set(_tokens(hit.document.content))
+            content_tokens = set(_tokens(hit.passage or hit.document.content))
             denominator = max(len(query_tokens), 1)
             title_coverage = len(query_tokens & title_tokens) / denominator
             content_coverage = len(query_tokens & content_tokens) / denominator
             normalized_title = "".join(hit.document.title.lower().split())
-            normalized_content = "".join(hit.document.content.lower().split())
+            normalized_content = "".join((hit.passage or hit.document.content).lower().split())
             phrase_match = bool(
                 normalized_query
                 and (normalized_query in normalized_title or normalized_query in normalized_content)
@@ -279,7 +301,7 @@ class DeterministicKnowledgeReranker:
                 + (0.08 if phrase_match else 0)
                 + (0.02 if hit.document.tenant_id == tenant_id else 0)
             )
-            ranked.append(KnowledgeHit(hit.document, score))
+            ranked.append(KnowledgeHit(hit.document, score, hit.passage))
         return tuple(
             sorted(
                 ranked,
@@ -356,6 +378,10 @@ class InMemoryKnowledgeIndex:
         return self._index_version
 
     @property
+    def profile(self) -> RetrievalProfile:
+        return "local-lexical"
+
+    @property
     def documents(self) -> tuple[KnowledgeDocument, ...]:
         return self._documents
 
@@ -415,6 +441,7 @@ class RagBundle:
     index_version: str = ""
     outcome: Literal["hit", "miss", "dynamic_blocked"] = "miss"
     retrieval_variant: Literal["control", "rerank-v1"] = "control"
+    retrieval_profile: RetrievalProfile = "local-lexical"
 
     @property
     def citation_required(self) -> bool:
@@ -474,6 +501,10 @@ class StableKnowledgeRag:
     def index_version(self) -> str:
         return self._retriever.index_version
 
+    @property
+    def retrieval_profile(self) -> RetrievalProfile:
+        return self._retriever.profile
+
     async def check_ready(self) -> bool:
         return await self._retriever.check_ready()
 
@@ -492,6 +523,7 @@ class StableKnowledgeRag:
                 index_version=self.index_version,
                 outcome="dynamic_blocked",
                 retrieval_variant=variant,
+                retrieval_profile=self.retrieval_profile,
             )
         observed_at = moment or datetime.now(timezone.utc)
         hits = await self._retriever.search(
@@ -506,7 +538,11 @@ class StableKnowledgeRag:
             selected = list(self._reranker.rerank(query, selected, tenant_id=tenant_id))
         selected = selected[: self._top_k]
         if not selected:
-            return RagBundle(index_version=self.index_version, retrieval_variant=variant)
+            return RagBundle(
+                index_version=self.index_version,
+                retrieval_variant=variant,
+                retrieval_profile=self.retrieval_profile,
+            )
 
         payloads: list[dict[str, str]] = []
         citations: list[KnowledgeCitation] = []
@@ -521,7 +557,7 @@ class StableKnowledgeRag:
                 "title": document.title,
                 "source": document.source,
                 "effectiveFrom": document.effective_from.isoformat(),
-                "content": document.content,
+                "content": hit.passage or document.content,
             }
             candidate = _serialize_knowledge([*payloads, payload])
             candidate_context = (
@@ -542,13 +578,24 @@ class StableKnowledgeRag:
                 )
             )
         if not payloads:
-            return RagBundle(index_version=self.index_version, retrieval_variant=variant)
+            return RagBundle(
+                index_version=self.index_version,
+                retrieval_variant=variant,
+                retrieval_profile=self.retrieval_profile,
+            )
         serialized = _serialize_knowledge(payloads)
         context = (
             f'{_CONTEXT_PREFIX}<retrieved_knowledge indexVersion="{self.index_version}">'
             f"{serialized}{_CONTEXT_SUFFIX}"
         )
-        return RagBundle(context, tuple(citations), self.index_version, "hit", variant)
+        return RagBundle(
+            context,
+            tuple(citations),
+            self.index_version,
+            "hit",
+            variant,
+            self.retrieval_profile,
+        )
 
     def _variant(self, experiment_key: str) -> Literal["control", "rerank-v1"]:
         if self._rerank_rollout_percent <= 0:

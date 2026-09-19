@@ -6,17 +6,20 @@ import asyncio
 import json
 import math
 import re
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime
 from typing import Any, Sequence
 from urllib.parse import quote, urlparse
 
-from .rag import KnowledgeDocument, KnowledgeHit
+from .rag import KnowledgeDocument, KnowledgeHit, RetrievalProfile
 
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _INDEX_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,254}")
 _VERSION_PATTERN = re.compile(r"[A-Za-z0-9._:@-]{1,128}")
+_FIELD_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
+_INFERENCE_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
 
 
 class ElasticsearchRetrievalError(RuntimeError):
@@ -46,6 +49,11 @@ class ElasticsearchKnowledgeRetriever:
         allowed_source_hosts: Sequence[str],
         *,
         timeout_seconds: float = 3.0,
+        retrieval_profile: RetrievalProfile = "elastic-lexical",
+        semantic_field: str = "semantic_content",
+        rerank_inference_id: str = "",
+        rank_window_size: int = 50,
+        rank_constant: int = 60,
         opener: urllib.request.OpenerDirector | None = None,
     ) -> None:
         parsed = urlparse(base_url.rstrip("/"))
@@ -70,26 +78,67 @@ class ElasticsearchKnowledgeRetriever:
             raise ValueError("knowledge source host allowlist is required")
         if not 0.1 <= timeout_seconds <= 30:
             raise ValueError("Elasticsearch timeout must be between 0.1 and 30 seconds")
+        if retrieval_profile not in {
+            "elastic-lexical",
+            "semantic-hybrid",
+            "semantic-rerank",
+        }:
+            raise ValueError("Elasticsearch retrieval profile is invalid")
+        if _FIELD_PATTERN.fullmatch(semantic_field) is None:
+            raise ValueError("Elasticsearch semantic field is invalid")
+        if rerank_inference_id and _INFERENCE_PATTERN.fullmatch(rerank_inference_id) is None:
+            raise ValueError("Elasticsearch rerank inference ID is invalid")
+        if retrieval_profile == "semantic-rerank" and not rerank_inference_id:
+            raise ValueError("semantic rerank profile requires an inference endpoint")
+        if not 10 <= rank_window_size <= 200:
+            raise ValueError("Elasticsearch rank window must be between 10 and 200")
+        if not 1 <= rank_constant <= 1000:
+            raise ValueError("Elasticsearch RRF rank constant must be between 1 and 1000")
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._index_alias = index_alias
         self._index_version = index_version
         self._allowed_source_hosts = {host.lower() for host in allowed_source_hosts}
         self._timeout_seconds = timeout_seconds
+        self._retrieval_profile = retrieval_profile
+        self._semantic_field = semantic_field
+        self._rerank_inference_id = rerank_inference_id
+        self._rank_window_size = rank_window_size
+        self._rank_constant = rank_constant
         self._opener = opener or urllib.request.build_opener(_NoRedirect())
+        self._readiness_lock = asyncio.Lock()
+        self._ready_until = 0.0
+        self._ready_value = False
 
     @property
     def index_version(self) -> str:
         return self._index_version
 
+    @property
+    def profile(self) -> RetrievalProfile:
+        return self._retrieval_profile
+
     async def check_ready(self) -> bool:
+        if time.monotonic() < self._ready_until:
+            return self._ready_value
+        async with self._readiness_lock:
+            if time.monotonic() < self._ready_until:
+                return self._ready_value
+            self._ready_value = await self._probe_ready()
+            self._ready_until = time.monotonic() + (30 if self._ready_value else 5)
+            return self._ready_value
+
+    async def _probe_ready(self) -> bool:
+        query: dict[str, object] = {"match_none": {}}
+        if self._retrieval_profile != "elastic-lexical":
+            query = {"match": {self._semantic_field: "知识检索就绪检查"}}
         try:
             payload = await asyncio.to_thread(
                 self._request,
                 {
                     "size": 0,
                     "track_total_hits": False,
-                    "query": {"match_none": {}},
+                    "query": query,
                 },
             )
         except ElasticsearchRetrievalError:
@@ -110,6 +159,20 @@ class ElasticsearchKnowledgeRetriever:
         if moment.tzinfo is None:
             raise ValueError("retrieval time must include a timezone")
         timestamp = moment.isoformat()
+        filters: list[dict[str, object]] = [
+            {"terms": {"tenant_id": [tenant_id, "public"]}},
+            {"term": {"locale": locale}},
+            {"range": {"effective_from": {"lte": timestamp}}},
+            {
+                "bool": {
+                    "should": [
+                        {"bool": {"must_not": {"exists": {"field": "effective_to"}}}},
+                        {"range": {"effective_to": {"gt": timestamp}}},
+                    ],
+                    "minimum_should_match": 1,
+                }
+            },
+        ]
         request_payload: dict[str, object] = {
             "size": limit,
             "track_total_hits": False,
@@ -126,39 +189,61 @@ class ElasticsearchKnowledgeRetriever:
                 "effective_from",
                 "effective_to",
             ],
-            "sort": [{"_score": "desc"}, {"document_id": "asc"}, {"version": "desc"}],
-            "query": {
-                "bool": {
-                    "should": [
-                        {
-                            "multi_match": {
-                                "query": query,
-                                "fields": ["title^3", "content"],
-                                "type": "best_fields",
-                                "minimum_should_match": "50%",
-                            }
-                        },
-                        {"match_phrase": {"title": {"query": query, "slop": 1, "boost": 5}}},
-                        {"match_phrase": {"content": {"query": query, "slop": 2, "boost": 2}}},
-                    ],
-                    "minimum_should_match": 1,
-                    "filter": [
-                        {"terms": {"tenant_id": [tenant_id, "public"]}},
-                        {"term": {"locale": locale}},
-                        {"range": {"effective_from": {"lte": timestamp}}},
-                        {
-                            "bool": {
-                                "should": [
-                                    {"bool": {"must_not": {"exists": {"field": "effective_to"}}}},
-                                    {"range": {"effective_to": {"gt": timestamp}}},
-                                ],
-                                "minimum_should_match": 1,
-                            }
-                        },
-                    ],
-                }
-            },
         }
+        lexical_query = self._lexical_query(query, filters)
+        if self._retrieval_profile == "elastic-lexical":
+            request_payload["sort"] = [
+                {"_score": "desc"},
+                {"document_id": "asc"},
+                {"version": "desc"},
+            ]
+            request_payload["query"] = lexical_query
+        else:
+            window = max(limit, self._rank_window_size)
+            hybrid: dict[str, object] = {
+                "rrf": {
+                    "retrievers": [
+                        {"standard": {"query": lexical_query}},
+                        {
+                            "standard": {
+                                "query": {
+                                    "bool": {
+                                        "must": [
+                                            {"match": {self._semantic_field: {"query": query}}}
+                                        ],
+                                        "filter": filters,
+                                    }
+                                }
+                            }
+                        },
+                    ],
+                    "rank_window_size": window,
+                    "rank_constant": self._rank_constant,
+                }
+            }
+            retriever: dict[str, object] = hybrid
+            if self._retrieval_profile == "semantic-rerank":
+                retriever = {
+                    "text_similarity_reranker": {
+                        "retriever": hybrid,
+                        "field": "content",
+                        "inference_id": self._rerank_inference_id,
+                        "inference_text": query,
+                        "rank_window_size": window,
+                    }
+                }
+            request_payload["retriever"] = retriever
+            request_payload["highlight"] = {
+                "pre_tags": [""],
+                "post_tags": [""],
+                "fields": {
+                    self._semantic_field: {
+                        "type": "semantic",
+                        "number_of_fragments": 2,
+                        "order": "score",
+                    }
+                },
+            }
         payload = await asyncio.to_thread(self._request, request_payload)
         hits_container = payload.get("hits")
         if not isinstance(hits_container, dict) or not isinstance(hits_container.get("hits"), list):
@@ -186,8 +271,43 @@ class ElasticsearchKnowledgeRetriever:
                 raise ElasticsearchRetrievalError(
                     "Elasticsearch result violated the knowledge isolation policy"
                 )
-            results.append(KnowledgeHit(document, score))
+            results.append(KnowledgeHit(document, score, self._passage(raw_hit)))
         return tuple(results)
+
+    @staticmethod
+    def _lexical_query(query: str, filters: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "bool": {
+                "should": [
+                    {
+                        "multi_match": {
+                            "query": query,
+                            "fields": ["title^3", "content"],
+                            "type": "best_fields",
+                            "minimum_should_match": "50%",
+                        }
+                    },
+                    {"match_phrase": {"title": {"query": query, "slop": 1, "boost": 5}}},
+                    {"match_phrase": {"content": {"query": query, "slop": 2, "boost": 2}}},
+                ],
+                "minimum_should_match": 1,
+                "filter": filters,
+            }
+        }
+
+    def _passage(self, raw_hit: dict[str, object]) -> str:
+        if self._retrieval_profile == "elastic-lexical":
+            return ""
+        highlights = raw_hit.get("highlight")
+        if not isinstance(highlights, dict):
+            return ""
+        fragments = highlights.get(self._semantic_field)
+        if not isinstance(fragments, list) or any(not isinstance(item, str) for item in fragments):
+            raise ElasticsearchRetrievalError("Elasticsearch returned invalid semantic passages")
+        passage = " ".join(item.strip() for item in fragments[:2] if item.strip())
+        if len(passage) > 4_000:
+            raise ElasticsearchRetrievalError("Elasticsearch semantic passage exceeded the limit")
+        return passage
 
     def _request(self, payload: dict[str, object]) -> dict[str, object]:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

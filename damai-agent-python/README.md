@@ -133,3 +133,5 @@ uv run --frozen pytest --cov=damai_agent
 阶段 4 第三批新增 `recommend_programs` 复合只读 Tool：Java 对有界候选批量核验实时票档，只返回有预算内余票的节目并给出确定性排名原因；Python 会把明确推荐意图强制路由到该 Tool。知识索引发布支持审核后校验、不可变索引、原子别名切换、精确回滚和活动索引删除保护，操作见[知识索引发布与回滚](docs/phase-4-knowledge-operations.md)。
 
 阶段 4 第四批新增中文多路词法检索与 RRF 融合、可审计的确定性重排，以及按 `sessionKey` 稳定分桶的灰度开关。`knowledge.retrieved` 事件、Trace 和 Prometheus 指标会记录实验组及检索延迟。RAG 发布门禁现可检查 Recall、MRR、引用精度/完整性、租户泄漏红线和 P95；推荐门禁检查实时 Tool 路由、预算、偏好和实时核验。配置与命令见[阶段 4 检查清单](docs/phase-4-checklist.md)。
+
+阶段 4 第五批采用高级 RAG 检索树：Elasticsearch `semantic_text` 自动分块和向量化，BM25 与语义召回在服务端经 RRF 合并，并可选用 Cross-Encoder 进行二阶段重排。语义高亮片段进入有界上下文，引用仍绑定审核过的父文档；旧索引继续使用 `lexical` Profile。架构约束见 [ADR-011](docs/adr/011-advanced-rag-retrieval.md)。

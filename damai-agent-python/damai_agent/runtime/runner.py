@@ -218,6 +218,9 @@ class ToolCallingRunner:
                     knowledge_span.set_attribute(
                         "agent.knowledge_variant", rag_bundle.retrieval_variant
                     )
+                    knowledge_span.set_attribute(
+                        "agent.knowledge_profile", rag_bundle.retrieval_profile
+                    )
             except BaseException:
                 if self._metrics is not None:
                     self._metrics.observe_knowledge("error")
@@ -228,6 +231,7 @@ class ToolCallingRunner:
                     rag_bundle.retrieval_variant,
                     elapsed_ms(knowledge_started_at),
                 )
+                self._metrics.observe_knowledge_profile(rag_bundle.retrieval_profile)
             await emitter.emit(
                 "knowledge.retrieved",
                 {
@@ -235,6 +239,7 @@ class ToolCallingRunner:
                     "citationCount": len(rag_bundle.citations),
                     "knowledgeVersion": rag_bundle.index_version,
                     "variant": rag_bundle.retrieval_variant,
+                    "profile": rag_bundle.retrieval_profile,
                 },
             )
         if rag_bundle.context:
@@ -466,6 +471,7 @@ class ToolCallingRunner:
                     citations=citations,
                     knowledge_version=rag_bundle.index_version,
                     knowledge_variant=rag_bundle.retrieval_variant,
+                    knowledge_profile=rag_bundle.retrieval_profile,
                 )
 
             messages.append(assistant)

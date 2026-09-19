@@ -14,5 +14,6 @@ ADR 记录 Damai Agent 的长期约束。已接受的决策只能通过新的 AD
 | [008](008-observability-privacy.md) | Trace、审计与 PII | Accepted |
 | [009](009-http-sse-evolution.md) | HTTP+SSE 的初始通信方案 | Accepted |
 | [010](010-authorized-connectors.md) | 仅使用官方或授权票务接口 | Accepted |
+| [011](011-advanced-rag-retrieval.md) | 生产级高级 RAG 检索树 | Accepted |
 
 新 ADR 使用下一个三位编号，并包含 Context、Decision、Consequences 和 Supersedes（如适用）。

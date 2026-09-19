@@ -328,6 +328,7 @@ class AgentRunResult:
     citations: Tuple[KnowledgeCitation, ...] = ()
     knowledge_version: str = ""
     knowledge_variant: str = ""
+    knowledge_profile: str = ""
 
     @property
     def answer(self) -> str:

@@ -25,7 +25,8 @@ uv run --frozen python scripts/manage_knowledge_index.py validate `
 ```
 
 3. 记录输出的 `contentVersion`，完成双人审批并生成不可变小写索引名，例如 `damai-knowledge-read-v-20260919-001`。
-4. 在受保护的发布环境中设置凭据并发布。`--confirm-index` 必须与 `--index` 完全一致，避免误操作其他索引：
+4. 词法索引使用默认 Mapping；高级语义 RAG 使用 `docs/elasticsearch-knowledge-index-semantic.json`。语义 Mapping 固定中文 Embedding endpoint，修改端点等同于新模型发布，必须创建新索引并重新评测。
+5. 在受保护的发布环境中设置凭据并发布。`--confirm-index` 必须与 `--index` 完全一致，避免误操作其他索引：
 
 ```powershell
 $env:DAMAI_KNOWLEDGE_PUBLISH_URL = "https://your-deployment.example.com:9243"
@@ -39,6 +40,15 @@ uv run --frozen python scripts/manage_knowledge_index.py publish `
   --index damai-knowledge-read-v-20260919-001 `
   --confirm-index damai-knowledge-read-v-20260919-001
 ```
+
+语义索引在上述命令中额外指定：
+
+```powershell
+  --mapping docs/elasticsearch-knowledge-index-semantic.json `
+  --semantic-inference-id eis-microsoft-multilingual-e5-large
+```
+
+模板内置可自托管的中文基线 `.multilingual-e5-small-elasticsearch`。`--semantic-inference-id` 会在内存中绑定经过评测的版本化端点而不改写模板；示例大模型端点是否可用取决于 Elastic Cloud 区域和许可。Bulk 写入会触发 `semantic_text` 自动分块和向量生成。任一文档推理失败时 `errors=true`，发布工具不会切换读别名。发布账号还需要使用指定 inference endpoint 的最小权限和容量；运行时只读账号不得获得索引写权限。
 
 工具先创建带 `dynamic=strict` Mapping 的具体索引，再用单个 NDJSON Bulk 写入，等待可搜索后核对文档总数，最后通过一个 `_aliases` 请求切换读取别名。移除旧别名时设置 `must_exist=true`，任一动作失败则整组失败；任一步失败都不会继续后续步骤，失败响应正文不会进入异常消息。
 

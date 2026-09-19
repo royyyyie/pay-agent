@@ -60,7 +60,7 @@ class FakeOpener:
         return FakeResponse(self.payload)
 
 
-def retriever(opener: FakeOpener) -> ElasticsearchKnowledgeRetriever:
+def retriever(opener: FakeOpener, **options: object) -> ElasticsearchKnowledgeRetriever:
     return ElasticsearchKnowledgeRetriever(
         "https://es.example.com",
         "private-api-key",
@@ -68,10 +68,72 @@ def retriever(opener: FakeOpener) -> ElasticsearchKnowledgeRetriever:
         "knowledge-2026.09.19",
         ("help.example.com",),
         opener=opener,  # type: ignore[arg-type]
+        **options,  # type: ignore[arg-type]
     )
 
 
 class ElasticsearchKnowledgeRetrieverTest(unittest.IsolatedAsyncioTestCase):
+    async def test_semantic_hybrid_uses_server_rrf_and_returns_bounded_passage(self) -> None:
+        opener = FakeOpener(
+            {
+                "hits": {
+                    "hits": [
+                        {
+                            "_score": 0.03,
+                            "_source": source(),
+                            "highlight": {"semantic_content": ["主办方规则", "完成信息核验"]},
+                        }
+                    ]
+                }
+            }
+        )
+        instance = retriever(opener, retrieval_profile="semantic-hybrid")
+        hits = await instance.search(
+            "观演人身份认证",
+            tenant_id="tenant-a",
+            locale="zh-CN",
+            limit=4,
+            moment=NOW,
+        )
+        self.assertEqual(instance.profile, "semantic-hybrid")
+        self.assertEqual(hits[0].passage, "主办方规则 完成信息核验")
+        body = json.loads(opener.requests[0].data or b"{}")
+        self.assertNotIn("sort", body)
+        rrf = body["retriever"]["rrf"]
+        self.assertEqual(rrf["rank_window_size"], 50)
+        self.assertEqual(rrf["rank_constant"], 60)
+        self.assertEqual(len(rrf["retrievers"]), 2)
+        semantic_query = rrf["retrievers"][1]["standard"]["query"]["bool"]
+        self.assertIn(
+            {"terms": {"tenant_id": ["tenant-a", "public"]}},
+            semantic_query["filter"],
+        )
+        self.assertEqual(
+            semantic_query["must"][0],
+            {"match": {"semantic_content": {"query": "观演人身份认证"}}},
+        )
+
+    async def test_semantic_rerank_wraps_hybrid_retriever(self) -> None:
+        opener = FakeOpener({"hits": {"hits": []}})
+        instance = retriever(
+            opener,
+            retrieval_profile="semantic-rerank",
+            rerank_inference_id="enterprise-reranker-v1",
+            rank_window_size=80,
+        )
+        await instance.search(
+            "实名规则",
+            tenant_id="tenant-a",
+            locale="zh-CN",
+            limit=4,
+            moment=NOW,
+        )
+        body = json.loads(opener.requests[0].data or b"{}")
+        reranker = body["retriever"]["text_similarity_reranker"]
+        self.assertEqual(reranker["inference_id"], "enterprise-reranker-v1")
+        self.assertEqual(reranker["rank_window_size"], 80)
+        self.assertIn("rrf", reranker["retriever"])
+
     async def test_search_uses_fixed_alias_auth_and_server_side_isolation_filters(self) -> None:
         opener = FakeOpener({"hits": {"hits": [{"_score": 2.5, "_source": source()}]}})
         hits = await retriever(opener).search(
@@ -146,6 +208,22 @@ class ElasticsearchKnowledgeRetrieverTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["size"], 0)
         self.assertEqual(body["query"], {"match_none": {}})
 
+    async def test_semantic_readiness_exercises_embedding_endpoint(self) -> None:
+        opener = FakeOpener({"hits": {"hits": []}})
+        self.assertTrue(await retriever(opener, retrieval_profile="semantic-hybrid").check_ready())
+        body = json.loads(opener.requests[0].data or b"{}")
+        self.assertEqual(
+            body["query"],
+            {"match": {"semantic_content": "知识检索就绪检查"}},
+        )
+
+    async def test_readiness_probe_is_cached_to_bound_inference_cost(self) -> None:
+        opener = FakeOpener({"hits": {"hits": []}})
+        instance = retriever(opener, retrieval_profile="semantic-hybrid")
+        self.assertTrue(await instance.check_ready())
+        self.assertTrue(await instance.check_ready())
+        self.assertEqual(len(opener.requests), 1)
+
     def test_rejects_unsafe_endpoint_alias_and_missing_key(self) -> None:
         for endpoint, key, alias in (
             ("https://user:pass@es.example.com", "key", "safe"),
@@ -164,3 +242,11 @@ class ElasticsearchKnowledgeRetrieverTest(unittest.IsolatedAsyncioTestCase):
                         "version-1",
                         ("help.example.com",),
                     )
+        with self.assertRaisesRegex(ValueError, "requires an inference endpoint"):
+            retriever(FakeOpener({}), retrieval_profile="semantic-rerank")
+        with self.assertRaisesRegex(ValueError, "semantic field"):
+            retriever(
+                FakeOpener({}),
+                retrieval_profile="semantic-hybrid",
+                semantic_field="unsafe field",
+            )

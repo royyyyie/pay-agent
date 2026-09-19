@@ -67,11 +67,15 @@ _ENV_FIELDS = {
     "rag_rrf_rank_constant": "DAMAI_AGENT_RAG_RRF_RANK_CONSTANT",
     "rag_rerank_rollout_percent": "DAMAI_AGENT_RAG_RERANK_ROLLOUT_PERCENT",
     "rag_experiment_salt": "DAMAI_AGENT_RAG_EXPERIMENT_SALT",
+    "rag_retrieval_profile": "DAMAI_AGENT_RAG_RETRIEVAL_PROFILE",
     "elasticsearch_url": "DAMAI_AGENT_ELASTICSEARCH_URL",
     "elasticsearch_api_key": "DAMAI_AGENT_ELASTICSEARCH_API_KEY",
     "elasticsearch_index_alias": "DAMAI_AGENT_ELASTICSEARCH_INDEX_ALIAS",
     "knowledge_index_version": "DAMAI_AGENT_KNOWLEDGE_INDEX_VERSION",
     "elasticsearch_timeout_seconds": "DAMAI_AGENT_ELASTICSEARCH_TIMEOUT_SECONDS",
+    "elasticsearch_semantic_field": "DAMAI_AGENT_ELASTICSEARCH_SEMANTIC_FIELD",
+    "elasticsearch_rerank_inference_id": "DAMAI_AGENT_ELASTICSEARCH_RERANK_INFERENCE_ID",
+    "elasticsearch_rank_window_size": "DAMAI_AGENT_ELASTICSEARCH_RANK_WINDOW_SIZE",
 }
 
 _WEAK_SECRETS = {"", "change-me", "change-me-local", "changeme", "secret"}
@@ -162,18 +166,24 @@ class Settings(BaseModel):
     rag_rrf_rank_constant: int = Field(default=60, ge=1, le=1000)
     rag_rerank_rollout_percent: int = Field(default=0, ge=0, le=100)
     rag_experiment_salt: str = Field(default="", repr=False, max_length=256)
+    rag_retrieval_profile: Literal["lexical", "semantic_hybrid", "semantic_rerank"] = "lexical"
     elasticsearch_url: str = ""
     elasticsearch_api_key: str = Field(default="", repr=False, max_length=8192)
     elasticsearch_index_alias: str = ""
     knowledge_index_version: str = ""
     elasticsearch_timeout_seconds: float = Field(default=3.0, ge=0.1, le=30)
+    elasticsearch_semantic_field: str = Field(
+        default="semantic_content", min_length=1, max_length=128
+    )
+    elasticsearch_rerank_inference_id: str = Field(default="", max_length=128)
+    elasticsearch_rank_window_size: int = Field(default=50, ge=10, le=200)
 
     @field_validator("environment", mode="before")
     @classmethod
     def normalize_environment(cls, value: object) -> object:
         return value.strip().lower() if isinstance(value, str) else value
 
-    @field_validator("provider", "rag_backend", mode="before")
+    @field_validator("provider", "rag_backend", "rag_retrieval_profile", mode="before")
     @classmethod
     def normalize_provider(cls, value: object) -> object:
         return value.strip().lower() if isinstance(value, str) else value
@@ -258,8 +268,29 @@ class Settings(BaseModel):
             raise ValueError("启用 RAG 必须配置 DAMAI_AGENT_KNOWLEDGE_SOURCE_HOSTS")
         if self.rag_candidate_k < self.rag_top_k:
             raise ValueError("DAMAI_AGENT_RAG_CANDIDATE_K 不得小于 RAG_TOP_K")
+        if self.elasticsearch_rank_window_size < self.rag_candidate_k:
+            raise ValueError("Elasticsearch 排名窗口不得小于 RAG_CANDIDATE_K")
         if 0 < self.rag_rerank_rollout_percent < 100 and len(self.rag_experiment_salt) < 16:
             raise ValueError("部分 RAG 重排灰度必须配置至少 16 个字符的实验盐")
+        if (
+            re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}", self.elasticsearch_semantic_field)
+            is None
+        ):
+            raise ValueError("Elasticsearch 语义字段格式无效")
+        if (
+            self.elasticsearch_rerank_inference_id
+            and re.fullmatch(r"[A-Za-z0-9._-]{1,128}", self.elasticsearch_rerank_inference_id)
+            is None
+        ):
+            raise ValueError("Elasticsearch 重排推理端点格式无效")
+        if self.rag_enabled and self.rag_retrieval_profile != "lexical":
+            if self.rag_backend != "elasticsearch":
+                raise ValueError("语义 RAG 仅支持 Elasticsearch 后端")
+            if (
+                self.rag_retrieval_profile == "semantic_rerank"
+                and not self.elasticsearch_rerank_inference_id
+            ):
+                raise ValueError("语义重排必须配置 Elasticsearch 重排推理端点")
         if self.rag_enabled and self.rag_backend == "elasticsearch":
             if not all(
                 (

@@ -27,6 +27,11 @@ class ElasticsearchLiveAcceptanceTest(unittest.IsolatedAsyncioTestCase):
             os.environ["DAMAI_TEST_ELASTICSEARCH_INDEX_ALIAS"],
             os.environ["DAMAI_TEST_ELASTICSEARCH_INDEX_VERSION"],
             (os.environ["DAMAI_TEST_ELASTICSEARCH_SOURCE_HOST"],),
+            retrieval_profile=os.environ.get("DAMAI_TEST_ELASTICSEARCH_PROFILE", "elastic-lexical"),  # type: ignore[arg-type]
+            semantic_field=os.environ.get(
+                "DAMAI_TEST_ELASTICSEARCH_SEMANTIC_FIELD", "semantic_content"
+            ),
+            rerank_inference_id=os.environ.get("DAMAI_TEST_ELASTICSEARCH_RERANK_INFERENCE_ID", ""),
         )
         self.assertTrue(await retriever.check_ready())
         hits = await retriever.search(

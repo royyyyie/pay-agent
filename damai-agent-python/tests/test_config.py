@@ -270,6 +270,36 @@ class SettingsTest(unittest.TestCase):
         )
         self.assertEqual(settings.rag_backend, "elasticsearch")
         self.assertNotIn("private-es-key", repr(settings))
+        semantic = Settings(
+            rag_enabled=True,
+            rag_backend="elasticsearch",
+            rag_retrieval_profile="semantic_rerank",
+            knowledge_source_hosts=("help.example.com",),
+            elasticsearch_url="https://es.example.com:9200",
+            elasticsearch_api_key="private-es-key",
+            elasticsearch_index_alias="damai-knowledge-read",
+            knowledge_index_version="knowledge-2026.09.19",
+            elasticsearch_rerank_inference_id="enterprise-reranker-v1",
+        )
+        self.assertEqual(semantic.rag_retrieval_profile, "semantic_rerank")
+        with self.assertRaisesRegex(ValidationError, "仅支持 Elasticsearch"):
+            Settings(
+                rag_enabled=True,
+                knowledge_catalog_path="knowledge.json",
+                knowledge_source_hosts=("help.example.com",),
+                rag_retrieval_profile="semantic_hybrid",
+            )
+        with self.assertRaisesRegex(ValidationError, "重排推理端点"):
+            Settings(
+                rag_enabled=True,
+                rag_backend="elasticsearch",
+                rag_retrieval_profile="semantic_rerank",
+                knowledge_source_hosts=("help.example.com",),
+                elasticsearch_url="https://es.example.com:9200",
+                elasticsearch_api_key="private-es-key",
+                elasticsearch_index_alias="damai-knowledge-read",
+                knowledge_index_version="knowledge-2026.09.19",
+            )
         with self.assertRaisesRegex(ValidationError, "必须使用 HTTPS"):
             Settings(
                 environment="production",
