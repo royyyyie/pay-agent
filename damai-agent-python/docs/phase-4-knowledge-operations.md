@@ -54,7 +54,19 @@ uv run --frozen python scripts/manage_knowledge_index.py stage `
 
 Bulk 按 500 文档/5 MiB 双上限自动分批，最后一批等待刷新。发布账号还需要使用指定 inference endpoint 的最小权限和容量；运行时只读账号不得获得索引写权限。失败响应正文不会进入异常消息。
 
-6. 使用只读 Eval Key 对“具体索引”而非活动别名执行质量和负载验收。至少 30 个实测请求；正式集合应远大于该下限：
+6. 使用只读 Eval Key 对“具体索引”而非活动别名执行质量和负载验收。语义查询会调用 Inference API，因此最小权限为目标具体索引的 `read` 和集群级 `monitor_inference`；直接读取 Mapping 时还需要 `view_index_metadata`。如果发布/上一轮验收已经留下 72 小时内、目标索引和内容版本完全一致的报告，可以通过 `--semantic-evidence-report` 复用其中的 Mapping 证据。新报告会记录旧报告 SHA-256，不要求 Eval Key 获得 `view_index_metadata`，但仍强制要求 `monitor_inference`。至少 30 个实测请求；正式集合应远大于该下限：
+
+```json
+{
+  "cluster": ["monitor_inference"],
+  "indices": [
+    {
+      "names": ["damai-knowledge-read-v-20260919-001"],
+      "privileges": ["read"]
+    }
+  ]
+}
+```
 
 ```powershell
 $env:DAMAI_EVAL_ELASTICSEARCH_URL = "https://your-deployment.example.com:9243"
@@ -69,6 +81,7 @@ uv run --frozen python scripts/evaluate_rag.py `
   --index-version knowledge-2026.09.19-semantic `
   --eval-set C:\secure\knowledge-eval.json `
   --source-host help.example.com `
+  --semantic-evidence-report C:\secure\previous-rag-benchmark.json `
   --rank-window-size 20 `
   --benchmark-repetitions 10 `
   --benchmark-concurrency 8 `
@@ -83,7 +96,7 @@ uv run --frozen python scripts/evaluate_rag.py `
 
 无费用证据时报告会保留 Recall、MRR、P95 和吞吐结果但返回非零，不允许晋级。查询 Elastic/推理供应商账单或 Usage 导出，取得同一测试窗口的索引 Embedding 和查询/重排实际费用后，生成新的费用证明报告：
 
-Elasticsearch 项目 API Key 不能读取组织账单。自动采集必须另建只读 Elastic Cloud API Key，通过环境变量注入；组织 ID 同样不放入命令行。采集器调用官方 Cloud Billing v2 `costs/instances`，只保留目标项目并记录原始响应 SHA-256：
+Elasticsearch 项目 API Key 不能读取组织账单，即使名称是“只读 Key”也不能代替组织级 Cloud Key。自动采集必须另建只读 Elastic Cloud API Key，通过环境变量注入；组织 ID 同样不放入命令行。采集器调用官方 Cloud Billing v2 `costs/instances`，只保留目标项目并记录原始响应 SHA-256：
 
 ```powershell
 $env:ELASTIC_CLOUD_API_KEY = "<billing-read-cloud-api-key>"

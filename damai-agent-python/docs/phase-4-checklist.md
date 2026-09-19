@@ -171,7 +171,7 @@ DAMAI_AGENT_RAG_RETRIEVAL_PROFILE=semantic_rerank
 DAMAI_AGENT_ELASTICSEARCH_RERANK_INFERENCE_ID=<versioned-rerank-endpoint>
 ```
 
-云 Eval 的 API Key 只通过 `DAMAI_EVAL_ELASTICSEARCH_API_KEY` 注入，不放入命令行。验收必须指向暂存的具体索引，不能用可能漂移的活动别名。对同一集合依次运行 `semantic_hybrid` 与 `semantic_rerank`，比较 Recall、MRR、P95、吞吐和实际推理费用：
+云 Eval 的 API Key 只通过 `DAMAI_EVAL_ELASTICSEARCH_API_KEY` 注入，不放入命令行。它至少需要具体索引 `read` 和集群 `monitor_inference`；直接采集 Mapping 时还需要 `view_index_metadata`。若已有 72 小时内、目标索引和内容版本完全匹配的验收报告，可用 `--semantic-evidence-report` 复用其 Mapping 证据并在新报告中记录 SHA-256，从而让 Eval Key 保持最小权限。验收必须指向暂存的具体索引，不能用可能漂移的活动别名。对同一集合依次运行 `semantic_hybrid` 与 `semantic_rerank`，比较 Recall、MRR、P95、吞吐和实际推理费用：
 
 ```powershell
 $env:DAMAI_EVAL_ELASTICSEARCH_URL = "https://your-deployment.example.com:9243"
@@ -185,6 +185,7 @@ python scripts/evaluate_rag.py `
   --index-name damai-knowledge-read-v-20260919-001 `
   --eval-set C:\secure\knowledge-eval.json `
   --source-host help.example.com `
+  --semantic-evidence-report C:\secure\previous-rag-benchmark.json `
   --rank-window-size 20 `
   --benchmark-repetitions 10 --benchmark-concurrency 8 `
   --min-benchmark-requests 100 --min-throughput-qps 10 `
@@ -203,6 +204,8 @@ python scripts/evaluate_rag.py `
 - `semantic_hybrid`：Recall 1.0、MRR 1.0、动态拦截率 1.0；负载 P95 1211.515 ms、3.472 QPS，且只有 20 个真实检索请求。
 - `semantic_rerank`：30 个真实检索请求，Recall 1.0、MRR 1.0、动态拦截率 1.0；负载 P95 1434.049 ms、5.860 QPS。
 - 将排名窗口从 50 收紧到 12、并发提高到 16 后，吞吐提升到 9.418 QPS，但负载 P95 上升到 1812.109 ms；不通过增加并发掩盖尾延迟问题。
+- 后续提供的数据面只读 Key 已通过身份认证，并具有目标索引 `read`；但 `monitor_inference=false`、`view_index_metadata=false`，语义查询返回 403。该 Key 对 Cloud 管理 API 返回 401，因此也不能读取组织账单。门禁已在压测前输出缺失权限，不会把普通文档读取误报为语义验收通过。
+- 仓库资产复核只发现 3 条隔离测试文档和 5 条 Eval（其中 2 条检索、3 条动态阻断），未发现经过业务方审定、带来源和相关性标签的大规模知识目录；不得把测试 Fixture 记为正式业务集合。
 - 结论：功能和样例质量通过；原生产门槛 P95 ≤ 800 ms、吞吐 ≥ 10 QPS 未通过，Cloud Billing 费用证据和业务大规模集合仍缺失，因此保持 staged，不执行 promote。
 
 高级架构与不采用 GraphRAG/RAPTOR 作为默认路径的理由见 [ADR-011](adr/011-advanced-rag-retrieval.md)。

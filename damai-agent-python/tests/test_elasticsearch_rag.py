@@ -73,6 +73,34 @@ def retriever(opener: FakeOpener, **options: object) -> ElasticsearchKnowledgeRe
 
 
 class ElasticsearchKnowledgeRetrieverTest(unittest.IsolatedAsyncioTestCase):
+    async def test_acceptance_privileges_are_bounded_to_exact_index(self) -> None:
+        opener = FakeOpener(
+            {
+                "has_all_requested": False,
+                "cluster": {"monitor_inference": True},
+                "index": {
+                    "damai-knowledge-read": {
+                        "read": True,
+                        "view_index_metadata": False,
+                    }
+                },
+            }
+        )
+        privileges = await retriever(opener).acceptance_privileges()
+        self.assertEqual(
+            privileges,
+            {
+                "monitorInference": True,
+                "read": True,
+                "viewIndexMetadata": False,
+            },
+        )
+        request = opener.requests[0]
+        self.assertTrue(request.full_url.endswith("/_security/user/_has_privileges"))
+        body = json.loads(request.data or b"{}")
+        self.assertEqual(body["cluster"], ["monitor_inference"])
+        self.assertEqual(body["index"][0]["names"], ["damai-knowledge-read"])
+
     async def test_semantic_hybrid_uses_server_rrf_and_returns_bounded_passage(self) -> None:
         opener = FakeOpener(
             {

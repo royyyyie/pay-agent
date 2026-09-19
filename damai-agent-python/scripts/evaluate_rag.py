@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import cast
@@ -21,6 +21,9 @@ from damai_agent.rag import (
 from damai_agent.rag_eval import benchmark_rag, evaluate_rag, load_eval_cases
 
 _COST_EVIDENCE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}")
+_FIELD_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
+_INFERENCE_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
+_MAX_SEMANTIC_EVIDENCE_BYTES = 2 * 1024 * 1024
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,6 +76,15 @@ def parse_args() -> argparse.Namespace:
         "--rerank-inference-id",
         default=os.environ.get("DAMAI_EVAL_ELASTICSEARCH_RERANK_INFERENCE_ID", ""),
     )
+    parser.add_argument(
+        "--semantic-evidence-report",
+        type=Path,
+        help=(
+            "Recent exact-index acceptance report containing semantic mapping evidence. "
+            "Allows the benchmark key to remain read-only without view_index_metadata."
+        ),
+    )
+    parser.add_argument("--max-semantic-evidence-age-hours", type=int, default=72)
     parser.add_argument("--benchmark-repetitions", type=int, default=1)
     parser.add_argument("--benchmark-concurrency", type=int, default=1)
     parser.add_argument("--warmup-requests", type=int, default=0)
@@ -127,6 +139,111 @@ def sha256_file(path: str) -> str:
     return hashlib.sha256(Path(path).resolve().read_bytes()).hexdigest()
 
 
+def _validated_chunking(payload: object) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        raise ValueError("semantic evidence chunking configuration is invalid")
+    strategy = payload.get("strategy")
+    chunk_size = payload.get("max_chunk_size")
+    overlap_key = "sentence_overlap" if strategy == "sentence" else "overlap"
+    overlap = payload.get(overlap_key)
+    if (
+        strategy not in {"sentence", "word"}
+        or isinstance(chunk_size, bool)
+        or not isinstance(chunk_size, int)
+        or not 20 <= chunk_size <= 500
+        or isinstance(overlap, bool)
+        or not isinstance(overlap, int)
+        or overlap < 0
+        or (strategy == "sentence" and overlap not in {0, 1})
+        or (strategy == "word" and overlap > chunk_size // 2)
+    ):
+        raise ValueError("semantic evidence chunking configuration is invalid")
+    return payload
+
+
+def load_semantic_evidence(
+    path: Path,
+    *,
+    target_index: str,
+    index_version: str,
+    semantic_field: str,
+    retrieval_profile: str,
+    rerank_inference_id: str,
+    max_age_hours: int,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Load exact-index semantic metadata while preserving a least-privilege Eval key."""
+
+    if max_age_hours < 1 or max_age_hours > 168:
+        raise ValueError("semantic evidence maximum age must be between 1 and 168 hours")
+    resolved = path.resolve()
+    if not resolved.is_file() or resolved.stat().st_size > _MAX_SEMANTIC_EVIDENCE_BYTES:
+        raise ValueError("semantic evidence report must be a bounded JSON file")
+    raw = resolved.read_bytes()
+    try:
+        report = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("semantic evidence report must be valid UTF-8 JSON") from exc
+    if not isinstance(report, dict) or report.get("schemaVersion") != "damai.rag.acceptance/v1":
+        raise ValueError("semantic evidence report schema is invalid")
+    if report.get("targetIndex") != target_index or report.get("indexVersion") != index_version:
+        raise ValueError("semantic evidence report does not match the exact target index")
+    if report.get("retrievalProfile") not in {"semantic_hybrid", "semantic_rerank"}:
+        raise ValueError("semantic evidence report did not inspect a semantic profile")
+
+    generated_at = report.get("generatedAt")
+    if not isinstance(generated_at, str):
+        raise ValueError("semantic evidence report timestamp is invalid")
+    try:
+        observed_at = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("semantic evidence report timestamp is invalid") from exc
+    if observed_at.tzinfo is None:
+        raise ValueError("semantic evidence report timestamp is invalid")
+    now = datetime.now(timezone.utc)
+    if observed_at > now + timedelta(minutes=5) or now - observed_at > timedelta(
+        hours=max_age_hours
+    ):
+        raise ValueError("semantic evidence report is stale or from the future")
+
+    semantic = report.get("semanticConfiguration")
+    if not isinstance(semantic, dict):
+        raise ValueError("semantic evidence report lacks mapping evidence")
+    field = semantic.get("field")
+    inference_id = semantic.get("inferenceId")
+    search_inference_id = semantic.get("searchInferenceId")
+    if (
+        field != semantic_field
+        or not isinstance(field, str)
+        or _FIELD_PATTERN.fullmatch(field) is None
+        or not isinstance(inference_id, str)
+        or _INFERENCE_PATTERN.fullmatch(inference_id) is None
+        or not isinstance(search_inference_id, str)
+        or _INFERENCE_PATTERN.fullmatch(search_inference_id) is None
+    ):
+        raise ValueError("semantic evidence report mapping identity is invalid")
+    chunking = _validated_chunking(semantic.get("chunkingSettings"))
+    evidence_rerank = semantic.get("rerankInferenceId", "")
+    if retrieval_profile == "semantic_rerank" and (
+        not isinstance(evidence_rerank, str)
+        or evidence_rerank != rerank_inference_id
+        or _INFERENCE_PATTERN.fullmatch(evidence_rerank) is None
+    ):
+        raise ValueError("semantic evidence report rerank endpoint does not match")
+    configuration: dict[str, object] = {
+        "field": field,
+        "inferenceId": inference_id,
+        "searchInferenceId": search_inference_id,
+        "chunkingSettings": chunking,
+        "rerankInferenceId": rerank_inference_id,
+    }
+    provenance: dict[str, object] = {
+        "source": "acceptance_report",
+        "reportSha256": hashlib.sha256(raw).hexdigest(),
+        "generatedAt": observed_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    return configuration, provenance
+
+
 async def evaluate() -> int:
     args = parse_args()
     if not 10 <= args.rank_window_size <= 200:
@@ -136,7 +253,10 @@ async def evaluate() -> int:
     index: KnowledgeRetriever
     target_index = "local"
     semantic_configuration: dict[str, object] = {}
+    semantic_evidence: dict[str, object] = {"source": "not_required"}
     if args.backend == "local":
+        if args.semantic_evidence_report is not None:
+            raise ValueError("semantic evidence is only valid for Elasticsearch")
         if not args.catalog:
             raise ValueError("--catalog is required for the local backend")
         index = load_knowledge_catalog(args.catalog, allowed_source_hosts=tuple(args.source_host))
@@ -153,7 +273,7 @@ async def evaluate() -> int:
             if args.retrieval_profile != "lexical"
             else "elastic-lexical",
         )
-        index = ElasticsearchKnowledgeRetriever(
+        elastic_index = ElasticsearchKnowledgeRetriever(
             args.elasticsearch_url,
             api_key,
             target_index,
@@ -165,10 +285,40 @@ async def evaluate() -> int:
             rank_window_size=args.rank_window_size,
             rank_constant=args.rrf_rank_constant,
         )
+        index = elastic_index
+        if args.retrieval_profile != "lexical":
+            privileges = await elastic_index.acceptance_privileges()
+            required_privileges = {
+                "read": "index read",
+                "monitorInference": "cluster monitor_inference",
+            }
+            if args.semantic_evidence_report is None:
+                required_privileges["viewIndexMetadata"] = "index view_index_metadata"
+            missing = [
+                label
+                for key, label in required_privileges.items()
+                if privileges.get(key) is not True
+            ]
+            if missing:
+                raise PermissionError(
+                    "Elasticsearch Eval API key lacks required privileges: " + ", ".join(missing)
+                )
         if not await index.check_ready():
             raise RuntimeError("Elasticsearch semantic target is not ready")
         if args.retrieval_profile != "lexical":
-            semantic_configuration = await index.semantic_configuration()
+            if args.semantic_evidence_report is None:
+                semantic_configuration = await index.semantic_configuration()
+                semantic_evidence = {"source": "live_mapping"}
+            else:
+                semantic_configuration, semantic_evidence = load_semantic_evidence(
+                    args.semantic_evidence_report,
+                    target_index=target_index,
+                    index_version=args.index_version,
+                    semantic_field=args.semantic_field,
+                    retrieval_profile=args.retrieval_profile,
+                    rerank_inference_id=args.rerank_inference_id,
+                    max_age_hours=args.max_semantic_evidence_age_hours,
+                )
     if args.hybrid:
         from damai_agent.rag import ReciprocalRankFusionRetriever
 
@@ -280,6 +430,7 @@ async def evaluate() -> int:
             "warmupRequests": args.warmup_requests,
         },
         "semanticConfiguration": semantic_configuration,
+        "semanticConfigurationEvidence": semantic_evidence,
         "quality": quality_payload,
         "load": load_payload,
         "cost": cost_payload,

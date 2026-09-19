@@ -118,6 +118,36 @@ class ElasticsearchKnowledgeRetriever:
     def profile(self) -> RetrievalProfile:
         return self._retrieval_profile
 
+    async def acceptance_privileges(self) -> dict[str, bool]:
+        """Return the bounded privileges required by semantic acceptance."""
+
+        payload = await asyncio.to_thread(
+            self._request_path,
+            "POST",
+            "/_security/user/_has_privileges",
+            {
+                "cluster": ["monitor_inference"],
+                "index": [
+                    {
+                        "names": [self._index_alias],
+                        "privileges": ["read", "view_index_metadata"],
+                    }
+                ],
+            },
+        )
+        cluster = payload.get("cluster")
+        indices = payload.get("index")
+        target = indices.get(self._index_alias) if isinstance(indices, dict) else None
+        if not isinstance(cluster, dict) or not isinstance(target, dict):
+            raise ElasticsearchRetrievalError(
+                "Elasticsearch returned invalid acceptance privileges"
+            )
+        return {
+            "monitorInference": cluster.get("monitor_inference") is True,
+            "read": target.get("read") is True,
+            "viewIndexMetadata": target.get("view_index_metadata") is True,
+        }
+
     async def check_ready(self) -> bool:
         if time.monotonic() < self._ready_until:
             return self._ready_value
