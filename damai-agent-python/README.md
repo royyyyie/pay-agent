@@ -109,6 +109,7 @@ uv run --frozen pytest --cov=damai_agent
 - [阶段 2 检查清单](docs/phase-2-checklist.md)
 - [阶段 2 持久化入口操作说明](docs/phase-2-operations.md)
 - [阶段 3 检查清单](docs/phase-3-checklist.md)
+- [阶段 4 检查清单](docs/phase-4-checklist.md)
 - [Architecture Decision Records](docs/adr/README.md)
 
 阶段 0 将 Python 运行基线提升到 3.11，并建立配置 Profile、生产启动保护、OpenAPI 单一来源、Tool Schema 生成与 CI 质量门禁。
@@ -124,3 +125,5 @@ uv run --frozen pytest --cov=damai_agent
 阶段 3 第三批增加可选的 Redis 租户日额度、OTLP Trace 与 PostgreSQL Tool 元数据审计。先执行 `004_agent_tool_audit.sql`，并在需要 Trace 导出时安装 `observability` extra；详见[阶段 3 清单](docs/phase-3-checklist.md)。真实 Java 链路故障和 SLO 灰度验收仍待测试专用环境，不应直接在业务云环境注入故障。
 
 只读链路的告警查询、故障处置和未完成的真实验收证据见[阶段 3 SLO 手册](docs/phase-3-slo-runbook.md)。
+
+阶段 4 第一批加入租户隔离的稳定知识检索、动态事实隔离、来源白名单和强制引用门禁。无有效引用的 RAG 回答不会返回；流式内容在引用校验前会被缓冲。启用方式、知识目录结构及离线 Eval 见[阶段 4 检查清单](docs/phase-4-checklist.md)。

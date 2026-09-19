@@ -55,6 +55,12 @@ _ENV_FIELDS = {
     "otlp_traces_endpoint": "DAMAI_AGENT_OTLP_TRACES_ENDPOINT",
     "tenant_daily_cost_micro_usd": "DAMAI_AGENT_TENANT_DAILY_COST_MICRO_USD",
     "persist_tool_audit": "DAMAI_AGENT_PERSIST_TOOL_AUDIT",
+    "rag_enabled": "DAMAI_AGENT_RAG_ENABLED",
+    "knowledge_catalog_path": "DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH",
+    "knowledge_source_hosts": "DAMAI_AGENT_KNOWLEDGE_SOURCE_HOSTS",
+    "rag_top_k": "DAMAI_AGENT_RAG_TOP_K",
+    "rag_max_context_chars": "DAMAI_AGENT_RAG_MAX_CONTEXT_CHARS",
+    "rag_min_score": "DAMAI_AGENT_RAG_MIN_SCORE",
 }
 
 _WEAK_SECRETS = {"", "change-me", "change-me-local", "changeme", "secret"}
@@ -133,6 +139,12 @@ class Settings(BaseModel):
     otlp_traces_endpoint: str = ""
     tenant_daily_cost_micro_usd: int = Field(default=0, ge=0, le=1000000000000)
     persist_tool_audit: bool = False
+    rag_enabled: bool = False
+    knowledge_catalog_path: str = ""
+    knowledge_source_hosts: tuple[str, ...] = ()
+    rag_top_k: int = Field(default=4, ge=1, le=10)
+    rag_max_context_chars: int = Field(default=8000, ge=512, le=32000)
+    rag_min_score: float = Field(default=0.01, ge=0, le=1)
 
     @field_validator("environment", mode="before")
     @classmethod
@@ -164,6 +176,13 @@ class Settings(BaseModel):
     @classmethod
     def parse_pricing(cls, value: Any) -> Any:
         return json.loads(value) if isinstance(value, str) else value
+
+    @field_validator("knowledge_source_hosts", mode="before")
+    @classmethod
+    def parse_knowledge_hosts(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return tuple(item.strip().lower() for item in value.split(",") if item.strip())
+        return value
 
     @model_validator(mode="after")
     def validate_cross_fields(self) -> "Settings":
@@ -211,6 +230,19 @@ class Settings(BaseModel):
                 raise ValueError("租户额度需要 durable runtime 和模型定价")
         if self.persist_tool_audit and self.runtime_backend != "durable":
             raise ValueError("持久化 Tool 审计需要 durable runtime")
+        if self.rag_enabled and not self.knowledge_catalog_path:
+            raise ValueError("启用 RAG 必须配置 DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH")
+        if self.rag_enabled and not self.knowledge_source_hosts:
+            raise ValueError("启用 RAG 必须配置 DAMAI_AGENT_KNOWLEDGE_SOURCE_HOSTS")
+        if len(self.knowledge_source_hosts) > 32 or any(
+            len(host) > 253
+            or any(
+                re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) is None
+                for label in host.split(".")
+            )
+            for host in self.knowledge_source_hosts
+        ):
+            raise ValueError("知识来源主机白名单格式无效")
 
         if self.environment in {Environment.STAGING, Environment.PRODUCTION}:
             if self.otlp_traces_endpoint and urlparse(self.otlp_traces_endpoint).scheme != "https":

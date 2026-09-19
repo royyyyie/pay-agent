@@ -20,6 +20,7 @@ from .models import AgentRunResult, TicketTurnContext
 from .observability import RuntimeMetrics
 from .provider_routing import ResilientProvider
 from .providers import DemoProvider, ModelProvider, OpenAICompatibleProvider, ProviderError
+from .rag import StableKnowledgeRag, load_knowledge_catalog
 from .runner import AgentRunner
 from .runtime.hooks import AuditSink
 from .session import InMemorySessionStore
@@ -43,6 +44,8 @@ class ChatResponse(BaseModel):
     errorCode: Optional[str]
     modelRoute: str
     costMicroUsd: Optional[int] = None
+    citations: list[Dict[str, str]] = Field(default_factory=list)
+    knowledgeVersion: str = ""
 
 
 class DurableChatRequest(BaseModel):
@@ -67,6 +70,8 @@ def _chat_response(result: AgentRunResult) -> ChatResponse:
         errorCode=result.error_code.value if result.error_code else None,
         modelRoute=result.model_route,
         costMicroUsd=result.cost_micro_usd,
+        citations=[item.to_dict() for item in result.citations],
+        knowledgeVersion=result.knowledge_version,
     )
 
 
@@ -116,6 +121,19 @@ def build_runner(
         timeout_seconds=settings.java_timeout_seconds,
     )
     registry = ToolRegistry(build_java_tools(java_client))
+    knowledge_rag = (
+        StableKnowledgeRag(
+            load_knowledge_catalog(
+                settings.knowledge_catalog_path,
+                allowed_source_hosts=settings.knowledge_source_hosts,
+            ),
+            top_k=settings.rag_top_k,
+            max_context_chars=settings.rag_max_context_chars,
+            min_score=settings.rag_min_score,
+        )
+        if settings.rag_enabled
+        else None
+    )
     return AgentRunner(
         provider=provider,
         registry=registry,
@@ -134,6 +152,7 @@ def build_runner(
         tenant_daily_cost_micro_usd=settings.tenant_daily_cost_micro_usd,
         audit_sink=audit_sink,
         strict_audit=settings.persist_tool_audit,
+        knowledge_rag=knowledge_rag,
     )
 
 

@@ -80,6 +80,7 @@ jobs:
           uv run --frozen --extra dev --extra postgres --extra redis --extra observability openapi-spec-validator ../contracts/agent-tools-v1.openapi.yaml
           uv run --frozen --extra dev --extra postgres --extra redis --extra observability python scripts/generate_tool_schemas.py --check
           uv run --frozen --extra dev --extra postgres --extra redis --extra observability python scripts/check_contract_compatibility.py
+          uv run --frozen --extra dev --extra postgres --extra redis --extra observability python scripts/evaluate_rag.py --catalog tests/fixtures/rag_catalog.json --eval-set tests/fixtures/rag_eval.json --source-host help.example.com
 
       - name: Lint and format
         run: |

@@ -14,6 +14,7 @@ from ..models import (
     AgentRunResult,
     AgentRunSpec,
     ChatMessage,
+    KnowledgeCitation,
     ProviderResponse,
     ProviderStreamEventType,
     ProviderUsage,
@@ -25,6 +26,7 @@ from ..models import (
 )
 from ..observability import RuntimeMetrics
 from ..providers import ModelProvider, ProviderStreamAccumulator
+from ..rag import RagBundle, StableKnowledgeRag, requires_live_tool
 from ..tools import ToolCallLedger, ToolRegistry
 from ..tracing import TraceManager
 from .context import ContextGovernor, valid_tool_calls
@@ -77,6 +79,7 @@ class ToolCallingRunner:
         tenant_quota: TenantQuota | None = None,
         tenant_daily_cost_micro_usd: int = 0,
         strict_audit: bool = False,
+        knowledge_rag: StableKnowledgeRag | None = None,
     ) -> None:
         if not 1 <= max_concurrent_read_tools <= 12:
             raise ValueError("max_concurrent_read_tools must be between 1 and 12")
@@ -97,6 +100,7 @@ class ToolCallingRunner:
         self._tenant_quota = tenant_quota
         self._tenant_daily_cost_micro_usd = tenant_daily_cost_micro_usd
         self._strict_audit = strict_audit
+        self._knowledge_rag = knowledge_rag
 
     @property
     def tool_names(self) -> List[str]:
@@ -187,6 +191,36 @@ class ToolCallingRunner:
         tool_events: List[AgentEvent] = []
         model_route = spec.model_route
         ledger = ToolCallLedger(max_calls=spec.max_tool_calls)
+        dynamic_fact_query = requires_live_tool(spec.messages[-1].content or "")
+        rag_bundle = RagBundle()
+        if self._knowledge_rag is not None:
+            try:
+                with self._tracing.span("agent.knowledge") as knowledge_span:
+                    rag_bundle = await self._knowledge_rag.prepare(
+                        spec.messages[-1].content or "",
+                        tenant_id=spec.context.tenant_id,
+                        locale=spec.context.locale,
+                    )
+                    knowledge_span.set_attribute("agent.knowledge_outcome", rag_bundle.outcome)
+                    knowledge_span.set_attribute("agent.knowledge_hits", len(rag_bundle.citations))
+            except BaseException:
+                if self._metrics is not None:
+                    self._metrics.observe_knowledge("error")
+                raise
+            if self._metrics is not None:
+                self._metrics.observe_knowledge(rag_bundle.outcome)
+            await emitter.emit(
+                "knowledge.retrieved",
+                {
+                    "outcome": rag_bundle.outcome,
+                    "citationCount": len(rag_bundle.citations),
+                    "knowledgeVersion": rag_bundle.index_version,
+                },
+            )
+        if rag_bundle.context:
+            messages[0] = ChatMessage(
+                role="system", content=f"{spec.system_prompt}{rag_bundle.context}"
+            )
 
         for round_number in range(1, spec.max_tool_rounds + 1):
             if recorder is not None:
@@ -247,6 +281,7 @@ class ToolCallingRunner:
                         available_specs,
                         emitter,
                         round_number,
+                        buffer_text=rag_bundle.citation_required or dynamic_fact_query,
                     )
             except BaseException:
                 if self._metrics is not None:
@@ -342,11 +377,38 @@ class ToolCallingRunner:
             assistant = self._assistant_message(response)
             if recorder is not None and response.tool_calls:
                 await recorder.before_tool_round(spec, round_number, assistant, model_route)
-            messages.append(assistant)
-            turn_messages.append(assistant)
 
             if not response.tool_calls:
                 answer = (response.content or "暂时无法生成回答，请稍后重试。").strip()
+                if dynamic_fact_query and not tools_used:
+                    return self._dynamic_fact_failure(
+                        spec,
+                        turn_messages,
+                        tool_events,
+                        hooks.usage.total,
+                        model_route,
+                        budget.cost_micro_usd,
+                        rag_bundle.index_version,
+                    )
+                citations: tuple[KnowledgeCitation, ...] = ()
+                if rag_bundle.citation_required:
+                    selected = rag_bundle.cited_by(answer)
+                    if selected is None:
+                        return self._knowledge_failure(
+                            spec,
+                            turn_messages,
+                            tools_used,
+                            tool_events,
+                            hooks.usage.total,
+                            model_route,
+                            budget.cost_micro_usd,
+                            rag_bundle.index_version,
+                        )
+                    citations = selected
+                if rag_bundle.citation_required or dynamic_fact_query:
+                    await emitter.emit("model.text.delta", {"round": round_number, "delta": answer})
+                messages.append(assistant)
+                turn_messages.append(assistant)
                 return AgentRunResult(
                     session_key=spec.context.session_key,
                     turn_id=spec.context.turn_id,
@@ -359,7 +421,12 @@ class ToolCallingRunner:
                     stop_reason=response.finish_reason,
                     tool_events=tuple(tool_events),
                     model_route=model_route,
+                    citations=citations,
+                    knowledge_version=rag_bundle.index_version,
                 )
+
+            messages.append(assistant)
+            turn_messages.append(assistant)
 
             parallel_names = {
                 item.name
@@ -562,6 +629,8 @@ class ToolCallingRunner:
         available_specs: List[ToolSpec],
         emitter: TurnEventEmitter,
         round_number: int,
+        *,
+        buffer_text: bool = False,
     ) -> ProviderResponse:
         stream = getattr(self._provider, "stream", None)
         if not callable(stream):
@@ -570,7 +639,11 @@ class ToolCallingRunner:
         accumulator = ProviderStreamAccumulator()
         async for event in stream(messages, available_specs):
             accumulator.add(event)
-            if event.event_type is ProviderStreamEventType.TEXT_DELTA and event.text_delta:
+            if (
+                event.event_type is ProviderStreamEventType.TEXT_DELTA
+                and event.text_delta
+                and not buffer_text
+            ):
                 await emitter.emit(
                     "model.text.delta",
                     {"round": round_number, "delta": event.text_delta},
@@ -598,6 +671,63 @@ class ToolCallingRunner:
             role="assistant",
             content=response.content,
             tool_calls=response.tool_calls,
+        )
+
+    def _knowledge_failure(
+        self,
+        spec: AgentRunSpec,
+        turn_messages: List[ChatMessage],
+        tools_used: List[str],
+        tool_events: List[AgentEvent],
+        usage: ProviderUsage,
+        model_route: str,
+        cost_micro_usd: int | None,
+        knowledge_version: str,
+    ) -> AgentRunResult:
+        answer = "知识回答缺少可验证来源，已安全停止，请稍后重试。"
+        turn_messages.append(ChatMessage(role="assistant", content=answer))
+        return AgentRunResult(
+            session_key=spec.context.session_key,
+            turn_id=spec.context.turn_id,
+            trace_id=spec.context.trace_id,
+            final_content=answer,
+            tools_used=tuple(tools_used),
+            messages=tuple(turn_messages),
+            usage=usage,
+            cost_micro_usd=cost_micro_usd,
+            stop_reason="knowledge_citation_invalid",
+            error_code=AgentErrorCode.KNOWLEDGE_CITATION_INVALID,
+            tool_events=tuple(tool_events),
+            model_route=model_route,
+            knowledge_version=knowledge_version,
+        )
+
+    def _dynamic_fact_failure(
+        self,
+        spec: AgentRunSpec,
+        turn_messages: List[ChatMessage],
+        tool_events: List[AgentEvent],
+        usage: ProviderUsage,
+        model_route: str,
+        cost_micro_usd: int | None,
+        knowledge_version: str,
+    ) -> AgentRunResult:
+        answer = "动态票务事实尚未经过实时业务服务核实，已安全停止。"
+        turn_messages.append(ChatMessage(role="assistant", content=answer))
+        return AgentRunResult(
+            session_key=spec.context.session_key,
+            turn_id=spec.context.turn_id,
+            trace_id=spec.context.trace_id,
+            final_content=answer,
+            tools_used=(),
+            messages=tuple(turn_messages),
+            usage=usage,
+            cost_micro_usd=cost_micro_usd,
+            stop_reason="dynamic_fact_tool_required",
+            error_code=AgentErrorCode.DYNAMIC_FACT_TOOL_REQUIRED,
+            tool_events=tuple(tool_events),
+            model_route=model_route,
+            knowledge_version=knowledge_version,
         )
 
     def _rejected_result(

@@ -215,6 +215,32 @@ class SettingsTest(unittest.TestCase):
                 otlp_traces_endpoint="http://collector.example:4318/v1/traces",
             )
 
+    def test_rag_requires_a_bounded_catalog_configuration(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "KNOWLEDGE_CATALOG_PATH"):
+            Settings(rag_enabled=True)
+        settings = Settings.from_env(
+            env={
+                "DAMAI_AGENT_RAG_ENABLED": "true",
+                "DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH": "config/knowledge.json",
+                "DAMAI_AGENT_KNOWLEDGE_SOURCE_HOSTS": "help.example.com, venue.example.com",
+                "DAMAI_AGENT_RAG_TOP_K": "3",
+                "DAMAI_AGENT_RAG_MAX_CONTEXT_CHARS": "4096",
+                "DAMAI_AGENT_RAG_MIN_SCORE": "0.05",
+            }
+        )
+        self.assertTrue(settings.rag_enabled)
+        self.assertEqual(settings.knowledge_catalog_path, "config/knowledge.json")
+        self.assertEqual(settings.knowledge_source_hosts, ("help.example.com", "venue.example.com"))
+        self.assertEqual(settings.rag_top_k, 3)
+        self.assertEqual(settings.rag_max_context_chars, 4096)
+        self.assertEqual(settings.rag_min_score, 0.05)
+        with self.assertRaisesRegex(ValidationError, "主机白名单格式无效"):
+            Settings(
+                rag_enabled=True,
+                knowledge_catalog_path="knowledge.json",
+                knowledge_source_hosts=("help..example.com",),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

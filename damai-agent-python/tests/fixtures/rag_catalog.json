@@ -1,0 +1,26 @@
+[
+  {
+    "document_id": "identity-policy",
+    "version": "2026.09",
+    "tenant_id": "public",
+    "locale": "zh-CN",
+    "category": "identity_policy",
+    "title": "实名制购票规则",
+    "content": "实名制购票时，观演人信息提交后应按主办方公布的稳定规则核验。",
+    "source": "https://help.example.com/identity-policy",
+    "effective_from": "2026-09-01T00:00:00+08:00",
+    "effective_to": null
+  },
+  {
+    "document_id": "refund-policy",
+    "version": "2026.09",
+    "tenant_id": "public",
+    "locale": "zh-CN",
+    "category": "refund_policy",
+    "title": "退换票规则",
+    "content": "退换票申请应遵循活动主办方已经公布的适用条件和办理期限。",
+    "source": "https://help.example.com/refund-policy",
+    "effective_from": "2026-09-01T00:00:00+08:00",
+    "effective_to": null
+  }
+]

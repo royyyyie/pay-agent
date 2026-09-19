@@ -1,0 +1,32 @@
+[
+  {
+    "case_id": "stable-identity",
+    "query": "实名制购票有什么规则",
+    "tenant_id": "tenant-a",
+    "expected_document_ids": ["identity-policy"]
+  },
+  {
+    "case_id": "stable-refund",
+    "query": "退换票的申请条件是什么",
+    "tenant_id": "tenant-a",
+    "expected_document_ids": ["refund-policy"]
+  },
+  {
+    "case_id": "dynamic-inventory",
+    "query": "现在还有余票吗",
+    "tenant_id": "tenant-a",
+    "must_block_as_dynamic": true
+  },
+  {
+    "case_id": "dynamic-budget",
+    "query": "帮我找周六 800 元以内的音乐剧",
+    "tenant_id": "tenant-a",
+    "must_block_as_dynamic": true
+  },
+  {
+    "case_id": "dynamic-order",
+    "query": "我的订单状态是什么",
+    "tenant_id": "tenant-a",
+    "must_block_as_dynamic": true
+  }
+]
