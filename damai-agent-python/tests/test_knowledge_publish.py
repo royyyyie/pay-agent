@@ -57,9 +57,7 @@ class FakeOpener:
         return FakeResponse(response)
 
 
-def publisher(
-    opener: FakeOpener, *, serverless: bool = False
-) -> ElasticsearchKnowledgePublisher:
+def publisher(opener: FakeOpener, *, serverless: bool = False) -> ElasticsearchKnowledgePublisher:
     return ElasticsearchKnowledgePublisher(
         "https://es.example.com",
         "publisher-secret",

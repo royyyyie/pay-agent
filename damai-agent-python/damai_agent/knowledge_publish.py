@@ -388,9 +388,7 @@ class ElasticsearchKnowledgePublisher:
             indices = stats.get("indices") if stats is not None else None
             observed_stats = indices.get(index_name) if isinstance(indices, dict) else None
             primaries = (
-                observed_stats.get("primaries")
-                if isinstance(observed_stats, dict)
-                else None
+                observed_stats.get("primaries") if isinstance(observed_stats, dict) else None
             )
             docs = primaries.get("docs") if isinstance(primaries, dict) else None
             lucene_count = docs.get("count") if isinstance(docs, dict) else None
