@@ -73,12 +73,14 @@ class GovernanceTest(unittest.IsolatedAsyncioTestCase):
     async def test_budget_stops_before_tool_execution(self) -> None:
         provider = TwoRoundProvider()
         tool = CountingTool()
+        metrics = RuntimeMetrics()
         runner = AgentRunner(
             provider,
             ToolRegistry([tool]),
             InMemorySessionStore(),
             max_turn_tokens=5,
             pricing_catalog={"test/model": self.price()},
+            metrics=metrics,
         )
 
         result = await runner.run("lookup", "budget-stop")
@@ -88,6 +90,10 @@ class GovernanceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.cost_micro_usd, 14)
         self.assertEqual(provider.calls, 1)
         self.assertEqual(tool.calls, 0)
+        self.assertIn(
+            'damai_agent_requests_total{kind="turn",outcome="rejected"} 1',
+            metrics.render_prometheus(),
+        )
 
     async def test_multi_round_cost_is_integer_and_metrics_have_no_payload(self) -> None:
         provider = TwoRoundProvider()
@@ -122,16 +128,22 @@ class GovernanceTest(unittest.IsolatedAsyncioTestCase):
                 tool = CountingTool()
                 provider = TwoRoundProvider(missing_usage=missing_usage)
                 prices = {"test/model" if missing_usage else "other/model": self.price()}
+                metrics = RuntimeMetrics()
                 runner = AgentRunner(
                     provider,
                     ToolRegistry([tool]),
                     InMemorySessionStore(),
                     max_turn_cost_micro_usd=10,
                     pricing_catalog=prices,
+                    metrics=metrics,
                 )
                 result = await runner.run("lookup", f"missing-{missing_usage}")
                 self.assertEqual(result.error_code, AgentErrorCode.MODEL_ACCOUNTING_UNAVAILABLE)
                 self.assertEqual(tool.calls, 0)
+                self.assertIn(
+                    'damai_agent_requests_total{kind="turn",outcome="error"} 1',
+                    metrics.render_prometheus(),
+                )
 
     async def test_provider_failure_is_counted_without_secret(self) -> None:
         class FailedProvider:

@@ -233,6 +233,25 @@ class RuntimeHooksTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.answer, "done")
         self.assertTrue(json.loads(provider.observations[0].content or "{}")["success"])
 
+    async def test_strict_audit_failure_stops_before_next_model_call(self) -> None:
+        provider = HookProvider([ToolCall("call-1", "lookup", {"keyword": "ok"})])
+        tool = SecretTool()
+
+        def broken_sink(record: AuditRecord) -> None:
+            raise RuntimeError("private-database-error")
+
+        runner = AgentRunner(
+            provider=provider,
+            registry=ToolRegistry([tool]),
+            sessions=InMemorySessionStore(),
+            audit_sink=broken_sink,
+            strict_audit=True,
+        )
+        with self.assertRaisesRegex(RuntimeError, "tool audit persistence failed"):
+            await runner.run("lookup", "strict-audit-session")
+        self.assertEqual(tool.calls, 1)
+        self.assertEqual(provider.round, 1)
+
     async def test_broken_before_hook_fails_closed_without_invoking_tool(self) -> None:
         tool = SecretTool()
         provider = HookProvider([ToolCall("call-1", "lookup", {"keyword": "ok"})])

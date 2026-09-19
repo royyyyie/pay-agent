@@ -119,4 +119,8 @@ uv run --frozen pytest --cov=damai_agent
 
 阶段 3 首批加入可选的模型暂时性故障重试与备用路由，默认关闭。流式输出一旦开始就不会重试或切换，以免客户端收到拼接的两次模型回复；详见[阶段 3 检查清单](docs/phase-3-checklist.md)。
 
-阶段 3 第二批增加可选的单 Turn Token/估算费用安全点预算，以及经内部密钥保护的 `GET /metrics` 实例级指标。费用以整数微美元返回，按版本化定价与模型上报 Usage 估算；租户级共享额度、供应商账单对账和完整 OTel 链路仍待后续实现。
+阶段 3 第二批增加可选的单 Turn Token/估算费用安全点预算，以及经内部密钥保护的 `GET /metrics` 实例级指标。费用以整数微美元返回，按版本化定价与模型上报 Usage 估算；供应商账单对账仍待测试环境核验。
+
+阶段 3 第三批增加可选的 Redis 租户日额度、OTLP Trace 与 PostgreSQL Tool 元数据审计。先执行 `004_agent_tool_audit.sql`，并在需要 Trace 导出时安装 `observability` extra；详见[阶段 3 清单](docs/phase-3-checklist.md)。真实 Java 链路故障和 SLO 灰度验收仍待测试专用环境，不应直接在业务云环境注入故障。
+
+只读链路的告警查询、故障处置和未完成的真实验收证据见[阶段 3 SLO 手册](docs/phase-3-slo-runbook.md)。

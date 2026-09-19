@@ -52,6 +52,9 @@ _ENV_FIELDS = {
     "redis_url": "DAMAI_AGENT_REDIS_URL",
     "delegation_hmac_key": "DAMAI_AGENT_DELEGATION_HMAC_KEY",
     "event_poll_seconds": "DAMAI_AGENT_EVENT_POLL_SECONDS",
+    "otlp_traces_endpoint": "DAMAI_AGENT_OTLP_TRACES_ENDPOINT",
+    "tenant_daily_cost_micro_usd": "DAMAI_AGENT_TENANT_DAILY_COST_MICRO_USD",
+    "persist_tool_audit": "DAMAI_AGENT_PERSIST_TOOL_AUDIT",
 }
 
 _WEAK_SECRETS = {"", "change-me", "change-me-local", "changeme", "secret"}
@@ -127,6 +130,9 @@ class Settings(BaseModel):
     redis_url: str = Field(default="", repr=False)
     delegation_hmac_key: str = Field(default="", repr=False)
     event_poll_seconds: float = Field(default=0.5, ge=0.1, le=5.0)
+    otlp_traces_endpoint: str = ""
+    tenant_daily_cost_micro_usd: int = Field(default=0, ge=0, le=1000000000000)
+    persist_tool_audit: bool = False
 
     @field_validator("environment", mode="before")
     @classmethod
@@ -149,7 +155,7 @@ class Settings(BaseModel):
             raise ValueError("URL 中禁止包含用户名或密码")
         return normalized
 
-    @field_validator("llm_fallback_base_url")
+    @field_validator("llm_fallback_base_url", "otlp_traces_endpoint")
     @classmethod
     def validate_optional_http_url(cls, value: str) -> str:
         return cls.validate_http_url(value) if value else ""
@@ -189,7 +195,7 @@ class Settings(BaseModel):
                 raise ValueError("openai_compatible 模式必须配置 DAMAI_LLM_API_KEY")
             if not self.llm_model:
                 raise ValueError("openai_compatible 模式必须配置 DAMAI_LLM_MODEL")
-            if self.max_turn_cost_micro_usd:
+            if self.max_turn_cost_micro_usd or self.tenant_daily_cost_micro_usd:
                 configured_models = {self.llm_model}
                 if self.llm_fallback_model:
                     configured_models.add(self.llm_fallback_model)
@@ -198,8 +204,17 @@ class Settings(BaseModel):
                     for model in configured_models
                 ):
                     raise ValueError("费用预算缺少主模型或备用模型的定价")
+        if self.otlp_traces_endpoint and not self.otlp_traces_endpoint.endswith("/v1/traces"):
+            raise ValueError("OTLP traces endpoint 必须以 /v1/traces 结尾")
+        if self.tenant_daily_cost_micro_usd:
+            if self.runtime_backend != "durable" or not self.llm_pricing:
+                raise ValueError("租户额度需要 durable runtime 和模型定价")
+        if self.persist_tool_audit and self.runtime_backend != "durable":
+            raise ValueError("持久化 Tool 审计需要 durable runtime")
 
         if self.environment in {Environment.STAGING, Environment.PRODUCTION}:
+            if self.otlp_traces_endpoint and urlparse(self.otlp_traces_endpoint).scheme != "https":
+                raise ValueError("staging/production OTLP traces endpoint 必须使用 HTTPS")
             if self.provider == "demo":
                 raise ValueError("staging/production 禁止使用 demo Provider")
             self._require_strong_secret(

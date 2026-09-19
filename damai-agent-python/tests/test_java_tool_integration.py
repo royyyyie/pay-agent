@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import threading
 import unittest
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict
+from unittest.mock import patch
 
 from damai_agent.generated.tool_models import RESPONSE_MODELS
 from damai_agent.models import AgentErrorCode, ToolContext
@@ -57,8 +59,11 @@ class StubJavaHandler(BaseHTTPRequestHandler):
             response.pop("freshnessAt")
         elif type(self).response_mode == "mismatched-request-id":
             response["requestId"] = "another-call"
+        elif type(self).response_mode == "service-unavailable":
+            response.update(success=False, code=503, message="temporary", retryable=True)
+            response["data"] = None
         encoded = json.dumps(response, ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
+        self.send_response(503 if type(self).response_mode == "service-unavailable" else 200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
         if type(self).echo_traceparent:
@@ -154,6 +159,30 @@ class JavaToolIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.code, 502)
         self.assertEqual(result.error_code, AgentErrorCode.TOOL_RESULT_INVALID)
+
+    async def test_java_503_is_returned_without_replaying_tool(self) -> None:
+        StubJavaHandler.response_mode = "service-unavailable"
+        result = await self._post_validated_search()
+        self.assertFalse(result.success)
+        self.assertEqual(result.code, 503)
+        self.assertTrue(result.retryable)
+
+    async def test_transport_failure_returns_retryable_result_once(self) -> None:
+        host, port = self.server.server_address
+        client = JavaToolClient(f"http://{host}:{port}", "integration-key", 0.1)
+        with patch(
+            "damai_agent.tools.urllib.request.urlopen",
+            side_effect=urllib.error.URLError("test-network-down"),
+        ) as send:
+            result = await client.post(
+                "/internal/agent/v1/tools/programs/search",
+                {"keyword": "test"},
+                ToolContext("session", "turn", "call", "4" * 32),
+            )
+        self.assertFalse(result.success)
+        self.assertTrue(result.retryable)
+        self.assertEqual(send.call_count, 1)
+        self.assertNotIn("test-network-down", result.message)
 
     async def _post_validated_search(self):
         host, port = self.server.server_address

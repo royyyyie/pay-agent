@@ -34,6 +34,8 @@ class ToolHookContext:
     tool_call_id: str
     tool_name: str
     risk: Optional[ToolRisk]
+    tenant_id: str = ""
+    session_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +66,8 @@ class AuditRecord:
     tool_name: str
     risk: Optional[ToolRisk]
     outcome: ToolOutcome
+    tenant_id: str = ""
+    session_key: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -197,6 +201,8 @@ class AuditHook(BaseRuntimeHook):
             tool_name=safe_log_label(context.tool_name),
             risk=context.risk,
             outcome=outcome,
+            tenant_id=context.tenant_id,
+            session_key=context.session_key,
         )
         possible_awaitable = self._sink(record)
         if inspect.isawaitable(possible_awaitable):
@@ -215,8 +221,10 @@ class HookChain:
         allowed_tool_names: frozenset[str],
         audit_sink: Optional[AuditSink] = None,
         extra_factories: Sequence[HookFactory] = (),
+        strict_audit: bool = False,
     ) -> None:
         self.usage = UsageHook()
+        self._strict_audit = strict_audit
         self._hooks: tuple[RuntimeHook, ...] = (
             PolicyHook(allowed_tool_names),
             TraceHook(),
@@ -263,9 +271,11 @@ class HookChain:
         for hook in self._hooks:
             try:
                 await hook.after_tool(context, outcome)
-            except Exception:
-                # A post-execution observer must not erase the model's matching Tool Result.
+            except Exception as exc:
+                # Strict durable audit aborts the Turn so recovery records unknown Tool state.
                 _hook_logger.error("after_tool hook failed: %s", type(hook).__name__)
+                if self._strict_audit and isinstance(hook, AuditHook):
+                    raise RuntimeError("tool audit persistence failed") from exc
 
 
 def elapsed_ms(started_at: float) -> int:

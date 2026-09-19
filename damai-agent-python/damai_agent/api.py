@@ -15,13 +15,16 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .delegation import DelegationError, verify_delegation
+from .governance import TenantQuota
 from .models import AgentRunResult, TicketTurnContext
 from .observability import RuntimeMetrics
 from .provider_routing import ResilientProvider
 from .providers import DemoProvider, ModelProvider, OpenAICompatibleProvider, ProviderError
 from .runner import AgentRunner
+from .runtime.hooks import AuditSink
 from .session import InMemorySessionStore
 from .tools import JavaToolClient, ToolRegistry, build_java_tools
+from .tracing import TraceManager
 
 
 class ChatRequest(BaseModel):
@@ -67,7 +70,13 @@ def _chat_response(result: AgentRunResult) -> ChatResponse:
     )
 
 
-def build_runner(settings: Settings, metrics: RuntimeMetrics | None = None) -> AgentRunner:
+def build_runner(
+    settings: Settings,
+    metrics: RuntimeMetrics | None = None,
+    tracing: TraceManager | None = None,
+    tenant_quota: TenantQuota | None = None,
+    audit_sink: AuditSink | None = None,
+) -> AgentRunner:
     provider: ModelProvider
     if settings.provider == "openai_compatible":
         primary = OpenAICompatibleProvider(
@@ -120,23 +129,35 @@ def build_runner(settings: Settings, metrics: RuntimeMetrics | None = None) -> A
         max_turn_cost_micro_usd=settings.max_turn_cost_micro_usd,
         pricing_catalog=settings.llm_pricing,
         metrics=metrics,
+        tracing=tracing,
+        tenant_quota=tenant_quota,
+        tenant_daily_cost_micro_usd=settings.tenant_daily_cost_micro_usd,
+        audit_sink=audit_sink,
+        strict_audit=settings.persist_tool_audit,
     )
 
 
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
     metrics = RuntimeMetrics()
-    runner = build_runner(resolved_settings, metrics)
+    tracing = (
+        TraceManager.from_otlp(resolved_settings.otlp_traces_endpoint)
+        if resolved_settings.otlp_traces_endpoint
+        else TraceManager()
+    )
     durable_service = None
     durable_turns = None
     durable_redis = None
+    audit_store = None
     if resolved_settings.runtime_backend == "durable":
         from redis.asyncio import Redis
 
+        from .postgres_audit import PostgresAuditSink
         from .postgres_turn import PostgresTurnRepository
         from .redis_control import RedisTurnCancellationStore
         from .redis_lease import RedisSessionLeaseStore
         from .redis_queue import RedisPendingTurnQueue
+        from .redis_quota import RedisDailyQuota
         from .runtime.durable import DurableTurnService
 
         durable_redis = Redis.from_url(
@@ -145,6 +166,17 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             socket_connect_timeout=5,
             socket_timeout=5,
         )
+        tenant_quota = (
+            RedisDailyQuota(durable_redis)
+            if resolved_settings.tenant_daily_cost_micro_usd
+            else None
+        )
+        audit_store = (
+            PostgresAuditSink(resolved_settings.postgres_dsn)
+            if resolved_settings.persist_tool_audit
+            else None
+        )
+        runner = build_runner(resolved_settings, metrics, tracing, tenant_quota, audit_store)
         durable_turns = PostgresTurnRepository(resolved_settings.postgres_dsn)
         durable_service = DurableTurnService(
             runner.core_runner,
@@ -154,6 +186,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             pending_queue=RedisPendingTurnQueue(durable_redis),
             max_tool_rounds=resolved_settings.max_tool_rounds,
         )
+    else:
+        runner = build_runner(resolved_settings, metrics, tracing)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -162,6 +196,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         finally:
             if durable_redis is not None:
                 await durable_redis.aclose()
+            await asyncio.to_thread(tracing.shutdown)
 
     app = FastAPI(
         title="Damai Agent API",
@@ -171,10 +206,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     )
     app.state.runner = runner
     app.state.metrics = metrics
+    app.state.tracing = tracing
     app.state.settings = resolved_settings
     app.state.durable_service = durable_service
     app.state.durable_turns = durable_turns
     app.state.durable_redis = durable_redis
+    app.state.audit_store = audit_store
 
     async def require_internal_api_key(
         supplied_key: Optional[str] = Header(default=None, alias="X-Agent-Internal-Key"),
@@ -240,9 +277,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             try:
                 database_ready = await durable_turns.check_ready()
                 cache_ready = bool(await durable_redis.ping())
+                audit_ready = audit_store is None or await audit_store.check_ready()
             except Exception as exc:
                 raise HTTPException(status_code=503, detail="Agent 持久化依赖不可用") from exc
-            if not database_ready or not cache_ready:
+            if not database_ready or not cache_ready or not audit_ready:
                 raise HTTPException(status_code=503, detail="Agent 持久化依赖不可用")
         return {"status": "UP"}
 

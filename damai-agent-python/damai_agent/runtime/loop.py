@@ -7,6 +7,7 @@ import uuid
 from typing import List, Optional, Sequence
 
 from ..config import ModelPrice
+from ..governance import TenantQuota
 from ..models import (
     AgentRunResult,
     AgentRunSpec,
@@ -19,6 +20,7 @@ from ..observability import RuntimeMetrics
 from ..providers import ModelProvider
 from ..session import InMemorySessionStore
 from ..tools import ToolRegistry
+from ..tracing import TraceManager
 from .events import EventSink, TurnEventEmitter
 from .hooks import AuditSink, HookFactory
 from .runner import ToolCallingRunner
@@ -174,6 +176,10 @@ class AgentRunner(TicketAgentLoop):
         max_turn_cost_micro_usd: int = 0,
         pricing_catalog: dict[str, ModelPrice] | None = None,
         metrics: RuntimeMetrics | None = None,
+        tracing: TraceManager | None = None,
+        tenant_quota: TenantQuota | None = None,
+        tenant_daily_cost_micro_usd: int = 0,
+        strict_audit: bool = False,
     ) -> None:
         super().__init__(
             runner=ToolCallingRunner(
@@ -189,6 +195,10 @@ class AgentRunner(TicketAgentLoop):
                 max_turn_cost_micro_usd,
                 pricing_catalog,
                 metrics,
+                tracing,
+                tenant_quota,
+                tenant_daily_cost_micro_usd,
+                strict_audit,
             ),
             sessions=sessions,
             max_tool_rounds=max_tool_rounds,

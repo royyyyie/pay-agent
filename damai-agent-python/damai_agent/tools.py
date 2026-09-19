@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List
 
 from jsonschema import Draft7Validator, FormatChecker
+from opentelemetry import trace
 from pydantic import BaseModel, ValidationError
 
 from .generated.tool_models import REQUEST_MODELS, RESPONSE_MODELS
@@ -275,7 +276,9 @@ class JavaToolClient:
         context: ToolContext,
         response_model: type[BaseModel] | None,
     ) -> ToolResult:
-        traceparent = f"00-{context.trace_id}-{uuid.uuid4().hex[:16]}-01"
+        active_span = trace.get_current_span().get_span_context()
+        trace_id = f"{active_span.trace_id:032x}" if active_span.is_valid else context.trace_id
+        traceparent = f"00-{trace_id}-{uuid.uuid4().hex[:16]}-01"
         request = urllib.request.Request(
             f"{self._base_url}{path}",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -300,12 +303,11 @@ class JavaToolClient:
             status = error.code
             response_traceparent = error.headers.get("traceparent")
             body = error.read().decode("utf-8", errors="replace")
-        except (urllib.error.URLError, TimeoutError) as error:
-            detail = error.reason if hasattr(error, "reason") else error
+        except (urllib.error.URLError, TimeoutError):
             return ToolResult(
                 success=False,
                 code=503,
-                message=f"Java 业务服务不可用: {detail}",
+                message="Java 业务服务不可用",
                 retryable=True,
             )
 
