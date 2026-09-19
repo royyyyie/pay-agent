@@ -6,6 +6,7 @@ import json
 import re
 import urllib.error
 import urllib.request
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Sequence
 from urllib.parse import quote, urlparse
@@ -15,6 +16,27 @@ from .rag import InMemoryKnowledgeIndex, KnowledgeDocument
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _MAX_BULK_BYTES = 12 * 1024 * 1024
 _INDEX_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,254}")
+_INFERENCE_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+
+def configure_semantic_mapping(
+    index_definition: dict[str, object],
+    inference_id: str,
+    *,
+    semantic_field: str = "semantic_content",
+) -> dict[str, object]:
+    """Bind a semantic mapping to an audited endpoint without mutating the template."""
+
+    if _INFERENCE_PATTERN.fullmatch(inference_id) is None:
+        raise ValueError("semantic inference ID is invalid")
+    configured = deepcopy(index_definition)
+    mappings = configured.get("mappings")
+    properties = mappings.get("properties") if isinstance(mappings, dict) else None
+    semantic = properties.get(semantic_field) if isinstance(properties, dict) else None
+    if not isinstance(semantic, dict) or semantic.get("type") != "semantic_text":
+        raise ValueError("semantic mapping field is missing or invalid")
+    semantic["inference_id"] = inference_id
+    return configured
 
 
 class KnowledgePublicationError(RuntimeError):

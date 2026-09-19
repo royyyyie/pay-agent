@@ -7,7 +7,7 @@ import hmac
 import json
 import time
 from contextlib import asynccontextmanager, suppress
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional, cast
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -21,7 +21,13 @@ from .models import AgentRunResult, TicketTurnContext
 from .observability import RuntimeMetrics
 from .provider_routing import ResilientProvider
 from .providers import DemoProvider, ModelProvider, OpenAICompatibleProvider, ProviderError
-from .rag import StableKnowledgeRag, load_knowledge_catalog
+from .rag import (
+    KnowledgeRetriever,
+    ReciprocalRankFusionRetriever,
+    RetrievalProfile,
+    StableKnowledgeRag,
+    load_knowledge_catalog,
+)
 from .runner import AgentRunner
 from .runtime.hooks import AuditSink
 from .session import InMemorySessionStore
@@ -47,6 +53,8 @@ class ChatResponse(BaseModel):
     costMicroUsd: Optional[int] = None
     citations: list[Dict[str, str]] = Field(default_factory=list)
     knowledgeVersion: str = ""
+    knowledgeVariant: str = ""
+    knowledgeProfile: str = ""
 
 
 class DurableChatRequest(BaseModel):
@@ -73,6 +81,8 @@ def _chat_response(result: AgentRunResult) -> ChatResponse:
         costMicroUsd=result.cost_micro_usd,
         citations=[item.to_dict() for item in result.citations],
         knowledgeVersion=result.knowledge_version,
+        knowledgeVariant=result.knowledge_variant,
+        knowledgeProfile=result.knowledge_profile,
     )
 
 
@@ -149,26 +159,45 @@ def build_runner(
 def build_knowledge_rag(settings: Settings) -> StableKnowledgeRag | None:
     if not settings.rag_enabled:
         return None
-    retriever = (
-        load_knowledge_catalog(
+    retriever: KnowledgeRetriever
+    if settings.rag_backend == "local":
+        retriever = load_knowledge_catalog(
             settings.knowledge_catalog_path,
             allowed_source_hosts=settings.knowledge_source_hosts,
         )
-        if settings.rag_backend == "local"
-        else ElasticsearchKnowledgeRetriever(
+    else:
+        profile = cast(
+            RetrievalProfile,
+            settings.rag_retrieval_profile.replace("_", "-")
+            if settings.rag_retrieval_profile != "lexical"
+            else "elastic-lexical",
+        )
+        retriever = ElasticsearchKnowledgeRetriever(
             settings.elasticsearch_url,
             settings.elasticsearch_api_key,
             settings.elasticsearch_index_alias,
             settings.knowledge_index_version,
             settings.knowledge_source_hosts,
             timeout_seconds=settings.elasticsearch_timeout_seconds,
+            retrieval_profile=profile,
+            semantic_field=settings.elasticsearch_semantic_field,
+            rerank_inference_id=settings.elasticsearch_rerank_inference_id,
+            rank_window_size=settings.elasticsearch_rank_window_size,
+            rank_constant=settings.rag_rrf_rank_constant,
         )
-    )
+    if settings.rag_hybrid_enabled:
+        retriever = ReciprocalRankFusionRetriever(
+            retriever,
+            rank_constant=settings.rag_rrf_rank_constant,
+        )
     return StableKnowledgeRag(
         retriever,
         top_k=settings.rag_top_k,
         max_context_chars=settings.rag_max_context_chars,
         min_score=settings.rag_min_score,
+        candidate_k=settings.rag_candidate_k,
+        rerank_rollout_percent=settings.rag_rerank_rollout_percent,
+        experiment_salt=settings.rag_experiment_salt,
     )
 
 

@@ -22,5 +22,17 @@
     "source": "https://help.example.com/refund-policy",
     "effective_from": "2026-09-01T00:00:00+08:00",
     "effective_to": null
+  },
+  {
+    "document_id": "tenant-b-identity",
+    "version": "2026.09",
+    "tenant_id": "tenant-b",
+    "locale": "zh-CN",
+    "category": "identity_policy",
+    "title": "租户乙实名制规则",
+    "content": "租户乙专属的实名购票和观演人身份核验流程，不得返回给其他租户。",
+    "source": "https://help.example.com/tenant-b-identity",
+    "effective_from": "2026-09-01T00:00:00+08:00",
+    "effective_to": null
   }
 ]

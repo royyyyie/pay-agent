@@ -8,7 +8,10 @@ import os
 from pathlib import Path
 from urllib.parse import urlparse
 
-from damai_agent.knowledge_publish import ElasticsearchKnowledgePublisher
+from damai_agent.knowledge_publish import (
+    ElasticsearchKnowledgePublisher,
+    configure_semantic_mapping,
+)
 from damai_agent.rag import load_knowledge_catalog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +30,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--confirm-index")
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
     parser.add_argument("--allow-http", action="store_true")
+    parser.add_argument(
+        "--semantic-inference-id",
+        default=os.environ.get("DAMAI_KNOWLEDGE_SEMANTIC_INFERENCE_ID", ""),
+    )
     return parser.parse_args()
 
 
@@ -86,6 +93,12 @@ def main() -> int:
         mapping = json.loads(args.mapping.read_text(encoding="utf-8"))
         if not isinstance(mapping, dict):
             raise ValueError("mapping must be a JSON object")
+        if args.semantic_inference_id:
+            mapping = configure_semantic_mapping(mapping, args.semantic_inference_id)
+        mappings = mapping.get("mappings")
+        properties = mappings.get("properties") if isinstance(mappings, dict) else None
+        semantic = properties.get("semantic_content") if isinstance(properties, dict) else None
+        semantic_inference_id = semantic.get("inference_id") if isinstance(semantic, dict) else None
         receipt = publisher.publish(index_name, release.documents, mapping)
         print(
             json.dumps(
@@ -94,6 +107,7 @@ def main() -> int:
                     "alias": receipt.alias,
                     "documentCount": receipt.document_count,
                     "previousIndices": receipt.previous_indices,
+                    "semanticInferenceId": semantic_inference_id,
                 },
                 ensure_ascii=False,
             )

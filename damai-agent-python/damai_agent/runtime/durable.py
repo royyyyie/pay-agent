@@ -250,6 +250,8 @@ class DurableTurnService:
                     "modelRoute": result.model_route,
                     "citations": [item.to_dict() for item in result.citations],
                     "knowledgeVersion": result.knowledge_version,
+                    "knowledgeVariant": result.knowledge_variant,
+                    "knowledgeProfile": result.knowledge_profile,
                 },
             )
             await self._acknowledge_pending(context, pending_token)

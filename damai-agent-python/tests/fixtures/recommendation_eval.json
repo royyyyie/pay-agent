@@ -1,0 +1,29 @@
+[
+  {
+    "case_id": "budget-route",
+    "user_text": "帮我推荐 800 元以内的音乐剧",
+    "model_tool_name": "search_programs",
+    "model_arguments": {"maxPrice": 1200},
+    "expected_tool_name": "recommend_programs",
+    "expected_max_price": 800
+  },
+  {
+    "case_id": "lowest-price",
+    "user_text": "推荐几场演出，最便宜的优先",
+    "model_arguments": {"preference": "RELEVANCE"},
+    "expected_tool_name": "recommend_programs",
+    "expected_preference": "LOWEST_PRICE"
+  },
+  {
+    "case_id": "inventory-first",
+    "user_text": "帮我找余票最多的演唱会",
+    "expected_tool_name": "recommend_programs",
+    "expected_preference": "MOST_AVAILABLE"
+  },
+  {
+    "case_id": "earliest-show",
+    "user_text": "推荐最早能看的音乐剧",
+    "expected_tool_name": "recommend_programs",
+    "expected_preference": "EARLIEST_SHOW"
+  }
+]

@@ -135,6 +135,8 @@ class TicketAgentLoop:
                 "modelRoute": result.model_route,
                 "citations": [item.to_dict() for item in result.citations],
                 "knowledgeVersion": result.knowledge_version,
+                "knowledgeVariant": result.knowledge_variant,
+                "knowledgeProfile": result.knowledge_profile,
             },
         )
         return result

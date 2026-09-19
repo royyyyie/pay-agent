@@ -5,10 +5,12 @@ import unittest
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
 from damai_agent.knowledge_publish import (
     ElasticsearchKnowledgePublisher,
     KnowledgePublicationError,
+    configure_semantic_mapping,
 )
 from damai_agent.rag import KnowledgeCategory, KnowledgeDocument
 
@@ -64,6 +66,30 @@ def publisher(opener: FakeOpener) -> ElasticsearchKnowledgePublisher:
 
 
 class KnowledgePublisherTest(unittest.TestCase):
+    def test_semantic_mapping_uses_audited_multilingual_embedding_endpoint(self) -> None:
+        mapping_path = (
+            Path(__file__).parents[1] / "docs" / "elasticsearch-knowledge-index-semantic.json"
+        )
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        properties = mapping["mappings"]["properties"]
+        self.assertEqual(mapping["mappings"]["dynamic"], "strict")
+        self.assertEqual(properties["title"]["copy_to"], "semantic_content")
+        self.assertEqual(properties["content"]["copy_to"], "semantic_content")
+        self.assertEqual(properties["semantic_content"]["type"], "semantic_text")
+        self.assertEqual(
+            properties["semantic_content"]["inference_id"],
+            ".multilingual-e5-small-elasticsearch",
+        )
+        configured = configure_semantic_mapping(mapping, "eis-multilingual-large-v1")
+        self.assertEqual(
+            configured["mappings"]["properties"]["semantic_content"]["inference_id"],
+            "eis-multilingual-large-v1",
+        )
+        self.assertEqual(
+            properties["semantic_content"]["inference_id"],
+            ".multilingual-e5-small-elasticsearch",
+        )
+
     def test_publish_verifies_count_and_atomically_switches_explicit_alias_targets(self) -> None:
         missing_alias = urllib.error.HTTPError("https://es.example.com", 404, "not found", {}, None)
         opener = FakeOpener(

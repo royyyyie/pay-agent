@@ -10,6 +10,13 @@ from .models import ProviderUsage
 _BUCKETS = (0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
 _Outcome = Literal["success", "error", "rejected"]
 _KnowledgeOutcome = Literal["hit", "miss", "dynamic_blocked", "error"]
+_KnowledgeVariant = Literal["control", "rerank-v1"]
+_KnowledgeProfile = Literal[
+    "local-lexical",
+    "elastic-lexical",
+    "semantic-hybrid",
+    "semantic-rerank",
+]
 
 
 class _Histogram:
@@ -43,6 +50,17 @@ class RuntimeMetrics:
             "dynamic_blocked": 0,
             "error": 0,
         }
+        self._knowledge_variants: dict[_KnowledgeVariant, int] = {
+            "control": 0,
+            "rerank-v1": 0,
+        }
+        self._knowledge_duration = _Histogram()
+        self._knowledge_profiles: dict[_KnowledgeProfile, int] = {
+            "local-lexical": 0,
+            "elastic-lexical": 0,
+            "semantic-hybrid": 0,
+            "semantic-rerank": 0,
+        }
 
     def observe_turn(self, outcome: _Outcome, duration_ms: int) -> None:
         with self._lock:
@@ -55,6 +73,15 @@ class RuntimeMetrics:
     def observe_knowledge(self, outcome: _KnowledgeOutcome) -> None:
         with self._lock:
             self._knowledge[outcome] += 1
+
+    def observe_knowledge_variant(self, variant: _KnowledgeVariant, duration_ms: int) -> None:
+        with self._lock:
+            self._knowledge_variants[variant] += 1
+            self._knowledge_duration.observe(duration_ms)
+
+    def observe_knowledge_profile(self, profile: _KnowledgeProfile) -> None:
+        with self._lock:
+            self._knowledge_profiles[profile] += 1
 
     def observe_model(
         self,
@@ -126,4 +153,29 @@ class RuntimeMetrics:
                     "damai_agent_knowledge_retrieval_total"
                     f'{{outcome="{knowledge_outcome}"}} {count}'
                 )
+            lines.append("# HELP damai_agent_knowledge_variant_total RAG experiment variants.")
+            lines.append("# TYPE damai_agent_knowledge_variant_total counter")
+            for variant, count in self._knowledge_variants.items():
+                lines.append(f'damai_agent_knowledge_variant_total{{variant="{variant}"}} {count}')
+            lines.append("# HELP damai_agent_knowledge_profile_total RAG retrieval profiles.")
+            lines.append("# TYPE damai_agent_knowledge_profile_total counter")
+            for profile, count in self._knowledge_profiles.items():
+                lines.append(f'damai_agent_knowledge_profile_total{{profile="{profile}"}} {count}')
+            lines.append("# HELP damai_agent_knowledge_duration_seconds RAG preparation duration.")
+            lines.append("# TYPE damai_agent_knowledge_duration_seconds histogram")
+            for upper, count in zip(_BUCKETS, self._knowledge_duration.buckets, strict=True):
+                lines.append(
+                    f'damai_agent_knowledge_duration_seconds_bucket{{le="{upper:g}"}} {count}'
+                )
+            lines.append(
+                'damai_agent_knowledge_duration_seconds_bucket{le="+Inf"} '
+                f"{self._knowledge_duration.count}"
+            )
+            lines.append(
+                f"damai_agent_knowledge_duration_seconds_count {self._knowledge_duration.count}"
+            )
+            lines.append(
+                "damai_agent_knowledge_duration_seconds_sum "
+                f"{self._knowledge_duration.total_seconds:g}"
+            )
         return "\n".join(lines) + "\n"

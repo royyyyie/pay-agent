@@ -204,27 +204,42 @@ class ToolCallingRunner:
         recommendation_verified = False
         rag_bundle = RagBundle()
         if self._knowledge_rag is not None:
+            knowledge_started_at = time.perf_counter()
             try:
                 with self._tracing.span("agent.knowledge") as knowledge_span:
                     rag_bundle = await self._knowledge_rag.prepare(
                         spec.messages[-1].content or "",
                         tenant_id=spec.context.tenant_id,
                         locale=spec.context.locale,
+                        experiment_key=spec.context.session_key,
                     )
                     knowledge_span.set_attribute("agent.knowledge_outcome", rag_bundle.outcome)
                     knowledge_span.set_attribute("agent.knowledge_hits", len(rag_bundle.citations))
+                    knowledge_span.set_attribute(
+                        "agent.knowledge_variant", rag_bundle.retrieval_variant
+                    )
+                    knowledge_span.set_attribute(
+                        "agent.knowledge_profile", rag_bundle.retrieval_profile
+                    )
             except BaseException:
                 if self._metrics is not None:
                     self._metrics.observe_knowledge("error")
                 raise
             if self._metrics is not None:
                 self._metrics.observe_knowledge(rag_bundle.outcome)
+                self._metrics.observe_knowledge_variant(
+                    rag_bundle.retrieval_variant,
+                    elapsed_ms(knowledge_started_at),
+                )
+                self._metrics.observe_knowledge_profile(rag_bundle.retrieval_profile)
             await emitter.emit(
                 "knowledge.retrieved",
                 {
                     "outcome": rag_bundle.outcome,
                     "citationCount": len(rag_bundle.citations),
                     "knowledgeVersion": rag_bundle.index_version,
+                    "variant": rag_bundle.retrieval_variant,
+                    "profile": rag_bundle.retrieval_profile,
                 },
             )
         if rag_bundle.context:
@@ -455,6 +470,8 @@ class ToolCallingRunner:
                     model_route=model_route,
                     citations=citations,
                     knowledge_version=rag_bundle.index_version,
+                    knowledge_variant=rag_bundle.retrieval_variant,
+                    knowledge_profile=rag_bundle.retrieval_profile,
                 )
 
             messages.append(assistant)

@@ -224,14 +224,21 @@ class SettingsTest(unittest.TestCase):
                 "DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH": "config/knowledge.json",
                 "DAMAI_AGENT_KNOWLEDGE_SOURCE_HOSTS": "help.example.com, venue.example.com",
                 "DAMAI_AGENT_RAG_TOP_K": "3",
+                "DAMAI_AGENT_RAG_CANDIDATE_K": "9",
                 "DAMAI_AGENT_RAG_MAX_CONTEXT_CHARS": "4096",
                 "DAMAI_AGENT_RAG_MIN_SCORE": "0.05",
+                "DAMAI_AGENT_RAG_HYBRID_ENABLED": "true",
+                "DAMAI_AGENT_RAG_RERANK_ROLLOUT_PERCENT": "25",
+                "DAMAI_AGENT_RAG_EXPERIMENT_SALT": "stable-config-salt",
             }
         )
         self.assertTrue(settings.rag_enabled)
         self.assertEqual(settings.knowledge_catalog_path, "config/knowledge.json")
         self.assertEqual(settings.knowledge_source_hosts, ("help.example.com", "venue.example.com"))
         self.assertEqual(settings.rag_top_k, 3)
+        self.assertEqual(settings.rag_candidate_k, 9)
+        self.assertTrue(settings.rag_hybrid_enabled)
+        self.assertEqual(settings.rag_rerank_rollout_percent, 25)
         self.assertEqual(settings.rag_max_context_chars, 4096)
         self.assertEqual(settings.rag_min_score, 0.05)
         with self.assertRaisesRegex(ValidationError, "主机白名单格式无效"):
@@ -240,6 +247,10 @@ class SettingsTest(unittest.TestCase):
                 knowledge_catalog_path="knowledge.json",
                 knowledge_source_hosts=("help..example.com",),
             )
+        with self.assertRaisesRegex(ValidationError, "CANDIDATE_K"):
+            Settings(rag_top_k=5, rag_candidate_k=4)
+        with self.assertRaisesRegex(ValidationError, "实验盐"):
+            Settings(rag_rerank_rollout_percent=10, rag_experiment_salt="too-short")
 
     def test_elasticsearch_rag_requires_read_only_connection_identity(self) -> None:
         with self.assertRaisesRegex(ValidationError, "配置不完整"):
@@ -259,6 +270,36 @@ class SettingsTest(unittest.TestCase):
         )
         self.assertEqual(settings.rag_backend, "elasticsearch")
         self.assertNotIn("private-es-key", repr(settings))
+        semantic = Settings(
+            rag_enabled=True,
+            rag_backend="elasticsearch",
+            rag_retrieval_profile="semantic_rerank",
+            knowledge_source_hosts=("help.example.com",),
+            elasticsearch_url="https://es.example.com:9200",
+            elasticsearch_api_key="private-es-key",
+            elasticsearch_index_alias="damai-knowledge-read",
+            knowledge_index_version="knowledge-2026.09.19",
+            elasticsearch_rerank_inference_id="enterprise-reranker-v1",
+        )
+        self.assertEqual(semantic.rag_retrieval_profile, "semantic_rerank")
+        with self.assertRaisesRegex(ValidationError, "仅支持 Elasticsearch"):
+            Settings(
+                rag_enabled=True,
+                knowledge_catalog_path="knowledge.json",
+                knowledge_source_hosts=("help.example.com",),
+                rag_retrieval_profile="semantic_hybrid",
+            )
+        with self.assertRaisesRegex(ValidationError, "重排推理端点"):
+            Settings(
+                rag_enabled=True,
+                rag_backend="elasticsearch",
+                rag_retrieval_profile="semantic_rerank",
+                knowledge_source_hosts=("help.example.com",),
+                elasticsearch_url="https://es.example.com:9200",
+                elasticsearch_api_key="private-es-key",
+                elasticsearch_index_alias="damai-knowledge-read",
+                knowledge_index_version="knowledge-2026.09.19",
+            )
         with self.assertRaisesRegex(ValidationError, "必须使用 HTTPS"):
             Settings(
                 environment="production",
