@@ -217,6 +217,39 @@ class ElasticsearchKnowledgeRetrieverTest(unittest.IsolatedAsyncioTestCase):
             {"match": {"semantic_content": "知识检索就绪检查"}},
         )
 
+    async def test_semantic_configuration_is_read_from_exact_mapping(self) -> None:
+        opener = FakeOpener(
+            {
+                "damai-knowledge-read": {
+                    "mappings": {
+                        "properties": {
+                            "semantic_content": {
+                                "type": "semantic_text",
+                                "inference_id": "embedding-v1",
+                                "search_inference_id": "embedding-query-v1",
+                                "chunking_settings": {
+                                    "strategy": "sentence",
+                                    "max_chunk_size": 200,
+                                    "sentence_overlap": 1,
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        )
+        instance = retriever(
+            opener,
+            retrieval_profile="semantic-rerank",
+            rerank_inference_id="rerank-v1",
+        )
+        configuration = await instance.semantic_configuration()
+        self.assertEqual(configuration["inferenceId"], "embedding-v1")
+        self.assertEqual(configuration["searchInferenceId"], "embedding-query-v1")
+        self.assertEqual(configuration["rerankInferenceId"], "rerank-v1")
+        self.assertEqual(opener.requests[0].method, "GET")
+        self.assertTrue(opener.requests[0].full_url.endswith("/_mapping"))
+
     async def test_readiness_probe_is_cached_to_bound_inference_cost(self) -> None:
         opener = FakeOpener({"hits": {"hits": []}})
         instance = retriever(opener, retrieval_profile="semantic-hybrid")

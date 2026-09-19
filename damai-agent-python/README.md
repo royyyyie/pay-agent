@@ -137,4 +137,6 @@ uv run --frozen pytest --cov=damai_agent
 
 阶段 4 第五批采用高级 RAG 检索树：Elasticsearch `semantic_text` 自动分块和向量化，BM25 与语义召回在服务端经 RRF 合并，并可选用 Cross-Encoder 进行二阶段重排。语义高亮片段进入有界上下文，引用仍绑定审核过的父文档；旧索引继续使用 `lexical` Profile。架构约束见 [ADR-011](docs/adr/011-advanced-rag-retrieval.md)。
 
+阶段 4 第六批把语义索引发布升级为 `stage -> acceptance -> promote`：显式中文分块策略、真实 Embedding 探测、隐藏向量块验证、分批 Bulk，以及针对具体索引的 Recall/MRR/P95/QPS/真实费用报告均为晋级硬门禁。缺少云账单证据时不会切换线上别名，详见[知识索引发布与回滚](docs/phase-4-knowledge-operations.md)。
+
 阶段 5 第一批建立票务监控安全控制面：规则由 Java 持久化，Python 仅通过 `REVERSIBLE_WRITE` Tool 管理；受信租户/用户身份不进入模型参数，原始 HMAC 委托会在 Java 再验证，创建具备幂等键，修改使用乐观版本。Java 与 Python 双侧默认关闭，启用前必须执行 MySQL 迁移、打开持久化 Tool 审计，并由 Java BFF 签发 `watch:*` Scope。当前尚未交付调度 Worker 和通知 Outbox，因此不会把“规则已创建”描述为“通知闭环已完成”。详见[阶段 5 检查清单](docs/phase-5-checklist.md)和 [ADR-012](docs/adr/012-watch-rule-ownership.md)。

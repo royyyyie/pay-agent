@@ -6,6 +6,10 @@
   },
   "mappings": {
     "dynamic": "strict",
+    "_meta": {
+      "damai_rag_schema": "semantic-v2",
+      "chunking_policy": "sentence-200-overlap-1"
+    },
     "properties": {
       "document_id": { "type": "keyword", "ignore_above": 128 },
       "version": { "type": "keyword", "ignore_above": 64 },
@@ -16,7 +20,12 @@
       "content": { "type": "text", "copy_to": "semantic_content" },
       "semantic_content": {
         "type": "semantic_text",
-        "inference_id": ".multilingual-e5-small-elasticsearch"
+        "inference_id": ".multilingual-e5-small-elasticsearch",
+        "chunking_settings": {
+          "strategy": "sentence",
+          "max_chunk_size": 200,
+          "sentence_overlap": 1
+        }
       },
       "source": { "type": "keyword", "index": false, "doc_values": false },
       "effective_from": { "type": "date" },

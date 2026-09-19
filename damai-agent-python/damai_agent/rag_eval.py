@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import time
@@ -137,6 +138,125 @@ class RagEvalReport:
                 {"caseId": failure.case_id, "reason": failure.reason} for failure in self.failures
             ],
         }
+
+
+@dataclass(frozen=True, slots=True)
+class RagLoadReport:
+    request_count: int
+    concurrency: int
+    duration_seconds: float
+    latencies_ms: tuple[float, ...]
+
+    @property
+    def throughput_qps(self) -> float:
+        return self.request_count / self.duration_seconds if self.duration_seconds > 0 else 0.0
+
+    @property
+    def mean_latency_ms(self) -> float:
+        return sum(self.latencies_ms) / len(self.latencies_ms) if self.latencies_ms else 0.0
+
+    @property
+    def p95_latency_ms(self) -> float:
+        if not self.latencies_ms:
+            return 0.0
+        ordered = sorted(self.latencies_ms)
+        return ordered[max(0, math.ceil(len(ordered) * 0.95) - 1)]
+
+    def meets_thresholds(
+        self,
+        *,
+        min_requests: int,
+        min_throughput_qps: float,
+        max_p95_latency_ms: float,
+    ) -> bool:
+        return (
+            self.request_count >= min_requests
+            and self.throughput_qps >= min_throughput_qps
+            and self.p95_latency_ms <= max_p95_latency_ms
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "requestCount": self.request_count,
+            "concurrency": self.concurrency,
+            "durationSeconds": round(self.duration_seconds, 6),
+            "throughputQps": round(self.throughput_qps, 6),
+            "meanLatencyMs": round(self.mean_latency_ms, 3),
+            "p95LatencyMs": round(self.p95_latency_ms, 3),
+        }
+
+
+async def benchmark_rag(
+    rag: StableKnowledgeRag,
+    cases: Sequence[RagEvalCase],
+    *,
+    repetitions: int = 1,
+    concurrency: int = 1,
+    warmup_requests: int = 0,
+    moment: datetime | None = None,
+) -> RagLoadReport:
+    """Run a bounded semantic retrieval load test without inflating dynamic-guard QPS."""
+
+    retrieval_cases = tuple(case for case in cases if not case.must_block_as_dynamic)
+    if not retrieval_cases:
+        raise ValueError("RAG benchmark requires at least one retrieval case")
+    if not 1 <= repetitions <= 100:
+        raise ValueError("RAG benchmark repetitions must be between 1 and 100")
+    if not 1 <= concurrency <= 64:
+        raise ValueError("RAG benchmark concurrency must be between 1 and 64")
+    if not 0 <= warmup_requests <= 1_000:
+        raise ValueError("RAG benchmark warmup requests must be between 0 and 1000")
+    request_count = len(retrieval_cases) * repetitions
+    if request_count > 50_000:
+        raise ValueError("RAG benchmark is limited to 50000 measured requests")
+    observed_at = moment or datetime.now(timezone.utc)
+
+    for position in range(warmup_requests):
+        case = retrieval_cases[position % len(retrieval_cases)]
+        await rag.prepare(
+            case.query,
+            tenant_id=case.tenant_id,
+            locale=case.locale,
+            moment=observed_at,
+            experiment_key=f"warmup-{position}-{case.case_id}",
+        )
+
+    queue: asyncio.Queue[tuple[int, RagEvalCase]] = asyncio.Queue()
+    for repetition in range(repetitions):
+        for case in retrieval_cases:
+            queue.put_nowait((repetition, case))
+    latencies_ms: list[float] = []
+
+    async def worker() -> None:
+        while True:
+            try:
+                repetition, case = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                started_at = time.perf_counter()
+                await rag.prepare(
+                    case.query,
+                    tenant_id=case.tenant_id,
+                    locale=case.locale,
+                    moment=observed_at,
+                    experiment_key=f"load-{repetition}-{case.case_id}",
+                )
+                latencies_ms.append((time.perf_counter() - started_at) * 1000)
+            finally:
+                queue.task_done()
+
+    started_at = time.perf_counter()
+    await asyncio.gather(*(worker() for _ in range(min(concurrency, request_count))))
+    duration_seconds = time.perf_counter() - started_at
+    if len(latencies_ms) != request_count:
+        raise RuntimeError("RAG benchmark did not complete every request")
+    return RagLoadReport(
+        request_count=request_count,
+        concurrency=concurrency,
+        duration_seconds=duration_seconds,
+        latencies_ms=tuple(latencies_ms),
+    )
 
 
 async def evaluate_rag(

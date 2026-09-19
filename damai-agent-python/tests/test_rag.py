@@ -30,7 +30,7 @@ from damai_agent.rag import (
     load_knowledge_catalog,
     plan_chinese_queries,
 )
-from damai_agent.rag_eval import RagEvalCase, evaluate_rag
+from damai_agent.rag_eval import RagEvalCase, benchmark_rag, evaluate_rag
 from damai_agent.runner import AgentRunner
 from damai_agent.session import InMemorySessionStore
 from damai_agent.tools import ToolRegistry
@@ -416,3 +416,37 @@ class RagOfflineEvalTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report.mean_reciprocal_rank, 1.0)
         self.assertEqual(report.citation_integrity_rate, 1.0)
         self.assertEqual(report.dynamic_block_rate, 1.0)
+
+    async def test_benchmark_counts_only_real_retrieval_requests(self) -> None:
+        rag = StableKnowledgeRag(InMemoryKnowledgeIndex((document(),)))
+        report = await benchmark_rag(
+            rag,
+            (
+                RagEvalCase(
+                    case_id="stable-identity",
+                    query="实名购票有什么规定",
+                    tenant_id="tenant-a",
+                    expected_document_ids=("identity-policy",),
+                ),
+                RagEvalCase(
+                    case_id="dynamic-price",
+                    query="现在票价多少钱",
+                    tenant_id="tenant-a",
+                    must_block_as_dynamic=True,
+                ),
+            ),
+            repetitions=5,
+            concurrency=2,
+            warmup_requests=1,
+            moment=NOW,
+        )
+        self.assertEqual(report.request_count, 5)
+        self.assertEqual(len(report.latencies_ms), 5)
+        self.assertGreater(report.throughput_qps, 0)
+        self.assertTrue(
+            report.meets_thresholds(
+                min_requests=5,
+                min_throughput_qps=0,
+                max_p95_latency_ms=1000,
+            )
+        )
