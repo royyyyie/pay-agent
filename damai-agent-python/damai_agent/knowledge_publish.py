@@ -21,6 +21,24 @@ _INDEX_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,254}")
 _INFERENCE_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
 
 
+def configure_serverless_index_definition(
+    index_definition: dict[str, object],
+) -> dict[str, object]:
+    """Remove topology settings managed by Elasticsearch Serverless."""
+
+    configured = deepcopy(index_definition)
+    settings = configured.get("settings")
+    if settings is None:
+        return configured
+    if not isinstance(settings, dict):
+        raise ValueError("knowledge index settings must be an object")
+    settings.pop("number_of_shards", None)
+    settings.pop("number_of_replicas", None)
+    if not settings:
+        configured.pop("settings")
+    return configured
+
+
 def configure_semantic_mapping(
     index_definition: dict[str, object],
     inference_id: str,
@@ -97,7 +115,7 @@ class KnowledgeReleaseReceipt:
     previous_indices: tuple[str, ...]
     semantic_inference_id: str = ""
     search_inference_id: str = ""
-    vector_chunk_count: int = 0
+    vector_chunk_count: int | None = 0
     bulk_batches: int = 0
     indexing_duration_ms: float = 0.0
     alias_switched: bool = False
@@ -113,6 +131,7 @@ class ElasticsearchKnowledgePublisher:
         index_alias: str,
         *,
         timeout_seconds: float = 10.0,
+        serverless: bool = False,
         opener: urllib.request.OpenerDirector | None = None,
     ) -> None:
         parsed = urlparse(base_url.rstrip("/"))
@@ -137,6 +156,7 @@ class ElasticsearchKnowledgePublisher:
         self._index_alias = index_alias
         self._managed_prefix = f"{index_alias}-v-"
         self._timeout_seconds = timeout_seconds
+        self._serverless = serverless
         self._opener = opener or urllib.request.build_opener(_NoRedirect())
 
     def publish(
@@ -218,7 +238,7 @@ class ElasticsearchKnowledgePublisher:
         observed_count = self._index_count(index_name)
         if observed_count != len(documents):
             raise KnowledgePublicationError("Elasticsearch knowledge count verification failed")
-        vector_chunk_count = 0
+        vector_chunk_count: int | None = 0
         if semantic is not None:
             vector_chunk_count = self._verify_semantic_index(
                 index_name,
@@ -343,7 +363,7 @@ class ElasticsearchKnowledgePublisher:
         *,
         document_count: int,
         inference_task_type: str,
-    ) -> int:
+    ) -> int | None:
         mapping_payload = self._request_json("GET", f"/{quote(index_name, safe='')}/_mapping")
         index_payload = mapping_payload.get(index_name) if mapping_payload is not None else None
         mappings = index_payload.get("mappings") if isinstance(index_payload, dict) else None
@@ -358,29 +378,36 @@ class ElasticsearchKnowledgePublisher:
                     "Elasticsearch semantic mapping verification failed"
                 )
 
-        stats = self._request_json(
-            "GET",
-            f"/{quote(index_name, safe='')}/_stats/docs,store"
-            "?filter_path=indices.*.primaries.docs.count,indices.*.primaries.store.size_in_bytes",
-        )
-        indices = stats.get("indices") if stats is not None else None
-        observed_stats = indices.get(index_name) if isinstance(indices, dict) else None
-        primaries = observed_stats.get("primaries") if isinstance(observed_stats, dict) else None
-        docs = primaries.get("docs") if isinstance(primaries, dict) else None
-        lucene_count = docs.get("count") if isinstance(docs, dict) else None
-        store = primaries.get("store") if isinstance(primaries, dict) else None
-        store_bytes = store.get("size_in_bytes") if isinstance(store, dict) else None
-        if (
-            isinstance(lucene_count, bool)
-            or not isinstance(lucene_count, int)
-            or lucene_count < document_count * 2
-            or isinstance(store_bytes, bool)
-            or not isinstance(store_bytes, int)
-            or store_bytes <= 0
-        ):
-            raise KnowledgePublicationError(
-                "Elasticsearch vector chunk storage verification failed"
+        vector_chunk_count: int | None = None
+        if not self._serverless:
+            stats = self._request_json(
+                "GET",
+                f"/{quote(index_name, safe='')}/_stats/docs,store"
+                "?filter_path=indices.*.primaries.docs.count,indices.*.primaries.store.size_in_bytes",
             )
+            indices = stats.get("indices") if stats is not None else None
+            observed_stats = indices.get(index_name) if isinstance(indices, dict) else None
+            primaries = (
+                observed_stats.get("primaries")
+                if isinstance(observed_stats, dict)
+                else None
+            )
+            docs = primaries.get("docs") if isinstance(primaries, dict) else None
+            lucene_count = docs.get("count") if isinstance(docs, dict) else None
+            store = primaries.get("store") if isinstance(primaries, dict) else None
+            store_bytes = store.get("size_in_bytes") if isinstance(store, dict) else None
+            if (
+                isinstance(lucene_count, bool)
+                or not isinstance(lucene_count, int)
+                or lucene_count < document_count * 2
+                or isinstance(store_bytes, bool)
+                or not isinstance(store_bytes, int)
+                or store_bytes <= 0
+            ):
+                raise KnowledgePublicationError(
+                    "Elasticsearch vector chunk storage verification failed"
+                )
+            vector_chunk_count = lucene_count - document_count
 
         smoke = self._request_json(
             "POST",
@@ -392,12 +419,14 @@ class ElasticsearchKnowledgePublisher:
             },
         )
         hits = smoke.get("hits") if smoke is not None else None
-        if not isinstance(hits, dict) or inference_task_type not in {
-            "text_embedding",
-            "sparse_embedding",
-        }:
+        hit_items = hits.get("hits") if isinstance(hits, dict) else None
+        if (
+            not isinstance(hit_items, list)
+            or not hit_items
+            or inference_task_type not in {"text_embedding", "sparse_embedding"}
+        ):
             raise KnowledgePublicationError("Elasticsearch semantic search smoke test failed")
-        return lucene_count - document_count
+        return vector_chunk_count
 
     @staticmethod
     def _semantic_mapping(index_definition: dict[str, object]) -> dict[str, object] | None:

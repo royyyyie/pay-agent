@@ -41,6 +41,7 @@ uv run --frozen python scripts/manage_knowledge_index.py stage `
   --index damai-knowledge-read-v-20260919-001 `
   --confirm-index damai-knowledge-read-v-20260919-001 `
   --mapping docs/elasticsearch-knowledge-index-semantic.json `
+  --serverless `
   --semantic-inference-id eis-microsoft-multilingual-e5-large `
   --chunking-strategy sentence `
   --max-chunk-size 200 `
@@ -48,6 +49,8 @@ uv run --frozen python scripts/manage_knowledge_index.py stage `
 ```
 
 模板内置可自托管的中文基线 `.multilingual-e5-small-elasticsearch`。`--semantic-inference-id` 会在内存中绑定经过评测的版本化端点而不改写模板；示例端点是否可用取决于 Elastic Cloud 区域和许可。工具在创建索引前读取端点元数据并发起一次真实 Embedding；Bulk 写入触发 `semantic_text` 自动分块、Embedding 和向量存储。随后工具核对父文档数、隐藏向量块数、实际 Mapping、存储大小并执行语义查询冒烟测试。任一步失败都不会切换读别名。
+
+Elastic Cloud Serverless 会托管分片和副本拓扑，发布时必须增加 `--serverless`。工具只会从内存中的索引定义移除 `number_of_shards` 和 `number_of_replicas`，不会改写受审模板；Stateful/self-managed 部署不要使用该参数。Serverless 不开放索引 `_stats`，因此回执中的 `vectorChunkCount` 为 `null`，发布门禁改为核对父文档数量、实际 `semantic_text` Mapping，并要求真实语义查询至少命中一条；Stateful 部署仍额外核对隐藏向量块计数和存储大小。
 
 Bulk 按 500 文档/5 MiB 双上限自动分批，最后一批等待刷新。发布账号还需要使用指定 inference endpoint 的最小权限和容量；运行时只读账号不得获得索引写权限。失败响应正文不会进入异常消息。
 

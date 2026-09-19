@@ -11,6 +11,7 @@ from damai_agent.knowledge_publish import (
     ElasticsearchKnowledgePublisher,
     KnowledgePublicationError,
     configure_semantic_mapping,
+    configure_serverless_index_definition,
 )
 from damai_agent.rag import KnowledgeCategory, KnowledgeDocument
 
@@ -56,16 +57,41 @@ class FakeOpener:
         return FakeResponse(response)
 
 
-def publisher(opener: FakeOpener) -> ElasticsearchKnowledgePublisher:
+def publisher(
+    opener: FakeOpener, *, serverless: bool = False
+) -> ElasticsearchKnowledgePublisher:
     return ElasticsearchKnowledgePublisher(
         "https://es.example.com",
         "publisher-secret",
         "damai-knowledge-read",
+        serverless=serverless,
         opener=opener,  # type: ignore[arg-type]
     )
 
 
 class KnowledgePublisherTest(unittest.TestCase):
+    def test_serverless_definition_removes_only_managed_topology_settings(self) -> None:
+        definition: dict[str, object] = {
+            "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 1,
+                "refresh_interval": "30s",
+            },
+            "mappings": {"dynamic": "strict", "properties": {}},
+        }
+
+        configured = configure_serverless_index_definition(definition)
+
+        self.assertEqual(configured["settings"], {"refresh_interval": "30s"})
+        self.assertEqual(
+            definition["settings"],
+            {
+                "number_of_shards": 1,
+                "number_of_replicas": 1,
+                "refresh_interval": "30s",
+            },
+        )
+
     def test_semantic_mapping_uses_audited_multilingual_embedding_endpoint(self) -> None:
         mapping_path = (
             Path(__file__).parents[1] / "docs" / "elasticsearch-knowledge-index-semantic.json"
@@ -142,7 +168,7 @@ class KnowledgePublisherTest(unittest.TestCase):
                         }
                     }
                 },
-                {"hits": {"hits": []}},
+                {"hits": {"hits": [{"_id": "public:faq-1:2026.09"}]}},
             ]
         )
         receipt = publisher(opener).stage(
@@ -161,6 +187,41 @@ class KnowledgePublisherTest(unittest.TestCase):
             urls,
         )
         self.assertNotIn("https://es.example.com/_aliases", urls)
+
+    def test_serverless_stage_uses_semantic_search_instead_of_unavailable_stats(self) -> None:
+        mapping_path = (
+            Path(__file__).parents[1] / "docs" / "elasticsearch-knowledge-index-semantic.json"
+        )
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        mapping = configure_serverless_index_definition(mapping)
+        index_name = "damai-knowledge-read-v-serverless-001"
+        opener = FakeOpener(
+            [
+                {
+                    "endpoints": [
+                        {
+                            "inference_id": ".multilingual-e5-small-elasticsearch",
+                            "task_type": "text_embedding",
+                        }
+                    ]
+                },
+                {"text_embedding": [{"embedding": [0.1, 0.2]}]},
+                {"acknowledged": True},
+                {"errors": False, "items": []},
+                {"count": 1},
+                {index_name: {"mappings": mapping["mappings"]}},
+                {"hits": {"hits": [{"_id": "public:faq-1:2026.09"}]}},
+            ]
+        )
+
+        receipt = publisher(opener, serverless=True).stage(
+            index_name,
+            (document("faq-1"),),
+            mapping,
+        )
+
+        self.assertIsNone(receipt.vector_chunk_count)
+        self.assertFalse(any("/_stats/" in request.full_url for request in opener.requests))
 
     def test_semantic_release_cannot_bypass_acceptance_with_legacy_publish(self) -> None:
         mapping_path = (

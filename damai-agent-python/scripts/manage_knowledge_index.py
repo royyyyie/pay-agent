@@ -15,8 +15,9 @@ from urllib.parse import urlparse
 from damai_agent.knowledge_publish import (
     ElasticsearchKnowledgePublisher,
     configure_semantic_mapping,
+    configure_serverless_index_definition,
 )
-from damai_agent.rag import load_knowledge_catalog
+from damai_agent.rag import InMemoryKnowledgeIndex, load_knowledge_catalog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MAPPING = PROJECT_ROOT / "docs" / "elasticsearch-knowledge-index.json"
@@ -42,6 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
     parser.add_argument("--allow-http", action="store_true")
     parser.add_argument(
+        "--serverless",
+        action="store_true",
+        help="Remove shard and replica settings managed by Elasticsearch Serverless.",
+    )
+    parser.add_argument(
         "--semantic-inference-id",
         default=os.environ.get("DAMAI_KNOWLEDGE_SEMANTIC_INFERENCE_ID", ""),
     )
@@ -55,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_release(args: argparse.Namespace):
+def load_release(args: argparse.Namespace) -> InMemoryKnowledgeIndex:
     if args.catalog is None:
         raise ValueError("--catalog is required")
     if not args.source_host:
@@ -83,6 +89,7 @@ def build_publisher(args: argparse.Namespace) -> ElasticsearchKnowledgePublisher
         api_key,
         args.alias,
         timeout_seconds=args.timeout_seconds,
+        serverless=args.serverless,
     )
 
 
@@ -284,6 +291,8 @@ def main() -> int:
         mapping = json.loads(args.mapping.read_text(encoding="utf-8"))
         if not isinstance(mapping, dict):
             raise ValueError("mapping must be a JSON object")
+        if args.serverless:
+            mapping = configure_serverless_index_definition(mapping)
         mappings = mapping.get("mappings")
         properties = mappings.get("properties") if isinstance(mappings, dict) else None
         semantic = properties.get("semantic_content") if isinstance(properties, dict) else None
