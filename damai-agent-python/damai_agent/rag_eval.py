@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Literal, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from .rag import StableKnowledgeRag
 
@@ -27,6 +28,18 @@ class RagEvalCase(BaseModel):
     expected_top_document_id: str | None = None
     forbidden_document_ids: tuple[str, ...] = ()
     must_block_as_dynamic: bool = False
+    category: str = Field(
+        default="unspecified",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    risk_level: Literal["standard", "safety_critical"] = "standard"
+    judgment_reference: str = Field(
+        default="",
+        max_length=256,
+        pattern=r"^(?:[A-Za-z0-9][A-Za-z0-9._:/#-]{0,255})?$",
+    )
 
     @model_validator(mode="after")
     def validate_expectation(self) -> RagEvalCase:
@@ -41,10 +54,182 @@ class RagEvalCase(BaseModel):
         return self
 
 
+class RagEvalBundle(BaseModel):
+    """Auditable, business-approved relevance judgments for a catalog release."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
+
+    schema_version: Literal["damai.rag.eval/v1"]
+    dataset_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    dataset_version: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    catalog_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    owner_team: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    approval_status: Literal["draft", "approved", "rejected"]
+    approval_reference: str = Field(
+        min_length=1,
+        max_length=256,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/#-]*$",
+    )
+    approved_at: AwareDatetime
+    reviewer_count: int = Field(ge=2, le=20)
+    cases: tuple[RagEvalCase, ...] = Field(min_length=1, max_length=10_000)
+
+    @model_validator(mode="after")
+    def validate_judgments(self) -> RagEvalBundle:
+        case_ids = [case.case_id for case in self.cases]
+        if len(case_ids) != len(set(case_ids)):
+            raise ValueError("eval bundle case identifiers must be unique")
+        identities = {
+            (
+                " ".join(case.query.casefold().split()),
+                case.tenant_id.casefold(),
+                case.locale.casefold(),
+            )
+            for case in self.cases
+        }
+        if len(identities) != len(self.cases):
+            raise ValueError("eval bundle contains duplicate query judgments")
+        if len({case.category for case in self.cases}) > 100:
+            raise ValueError("eval bundle is limited to 100 categories")
+        if any(
+            case.category == "unspecified" or not case.judgment_reference for case in self.cases
+        ):
+            raise ValueError("governed eval cases require category and judgment reference")
+        if not any(case.must_block_as_dynamic for case in self.cases) or not any(
+            not case.must_block_as_dynamic for case in self.cases
+        ):
+            raise ValueError("eval bundle must cover retrieval and dynamic-fact blocking")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class RagEvalAsset:
+    cases: tuple[RagEvalCase, ...]
+    bundle: RagEvalBundle | None = None
+
+    def release_eligible(
+        self,
+        *,
+        minimum_case_count: int,
+        expected_catalog_sha256: str,
+    ) -> bool:
+        if self.bundle is None or self.bundle.approval_status != "approved":
+            return False
+        return (
+            len(self.cases) >= minimum_case_count
+            and bool(re.fullmatch(r"[0-9a-f]{64}", expected_catalog_sha256))
+            and self.bundle.catalog_sha256 == expected_catalog_sha256
+            and self.bundle.approved_at <= datetime.now(timezone.utc)
+            and any(case.risk_level == "safety_critical" for case in self.cases)
+        )
+
+    def require_release_eligible(
+        self,
+        *,
+        minimum_case_count: int,
+        expected_catalog_sha256: str,
+    ) -> None:
+        if not 100 <= minimum_case_count <= 10_000:
+            raise ValueError("production Eval minimum must be between 100 and 10000 cases")
+        if self.bundle is None:
+            raise ValueError("production Eval requires a versioned approved bundle")
+        if self.bundle.approval_status != "approved":
+            raise ValueError("production Eval bundle is not approved")
+        if self.bundle.approved_at > datetime.now(timezone.utc):
+            raise ValueError("production Eval approval timestamp is from the future")
+        if len(self.cases) < minimum_case_count:
+            raise ValueError(
+                f"production Eval requires at least {minimum_case_count} distinct cases"
+            )
+        if re.fullmatch(r"[0-9a-f]{64}", expected_catalog_sha256) is None:
+            raise ValueError("production Eval requires the staged catalog SHA-256")
+        if self.bundle.catalog_sha256 != expected_catalog_sha256:
+            raise ValueError("Eval bundle does not match the staged knowledge catalog")
+        if not any(case.risk_level == "safety_critical" for case in self.cases):
+            raise ValueError("production Eval must include safety-critical judgments")
+
+    def governance_payload(
+        self,
+        *,
+        required: bool,
+        minimum_case_count: int,
+        expected_catalog_sha256: str,
+    ) -> dict[str, object]:
+        category_counts: dict[str, int] = {}
+        risk_counts: dict[str, int] = {}
+        judged = 0
+        for case in self.cases:
+            category_counts[case.category] = category_counts.get(case.category, 0) + 1
+            risk_counts[case.risk_level] = risk_counts.get(case.risk_level, 0) + 1
+            judged += bool(case.judgment_reference)
+        bundle = self.bundle
+        eligible = self.release_eligible(
+            minimum_case_count=minimum_case_count,
+            expected_catalog_sha256=expected_catalog_sha256,
+        )
+        return {
+            "required": required,
+            "schemaVersion": bundle.schema_version if bundle is not None else "legacy-array",
+            "datasetId": bundle.dataset_id if bundle is not None else None,
+            "datasetVersion": bundle.dataset_version if bundle is not None else None,
+            "ownerTeam": bundle.owner_team if bundle is not None else None,
+            "approved": bundle is not None and bundle.approval_status == "approved",
+            "approvalReference": bundle.approval_reference if bundle is not None else None,
+            "approvedAt": (
+                bundle.approved_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                if bundle is not None
+                else None
+            ),
+            "reviewerCount": bundle.reviewer_count if bundle is not None else 0,
+            "catalogSha256": bundle.catalog_sha256 if bundle is not None else None,
+            "catalogMatchVerified": (
+                bundle is not None
+                and bool(re.fullmatch(r"[0-9a-f]{64}", expected_catalog_sha256))
+                and bundle.catalog_sha256 == expected_catalog_sha256
+            ),
+            "caseCount": len(self.cases),
+            "minimumCaseCount": minimum_case_count,
+            "categoryCounts": dict(sorted(category_counts.items())),
+            "riskLevelCounts": dict(sorted(risk_counts.items())),
+            "judgmentCoverage": round(judged / len(self.cases), 6),
+            "releaseEligible": eligible,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class RagEvalFailure:
     case_id: str
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class RagEvalObservation:
+    case_id: str
+    category: str
+    risk_level: str
+    passed: bool
+    retrieval_case: bool
+    retrieved_expected: int
+    expected_documents: int
+    reciprocal_rank: float
+    relevant_citations: int
+    observed_citations: int
+    citation_integrity_passed: bool
+    dynamic_case: bool
+    dynamic_blocked: bool
+    latency_ms: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +247,7 @@ class RagEvalReport:
     citation_integrity_passed: int
     latencies_ms: tuple[float, ...]
     failures: tuple[RagEvalFailure, ...]
+    observations: tuple[RagEvalObservation, ...]
 
     @property
     def recall(self) -> float:
@@ -137,7 +323,69 @@ class RagEvalReport:
             "failures": [
                 {"caseId": failure.case_id, "reason": failure.reason} for failure in self.failures
             ],
+            "slices": {
+                "category": self._slice_metrics("category"),
+                "riskLevel": self._slice_metrics("risk_level"),
+            },
         }
+
+    def _slice_metrics(self, dimension: Literal["category", "risk_level"]) -> dict[str, object]:
+        grouped: dict[str, list[RagEvalObservation]] = {}
+        for observation in self.observations:
+            key = getattr(observation, dimension)
+            grouped.setdefault(key, []).append(observation)
+        return {
+            key: _observation_metrics(tuple(observations))
+            for key, observations in sorted(grouped.items())
+        }
+
+
+def _observation_metrics(observations: Sequence[RagEvalObservation]) -> dict[str, object]:
+    retrieval = tuple(item for item in observations if item.retrieval_case)
+    dynamic = tuple(item for item in observations if item.dynamic_case)
+    expected_documents = sum(item.expected_documents for item in retrieval)
+    observed_citations = sum(item.observed_citations for item in retrieval)
+    latencies = sorted(item.latency_ms for item in observations)
+    p95 = latencies[max(0, math.ceil(len(latencies) * 0.95) - 1)] if latencies else 0.0
+    return {
+        "total": len(observations),
+        "passed": sum(item.passed for item in observations),
+        "retrievalCases": len(retrieval),
+        "recall": round(
+            sum(item.retrieved_expected for item in retrieval) / expected_documents
+            if expected_documents
+            else 1.0,
+            6,
+        ),
+        "meanReciprocalRank": round(
+            sum(item.reciprocal_rank for item in retrieval) / len(retrieval) if retrieval else 1.0,
+            6,
+        ),
+        "citationPrecision": round(
+            sum(item.relevant_citations for item in retrieval) / observed_citations
+            if observed_citations
+            else 1.0,
+            6,
+        ),
+        "citationIntegrityRate": round(
+            sum(item.citation_integrity_passed for item in retrieval) / len(retrieval)
+            if retrieval
+            else 1.0,
+            6,
+        ),
+        "dynamicCases": len(dynamic),
+        "dynamicBlockRate": round(
+            sum(item.dynamic_blocked for item in dynamic) / len(dynamic) if dynamic else 1.0,
+            6,
+        ),
+        "meanLatencyMs": round(
+            sum(item.latency_ms for item in observations) / len(observations)
+            if observations
+            else 0.0,
+            3,
+        ),
+        "p95LatencyMs": round(p95, 3),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +537,7 @@ async def evaluate_rag(
     observed_citations = 0
     citation_integrity_passed = 0
     latencies_ms: list[float] = []
+    observations: list[RagEvalObservation] = []
     passed = 0
     for case in cases:
         started_at = time.perf_counter()
@@ -299,14 +548,34 @@ async def evaluate_rag(
             moment=observed_at,
             experiment_key=case.case_id,
         )
-        latencies_ms.append((time.perf_counter() - started_at) * 1000)
+        latency_ms = (time.perf_counter() - started_at) * 1000
+        latencies_ms.append(latency_ms)
         if case.must_block_as_dynamic:
             dynamic_cases += 1
-            if bundle.outcome == "dynamic_blocked" and not bundle.citations:
+            blocked = bundle.outcome == "dynamic_blocked" and not bundle.citations
+            if blocked:
                 dynamic_blocked += 1
                 passed += 1
             else:
                 failures.append(RagEvalFailure(case.case_id, "dynamic query was not blocked"))
+            observations.append(
+                RagEvalObservation(
+                    case_id=case.case_id,
+                    category=case.category,
+                    risk_level=case.risk_level,
+                    passed=blocked,
+                    retrieval_case=False,
+                    retrieved_expected=0,
+                    expected_documents=0,
+                    reciprocal_rank=0.0,
+                    relevant_citations=0,
+                    observed_citations=0,
+                    citation_integrity_passed=True,
+                    dynamic_case=True,
+                    dynamic_blocked=blocked,
+                    latency_ms=latency_ms,
+                )
+            )
             continue
         retrieval_cases += 1
         expected = set(case.expected_document_ids)
@@ -317,9 +586,11 @@ async def evaluate_rag(
         expected_documents += len(expected)
         relevant_citations += matches
         observed_citations += len(observed_order)
+        reciprocal_rank = 0.0
         for rank, document_id in enumerate(observed_order, start=1):
             if document_id in expected:
-                reciprocal_rank_sum += 1 / rank
+                reciprocal_rank = 1 / rank
+                reciprocal_rank_sum += reciprocal_rank
                 break
         expected_citation_ids = [f"K{index}" for index in range(1, len(bundle.citations) + 1)]
         citation_ids = [citation.citation_id for citation in bundle.citations]
@@ -347,6 +618,24 @@ async def evaluate_rag(
             passed += 1
         else:
             failures.append(RagEvalFailure(case.case_id, "; ".join(reasons)))
+        observations.append(
+            RagEvalObservation(
+                case_id=case.case_id,
+                category=case.category,
+                risk_level=case.risk_level,
+                passed=not reasons,
+                retrieval_case=True,
+                retrieved_expected=matches,
+                expected_documents=len(expected),
+                reciprocal_rank=reciprocal_rank,
+                relevant_citations=matches,
+                observed_citations=len(observed_order),
+                citation_integrity_passed=integrity_ok,
+                dynamic_case=False,
+                dynamic_blocked=False,
+                latency_ms=latency_ms,
+            )
+        )
     return RagEvalReport(
         total=len(cases),
         passed=passed,
@@ -361,15 +650,118 @@ async def evaluate_rag(
         citation_integrity_passed=citation_integrity_passed,
         latencies_ms=tuple(latencies_ms),
         failures=tuple(failures),
+        observations=tuple(observations),
     )
 
 
-def load_eval_cases(path: str | Path) -> tuple[RagEvalCase, ...]:
+def load_eval_asset(path: str | Path) -> RagEvalAsset:
     eval_path = Path(path).resolve()
+    if not eval_path.is_file() or eval_path.stat().st_size > 32 * 1024 * 1024:
+        raise ValueError("RAG evaluation set must be a bounded JSON file")
     try:
         raw = json.loads(eval_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("RAG evaluation set is not valid UTF-8 JSON") from exc
-    if not isinstance(raw, list) or not 1 <= len(raw) <= 10_000:
-        raise ValueError("RAG evaluation set must be a bounded nonempty JSON array")
-    return tuple(RagEvalCase.model_validate(item) for item in raw)
+    if isinstance(raw, list):
+        if not 1 <= len(raw) <= 10_000:
+            raise ValueError("RAG evaluation set must be bounded and nonempty")
+        cases = tuple(RagEvalCase.model_validate(item) for item in raw)
+        if len({case.category for case in cases}) > 100:
+            raise ValueError("RAG evaluation set is limited to 100 categories")
+        return RagEvalAsset(cases=cases)
+    if not isinstance(raw, dict):
+        raise ValueError("RAG evaluation set must be a legacy array or versioned bundle")
+    bundle = RagEvalBundle.model_validate(raw)
+    return RagEvalAsset(cases=bundle.cases, bundle=bundle)
+
+
+def load_eval_cases(path: str | Path) -> tuple[RagEvalCase, ...]:
+    """Compatibility loader for local fixture callers."""
+
+    return load_eval_asset(path).cases
+
+
+def validate_release_eval_governance(
+    payload: object,
+    *,
+    minimum_case_count: int = 100,
+    now: datetime | None = None,
+) -> None:
+    """Validate the compact governance evidence embedded in an acceptance report."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("acceptance report lacks Eval governance evidence")
+
+    def integer(key: str) -> int:
+        value = payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"Eval governance {key} is invalid")
+        return value
+
+    case_count = integer("caseCount")
+    declared_minimum = integer("minimumCaseCount")
+    reviewer_count = integer("reviewerCount")
+    dataset_id = payload.get("datasetId")
+    dataset_version = payload.get("datasetVersion")
+    owner_team = payload.get("ownerTeam")
+    approval_reference = payload.get("approvalReference")
+    catalog_sha256 = payload.get("catalogSha256")
+    if (
+        payload.get("required") is not True
+        or payload.get("schemaVersion") != "damai.rag.eval/v1"
+        or payload.get("approved") is not True
+        or payload.get("catalogMatchVerified") is not True
+        or payload.get("releaseEligible") is not True
+        or case_count < max(minimum_case_count, declared_minimum)
+        or not 100 <= declared_minimum <= 10_000
+        or not 2 <= reviewer_count <= 20
+        or not all(
+            isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value)
+            for value in (dataset_id, dataset_version, owner_team)
+        )
+        or not isinstance(approval_reference, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/#-]{0,255}", approval_reference) is None
+        or not isinstance(catalog_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", catalog_sha256) is None
+        or payload.get("judgmentCoverage") != 1.0
+    ):
+        raise ValueError("acceptance report Eval governance evidence is invalid")
+
+    category_counts = payload.get("categoryCounts")
+    risk_counts = payload.get("riskLevelCounts")
+    if not isinstance(category_counts, dict) or not 1 <= len(category_counts) <= 100:
+        raise ValueError("acceptance report Eval category evidence is invalid")
+    if not isinstance(risk_counts, dict):
+        raise ValueError("acceptance report Eval risk evidence is invalid")
+
+    def valid_counts(counts: object) -> bool:
+        return isinstance(counts, dict) and all(
+            isinstance(key, str)
+            and bool(key)
+            and not isinstance(value, bool)
+            and isinstance(value, int)
+            and value > 0
+            for key, value in counts.items()
+        )
+
+    if (
+        not valid_counts(category_counts)
+        or not valid_counts(risk_counts)
+        or "unspecified" in category_counts
+        or set(risk_counts) - {"standard", "safety_critical"}
+        or risk_counts.get("safety_critical", 0) < 1
+        or sum(category_counts.values()) != case_count
+        or sum(risk_counts.values()) != case_count
+    ):
+        raise ValueError("acceptance report Eval slice evidence is invalid")
+
+    approved_at = payload.get("approvedAt")
+    if not isinstance(approved_at, str):
+        raise ValueError("acceptance report Eval approval timestamp is invalid")
+    try:
+        approval_time = datetime.fromisoformat(approved_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("acceptance report Eval approval timestamp is invalid") from exc
+    current = now or datetime.now(timezone.utc)
+    if approval_time.tzinfo is None or approval_time > current:
+        raise ValueError("acceptance report Eval approval timestamp is invalid")

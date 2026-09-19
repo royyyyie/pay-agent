@@ -22,9 +22,29 @@ class RagReleaseGateTest(unittest.TestCase):
             "generatedAt": observed_at,
             "costAttestedAt": observed_at,
             "targetIndex": index_name,
+            "indexVersion": f"knowledge@sha256:{'d' * 16}",
             "retrievalProfile": "semantic_hybrid",
             "evalSetSha256": "a" * 64,
             "benchmarkReportSha256": "b" * 64,
+            "evalGovernance": {
+                "required": True,
+                "schemaVersion": "damai.rag.eval/v1",
+                "datasetId": "knowledge-production",
+                "datasetVersion": "2026.09.19",
+                "ownerTeam": "search-quality",
+                "approved": True,
+                "approvalReference": "change:CHG-20260919-001",
+                "approvedAt": observed_at,
+                "reviewerCount": 2,
+                "catalogSha256": "d" * 64,
+                "catalogMatchVerified": True,
+                "caseCount": 100,
+                "minimumCaseCount": 100,
+                "categoryCounts": {"policy": 80, "dynamic": 20},
+                "riskLevelCounts": {"standard": 80, "safety_critical": 20},
+                "judgmentCoverage": 1.0,
+                "releaseEligible": True,
+            },
             "benchmarkConfiguration": {
                 "backend": "elasticsearch",
                 "topK": 4,
@@ -56,6 +76,64 @@ class RagReleaseGateTest(unittest.TestCase):
                 "p95LatencyMs": 500,
                 "maxP95LatencyMs": 800,
                 "failures": [],
+                "slices": {
+                    "category": {
+                        "policy": {
+                            "total": 80,
+                            "passed": 80,
+                            "retrievalCases": 80,
+                            "dynamicCases": 0,
+                            "recall": 1.0,
+                            "meanReciprocalRank": 1.0,
+                            "citationPrecision": 1.0,
+                            "citationIntegrityRate": 1.0,
+                            "dynamicBlockRate": 1.0,
+                            "meanLatencyMs": 200.0,
+                            "p95LatencyMs": 300.0,
+                        },
+                        "dynamic": {
+                            "total": 20,
+                            "passed": 20,
+                            "retrievalCases": 0,
+                            "dynamicCases": 20,
+                            "recall": 1.0,
+                            "meanReciprocalRank": 1.0,
+                            "citationPrecision": 1.0,
+                            "citationIntegrityRate": 1.0,
+                            "dynamicBlockRate": 1.0,
+                            "meanLatencyMs": 1.0,
+                            "p95LatencyMs": 2.0,
+                        },
+                    },
+                    "riskLevel": {
+                        "standard": {
+                            "total": 80,
+                            "passed": 80,
+                            "retrievalCases": 64,
+                            "dynamicCases": 16,
+                            "recall": 1.0,
+                            "meanReciprocalRank": 1.0,
+                            "citationPrecision": 1.0,
+                            "citationIntegrityRate": 1.0,
+                            "dynamicBlockRate": 1.0,
+                            "meanLatencyMs": 150.0,
+                            "p95LatencyMs": 300.0,
+                        },
+                        "safety_critical": {
+                            "total": 20,
+                            "passed": 20,
+                            "retrievalCases": 16,
+                            "dynamicCases": 4,
+                            "recall": 1.0,
+                            "meanReciprocalRank": 1.0,
+                            "citationPrecision": 1.0,
+                            "citationIntegrityRate": 1.0,
+                            "dynamicBlockRate": 1.0,
+                            "meanLatencyMs": 150.0,
+                            "p95LatencyMs": 300.0,
+                        },
+                    },
+                },
             },
             "load": {
                 "passed": True,
@@ -125,6 +203,40 @@ class RagReleaseGateTest(unittest.TestCase):
                 path = Path(directory) / "acceptance.json"
                 path.write_text(json.dumps(report), encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "benchmark evidence"):
+                    verify_acceptance_report(
+                        SimpleNamespace(acceptance_report=path, max_report_age_hours=72),
+                        index_name,
+                    )
+
+    def test_promotion_rejects_fixture_or_incomplete_eval_governance(self) -> None:
+        index_name = "damai-knowledge-read-v-semantic-001"
+        for mutation in (
+            "legacy",
+            "too-small",
+            "missing-safety",
+            "index-version",
+            "incomplete-slices",
+        ):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                report = self.report(index_name)
+                governance = report["evalGovernance"]
+                assert isinstance(governance, dict)
+                if mutation == "legacy":
+                    governance["schemaVersion"] = "legacy-array"
+                    governance["approved"] = False
+                elif mutation == "too-small":
+                    governance["caseCount"] = 5
+                elif mutation == "missing-safety":
+                    governance["riskLevelCounts"] = {"standard": 100}
+                elif mutation == "index-version":
+                    report["indexVersion"] = "knowledge@sha256:eeeeeeeeeeeeeeee"
+                else:
+                    quality = report["quality"]
+                    assert isinstance(quality, dict)
+                    quality["slices"] = {}
+                path = Path(directory) / "acceptance.json"
+                path.write_text(json.dumps(report), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Eval|approved catalog"):
                     verify_acceptance_report(
                         SimpleNamespace(acceptance_report=path, max_report_age_hours=72),
                         index_name,

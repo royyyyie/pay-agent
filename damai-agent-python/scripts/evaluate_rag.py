@@ -19,7 +19,7 @@ from damai_agent.rag import (
     StableKnowledgeRag,
     load_knowledge_catalog,
 )
-from damai_agent.rag_eval import benchmark_rag, evaluate_rag, load_eval_cases
+from damai_agent.rag_eval import benchmark_rag, evaluate_rag, load_eval_asset
 
 _COST_EVIDENCE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}")
 _FIELD_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
@@ -32,6 +32,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backend", choices=("local", "elasticsearch"), default="local")
     parser.add_argument("--catalog")
     parser.add_argument("--eval-set", required=True)
+    parser.add_argument(
+        "--catalog-sha256",
+        default=os.environ.get("DAMAI_EVAL_CATALOG_SHA256", ""),
+        help="Canonical catalog digest from the stage receipt.",
+    )
+    parser.add_argument("--min-eval-cases", type=int, default=100)
+    parser.add_argument(
+        "--require-approved-eval",
+        action="store_true",
+        help="Fail before remote calls unless the production Eval bundle is release eligible.",
+    )
     parser.add_argument("--source-host", action="append", required=True)
     parser.add_argument("--top-k", type=int, default=4)
     parser.add_argument("--candidate-k", type=int, default=12)
@@ -247,6 +258,16 @@ def load_semantic_evidence(
 
 async def evaluate() -> int:
     args = parse_args()
+    if not 100 <= args.min_eval_cases <= 10_000:
+        raise ValueError("production Eval minimum must be between 100 and 10000 cases")
+    if args.catalog_sha256 and re.fullmatch(r"[0-9a-f]{64}", args.catalog_sha256) is None:
+        raise ValueError("--catalog-sha256 must be a lowercase SHA-256 digest")
+    eval_asset = load_eval_asset(args.eval_set)
+    if args.require_approved_eval and args.backend == "elasticsearch":
+        eval_asset.require_release_eligible(
+            minimum_case_count=args.min_eval_cases,
+            expected_catalog_sha256=args.catalog_sha256,
+        )
     if not 10 <= args.rank_window_size <= 200:
         raise ValueError("Elasticsearch rank window must be between 10 and 200")
     if args.rank_window_size < max(args.top_k, args.candidate_k):
@@ -255,12 +276,14 @@ async def evaluate() -> int:
     target_index = "local"
     semantic_configuration: dict[str, object] = {}
     semantic_evidence: dict[str, object] = {"source": "not_required"}
+    catalog_sha256 = args.catalog_sha256
     if args.backend == "local":
         if args.semantic_evidence_report is not None:
             raise ValueError("semantic evidence is only valid for Elasticsearch")
         if not args.catalog:
             raise ValueError("--catalog is required for the local backend")
         index = load_knowledge_catalog(args.catalog, allowed_source_hosts=tuple(args.source_host))
+        catalog_sha256 = index.content_sha256
     else:
         api_key = os.environ.get("DAMAI_EVAL_ELASTICSEARCH_API_KEY", "")
         target_index = args.index_name or args.index_alias
@@ -268,6 +291,8 @@ async def evaluate() -> int:
             raise ValueError("Elasticsearch Eval environment is incomplete")
         if args.retrieval_profile != "lexical" and not args.index_name:
             raise ValueError("semantic acceptance must target an exact staged --index-name")
+        if catalog_sha256 and args.index_version != f"knowledge@sha256:{catalog_sha256[:16]}":
+            raise ValueError("staged index version does not match --catalog-sha256")
         profile = cast(
             RetrievalProfile,
             args.retrieval_profile.replace("_", "-")
@@ -330,7 +355,18 @@ async def evaluate() -> int:
         candidate_k=args.candidate_k,
         rerank_rollout_percent=100 if args.rerank else 0,
     )
-    cases = load_eval_cases(args.eval_set)
+    requires_release_eval = args.backend == "elasticsearch" and args.retrieval_profile != "lexical"
+    if args.require_approved_eval and args.backend == "local":
+        eval_asset.require_release_eligible(
+            minimum_case_count=args.min_eval_cases,
+            expected_catalog_sha256=catalog_sha256,
+        )
+    eval_governance = eval_asset.governance_payload(
+        required=requires_release_eval,
+        minimum_case_count=args.min_eval_cases,
+        expected_catalog_sha256=catalog_sha256,
+    )
+    cases = eval_asset.cases
     quality = await evaluate_rag(rag, cases)
     quality_passed = quality.meets_thresholds(
         min_recall=args.min_recall,
@@ -420,6 +456,7 @@ async def evaluate() -> int:
         else index.index_version,
         "retrievalProfile": args.retrieval_profile,
         "evalSetSha256": eval_set_sha256,
+        "evalGovernance": eval_governance,
         "benchmarkConfiguration": {
             "backend": args.backend,
             "topK": args.top_k,
@@ -435,7 +472,12 @@ async def evaluate() -> int:
         "quality": quality_payload,
         "load": load_payload,
         "cost": cost_payload,
-        "passed": quality_passed and load_passed and cost_passed,
+        "passed": (
+            quality_passed
+            and load_passed
+            and cost_passed
+            and (not requires_release_eval or eval_governance["releaseEligible"] is True)
+        ),
     }
     print(json.dumps(acceptance, ensure_ascii=False, indent=2))
     if args.report_out is not None:

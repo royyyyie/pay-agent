@@ -317,6 +317,8 @@ class KnowledgeValidationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "source host"):
                 load_knowledge_catalog(path, allowed_source_hosts=("other.example.com",))
         self.assertRegex(index.index_version, r"^knowledge@sha256:[0-9a-f]{16}$")
+        self.assertRegex(index.content_sha256, r"^[0-9a-f]{64}$")
+        self.assertEqual(index.index_version, f"knowledge@sha256:{index.content_sha256[:16]}")
 
 
 class RagRunnerTest(unittest.IsolatedAsyncioTestCase):
@@ -441,12 +443,15 @@ class RagOfflineEvalTest(unittest.IsolatedAsyncioTestCase):
                     expected_document_ids=("identity-policy",),
                     expected_top_document_id="identity-policy",
                     forbidden_document_ids=("tenant-b",),
+                    category="identity",
+                    risk_level="safety_critical",
                 ),
                 RagEvalCase(
                     case_id="dynamic-price",
                     query="现在票价多少钱",
                     tenant_id="tenant-a",
                     must_block_as_dynamic=True,
+                    category="dynamic",
                 ),
             ),
             moment=NOW,
@@ -456,6 +461,11 @@ class RagOfflineEvalTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report.mean_reciprocal_rank, 1.0)
         self.assertEqual(report.citation_integrity_rate, 1.0)
         self.assertEqual(report.dynamic_block_rate, 1.0)
+        slices = report.to_dict()["slices"]
+        self.assertIsInstance(slices, dict)
+        assert isinstance(slices, dict)
+        self.assertEqual(slices["category"]["identity"]["recall"], 1.0)
+        self.assertEqual(slices["riskLevel"]["safety_critical"]["passed"], 1)
 
     async def test_benchmark_counts_only_real_retrieval_requests(self) -> None:
         rag = StableKnowledgeRag(InMemoryKnowledgeIndex((document(),)))

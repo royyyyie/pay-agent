@@ -1,0 +1,39 @@
+{
+  "schema_version": "damai.rag.eval/v1",
+  "dataset_id": "knowledge-production",
+  "dataset_version": "2026.09.19-001",
+  "catalog_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "owner_team": "search-quality",
+  "approval_status": "draft",
+  "approval_reference": "change:replace-before-approval",
+  "approved_at": "2026-09-19T00:00:00Z",
+  "reviewer_count": 2,
+  "cases": [
+    {
+      "case_id": "identity-policy-001",
+      "query": "实名制购票需要什么证件",
+      "tenant_id": "tenant-a",
+      "locale": "zh-CN",
+      "expected_document_ids": [
+        "identity-policy"
+      ],
+      "expected_top_document_id": "identity-policy",
+      "forbidden_document_ids": [
+        "tenant-b-identity"
+      ],
+      "category": "identity",
+      "risk_level": "safety_critical",
+      "judgment_reference": "label:identity-policy-001"
+    },
+    {
+      "case_id": "inventory-dynamic-001",
+      "query": "现在还有余票吗",
+      "tenant_id": "tenant-a",
+      "locale": "zh-CN",
+      "must_block_as_dynamic": true,
+      "category": "dynamic-fact",
+      "risk_level": "safety_critical",
+      "judgment_reference": "label:inventory-dynamic-001"
+    }
+  ]
+}

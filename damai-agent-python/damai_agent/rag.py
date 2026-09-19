@@ -378,13 +378,18 @@ class InMemoryKnowledgeIndex:
             sort_keys=True,
             separators=(",", ":"),
         )
-        self._index_version = (
-            f"knowledge@sha256:{hashlib.sha256(canonical.encode()).hexdigest()[:16]}"
-        )
+        self._content_sha256 = hashlib.sha256(canonical.encode()).hexdigest()
+        self._index_version = f"knowledge@sha256:{self._content_sha256[:16]}"
 
     @property
     def index_version(self) -> str:
         return self._index_version
+
+    @property
+    def content_sha256(self) -> str:
+        """Canonical catalog digest used to bind Eval judgments to a release."""
+
+        return self._content_sha256
 
     @property
     def profile(self) -> RetrievalProfile:

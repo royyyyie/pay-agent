@@ -17,6 +17,7 @@ from damai_agent.knowledge_publish import (
     configure_semantic_mapping,
 )
 from damai_agent.rag import InMemoryKnowledgeIndex, load_knowledge_catalog
+from damai_agent.rag_eval import validate_release_eval_governance
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MAPPING = PROJECT_ROOT / "docs" / "elasticsearch-knowledge-index.json"
@@ -184,6 +185,13 @@ def verify_acceptance_report(args: argparse.Namespace, index_name: str) -> str:
         or _SHA256_PATTERN.fullmatch(benchmark_hash) is None
     ):
         raise ValueError("acceptance report evidence hashes are invalid")
+    eval_governance = report.get("evalGovernance")
+    validate_release_eval_governance(eval_governance)
+    assert isinstance(eval_governance, dict)
+    catalog_sha256 = eval_governance.get("catalogSha256")
+    assert isinstance(catalog_sha256, str)
+    if report.get("indexVersion") != f"knowledge@sha256:{catalog_sha256[:16]}":
+        raise ValueError("acceptance report index version does not match the approved catalog")
 
     quality = report.get("quality")
     load = report.get("load")
@@ -193,6 +201,62 @@ def verify_acceptance_report(args: argparse.Namespace, index_name: str) -> str:
     assert isinstance(quality, dict)
     assert isinstance(load, dict)
     assert isinstance(cost, dict)
+
+    slices = quality.get("slices")
+    if not isinstance(slices, dict):
+        raise ValueError("acceptance report lacks Eval slice metrics")
+    for dimension, counts_key in (
+        ("category", "categoryCounts"),
+        ("riskLevel", "riskLevelCounts"),
+    ):
+        dimension_metrics = slices.get(dimension)
+        expected_counts = eval_governance.get(counts_key)
+        if (
+            not isinstance(dimension_metrics, dict)
+            or not isinstance(expected_counts, dict)
+            or set(dimension_metrics) != set(expected_counts)
+        ):
+            raise ValueError("acceptance report Eval slice metrics are incomplete")
+        for name, expected_count in expected_counts.items():
+            metrics = dimension_metrics.get(name)
+            if not isinstance(metrics, dict):
+                raise ValueError("acceptance report Eval slice metrics failed verification")
+            retrieval_cases = metrics.get("retrievalCases")
+            dynamic_cases = metrics.get("dynamicCases")
+            bounded_rates = (
+                metrics.get("recall"),
+                metrics.get("meanReciprocalRank"),
+                metrics.get("citationPrecision"),
+                metrics.get("citationIntegrityRate"),
+                metrics.get("dynamicBlockRate"),
+            )
+            latencies = (metrics.get("meanLatencyMs"), metrics.get("p95LatencyMs"))
+            if (
+                metrics.get("total") != expected_count
+                or metrics.get("passed") != expected_count
+                or isinstance(retrieval_cases, bool)
+                or not isinstance(retrieval_cases, int)
+                or isinstance(dynamic_cases, bool)
+                or not isinstance(dynamic_cases, int)
+                or retrieval_cases < 0
+                or dynamic_cases < 0
+                or retrieval_cases + dynamic_cases != expected_count
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or not 0 <= float(value) <= 1
+                    for value in bounded_rates
+                )
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or float(value) < 0
+                    for value in latencies
+                )
+            ):
+                raise ValueError("acceptance report Eval slice metrics failed verification")
 
     def number(section: dict[str, object], key: str) -> float:
         value = section.get(key)
@@ -300,6 +364,7 @@ def main() -> int:
                     "valid": True,
                     "documentCount": len(release.documents),
                     "contentVersion": release.index_version,
+                    "catalogSha256": release.content_sha256,
                 },
                 ensure_ascii=False,
             )
@@ -363,6 +428,7 @@ def main() -> int:
                     "index": receipt.index_name,
                     "alias": receipt.alias,
                     "documentCount": receipt.document_count,
+                    "catalogSha256": release.content_sha256,
                     "previousIndices": receipt.previous_indices,
                     "semanticInferenceId": semantic_inference_id,
                     "semanticSearchInferenceId": receipt.search_inference_id,

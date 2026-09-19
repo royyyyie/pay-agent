@@ -8,6 +8,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from damai_agent.rag_eval import validate_release_eval_governance
 from scripts.evaluate_rag import bounded_cost_evidence, usd_to_micro, write_report
 
 
@@ -43,6 +44,7 @@ def main() -> int:
         or report.get("retrievalProfile") not in {"semantic_hybrid", "semantic_rerank"}
     ):
         raise ValueError("benchmark report schema or profile is invalid")
+    validate_release_eval_governance(report.get("evalGovernance"))
     quality = report.get("quality")
     load = report.get("load")
     if (

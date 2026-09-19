@@ -25,7 +25,7 @@ uv run --frozen python scripts/manage_knowledge_index.py validate `
   --source-host venue.example.com
 ```
 
-3. 记录输出的 `contentVersion`，完成双人审批并生成不可变小写索引名，例如 `damai-knowledge-read-v-20260919-001`。
+3. 记录输出的 `contentVersion` 和完整 `catalogSha256`，完成双人审批并生成不可变小写索引名，例如 `damai-knowledge-read-v-20260919-001`。后续 Eval 数据集必须声明同一个 `catalogSha256`，索引版本必须等于 `knowledge@sha256:<目录哈希前 16 位>`。
 4. 词法索引使用默认 Mapping；高级语义 RAG 使用 `docs/elasticsearch-knowledge-index-semantic.json`。语义 Mapping 显式固定中文 Embedding endpoint 和 `sentence/200/overlap=1` 分块策略。修改端点、分块或向量索引参数均等同于新模型发布，必须创建新索引并重新评测。
 5. 在受保护的发布环境中设置凭据并暂存索引。`--confirm-index` 必须与 `--index` 完全一致。`stage` 只创建具体索引，不会切换线上别名：
 
@@ -56,7 +56,9 @@ Bulk 按 500 文档/5 MiB 双上限自动分批，最后一批等待刷新。发
 
 运行时使用有上限的异步连接池复用 Elasticsearch HTTPS 连接，并在关闭应用时释放连接。负载验收按 1、2、4 直至目标并发阶梯预热连接，预热请求不计入正式指标。客户端不继承系统环境代理，避免认证头未经部署配置流经非预期代理；必须使用企业代理时，应先在部署网络层显式配置、审计并单独验收。
 
-6. 使用只读 Eval Key 对“具体索引”而非活动别名执行质量和负载验收。语义查询会调用 Inference API，因此最小权限为目标具体索引的 `read` 和集群级 `monitor_inference`；直接读取 Mapping 时还需要 `view_index_metadata`。如果发布/上一轮验收已经留下 72 小时内、目标索引和内容版本完全一致的报告，可以通过 `--semantic-evidence-report` 复用其中的 Mapping 证据。新报告会记录旧报告 SHA-256，不要求 Eval Key 获得 `view_index_metadata`，但仍强制要求 `monitor_inference`。至少 30 个实测请求；正式集合应远大于该下限：
+6. 使用只读 Eval Key 对“具体索引”而非活动别名执行质量和负载验收。语义查询会调用 Inference API，因此最小权限为目标具体索引的 `read` 和集群级 `monitor_inference`；直接读取 Mapping 时还需要 `view_index_metadata`。如果发布/上一轮验收已经留下 72 小时内、目标索引和内容版本完全一致的报告，可以通过 `--semantic-evidence-report` 复用其中的 Mapping 证据。新报告会记录旧报告 SHA-256，不要求 Eval Key 获得 `view_index_metadata`，但仍强制要求 `monitor_inference`。
+
+生产验收使用版本化 `damai.rag.eval/v1` Bundle，而不是普通 JSON 数组。Bundle 至少包含 100 条互不重复的业务判断、检索与动态事实阻断两类用例、风险等级、分类、逐条人工判断引用、知识目录完整 SHA-256、责任团队、双人复核数量和变更审批引用；至少一条必须为 `safety_critical`。结构可从 [Eval Bundle 示例](rag-eval-bundle.example.json)复制，先替换目录哈希和业务案例，再由审批流程把 `approval_status` 改为 `approved`。旧数组仍可用于本地冒烟和性能诊断，但报告会标记为不具备发布资格，不能附加费用签证或执行 `promote`。
 
 ```json
 {
@@ -74,14 +76,18 @@ Bulk 按 500 文档/5 MiB 双上限自动分批，最后一批等待刷新。发
 $env:DAMAI_EVAL_ELASTICSEARCH_URL = "https://your-deployment.example.com:9243"
 $env:DAMAI_EVAL_ELASTICSEARCH_API_KEY = "<read-only-eval-key>"
 $env:DAMAI_EVAL_ELASTICSEARCH_INDEX = "damai-knowledge-read-v-20260919-001"
-$env:DAMAI_EVAL_ELASTICSEARCH_INDEX_VERSION = "knowledge-2026.09.19-semantic"
+$env:DAMAI_EVAL_ELASTICSEARCH_INDEX_VERSION = "knowledge@sha256:<catalog-sha256前16位>"
+$env:DAMAI_EVAL_CATALOG_SHA256 = "<stage回执中的完整catalogSha256>"
 
 uv run --frozen python scripts/evaluate_rag.py `
   --backend elasticsearch `
   --retrieval-profile semantic_hybrid `
   --index-name damai-knowledge-read-v-20260919-001 `
-  --index-version knowledge-2026.09.19-semantic `
-  --eval-set C:\secure\knowledge-eval.json `
+  --index-version "knowledge@sha256:<catalog-sha256前16位>" `
+  --catalog-sha256 "<stage回执中的完整catalogSha256>" `
+  --eval-set C:\secure\knowledge-eval-bundle.json `
+  --require-approved-eval `
+  --min-eval-cases 100 `
   --source-host help.example.com `
   --semantic-evidence-report C:\secure\previous-rag-benchmark.json `
   --rank-window-size 20 `
@@ -138,7 +144,7 @@ uv run --frozen python scripts/manage_knowledge_index.py promote `
   --acceptance-report C:\secure\rag-acceptance.json
 ```
 
-费用证明报告会记录原始 Benchmark 和账单导出文件的 SHA-256，不复制可能敏感的账单正文。晋级工具校验报告版本、具体索引、语义 Profile、质量/负载/费用结果和 72 小时有效期，并把最终报告 SHA-256 写入回执。通过后保留 stage 回执、原始 Benchmark、账单证据、最终验收报告、审批记录和 promote 回执。
+费用证明报告会记录原始 Benchmark 和账单导出文件的 SHA-256，不复制可能敏感的账单正文。费用签证前会再次校验正式 Eval 资格；晋级工具还会校验报告版本、具体索引、目录哈希与索引版本绑定、分类/风险分层结果、语义 Profile、质量/负载/费用结果和 72 小时有效期，并把最终报告 SHA-256 写入回执。通过后保留 stage 回执、Eval Bundle、原始 Benchmark、账单证据、最终验收报告、审批记录和 promote 回执。
 
 ## 回滚
 

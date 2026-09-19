@@ -177,13 +177,16 @@ DAMAI_AGENT_ELASTICSEARCH_RERANK_INFERENCE_ID=<versioned-rerank-endpoint>
 $env:DAMAI_EVAL_ELASTICSEARCH_URL = "https://your-deployment.example.com:9243"
 $env:DAMAI_EVAL_ELASTICSEARCH_API_KEY = "<read-only-eval-key>"
 $env:DAMAI_EVAL_ELASTICSEARCH_INDEX = "damai-knowledge-read-v-20260919-001"
-$env:DAMAI_EVAL_ELASTICSEARCH_INDEX_VERSION = "knowledge-2026.09.19-semantic"
+$env:DAMAI_EVAL_ELASTICSEARCH_INDEX_VERSION = "knowledge@sha256:<catalog-sha256前16位>"
+$env:DAMAI_EVAL_CATALOG_SHA256 = "<stage回执中的完整catalogSha256>"
 
 python scripts/evaluate_rag.py `
   --backend elasticsearch `
   --retrieval-profile semantic_hybrid `
   --index-name damai-knowledge-read-v-20260919-001 `
-  --eval-set C:\secure\knowledge-eval.json `
+  --catalog-sha256 "<stage回执中的完整catalogSha256>" `
+  --eval-set C:\secure\knowledge-eval-bundle.json `
+  --require-approved-eval --min-eval-cases 100 `
   --source-host help.example.com `
   --semantic-evidence-report C:\secure\previous-rag-benchmark.json `
   --rank-window-size 20 `
@@ -195,6 +198,14 @@ python scripts/evaluate_rag.py `
 ```
 
 费用二次证明与晋级命令见[知识索引发布与回滚](phase-4-knowledge-operations.md)。Elasticsearch Search 响应不提供统一的跨供应商账单金额，因此工具不会把字符数估算伪装成真实费用；最终报告必须引用同一窗口的 Elastic Billing 或推理供应商 Usage 导出。
+
+## 第七批：可审计业务 Eval 资产
+
+- [x] `damai.rag.eval/v1` 固定数据集 ID、版本、责任团队、目录 SHA-256、审批引用、审批时间和复核人数
+- [x] 每条判断记录业务分类、风险等级与人工判断引用，拒绝重复 Case ID、重复查询判断和未分类数据
+- [x] 正式语义验收至少 100 条，覆盖稳定知识检索、动态事实阻断和 `safety_critical`；小型 Fixture 只能用于诊断
+- [x] 报告按业务分类和风险等级分别输出 Recall、MRR、引用精度/完整性、动态阻断率和 P95
+- [x] 费用签证与 `promote` 均复验 Eval 审批、完整判断覆盖、分层结果、目录哈希和索引版本绑定
 
 ### 2026-09-19 Elastic Cloud Serverless 实测
 
