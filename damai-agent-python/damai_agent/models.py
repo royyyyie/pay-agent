@@ -327,6 +327,7 @@ class AgentRunResult:
     had_injections: bool = False
     citations: Tuple[KnowledgeCitation, ...] = ()
     knowledge_version: str = ""
+    knowledge_variant: str = ""
 
     @property
     def answer(self) -> str:

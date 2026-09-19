@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -29,6 +30,17 @@ _CONTEXT_PREFIX = (
     "库存、价格、开售、排队、场次、座位及订单/支付/退款状态必须调用实时工具。\n"
 )
 _CONTEXT_SUFFIX = "</retrieved_knowledge>"
+
+_QUERY_FILLER_PATTERN = re.compile(
+    r"(?:请问|麻烦|帮我|我想(?:知道|了解)|能否|可以|告诉我|介绍一下|说明一下)"
+)
+_QUERY_EXPANSIONS = (
+    (re.compile(r"实名|身份"), "实名 身份 观演人 核验"),
+    (re.compile(r"退票|退款|退换"), "退票 退款 退换票 申请 条件"),
+    (re.compile(r"入场|检票|验票"), "入场 检票 验票 证件"),
+    (re.compile(r"交通|怎么去|路线"), "交通 地铁 公交 路线"),
+    (re.compile(r"儿童|小孩|未成年"), "儿童 小孩 未成年人 购票"),
+)
 
 # Conservative red lines: a mixed question containing any of these concepts must use
 # live Java Tools instead of receiving possibly stale retrieval context.
@@ -141,6 +153,143 @@ class KnowledgeRetriever(Protocol):
         limit: int,
         moment: datetime,
     ) -> Sequence[KnowledgeHit]: ...
+
+
+def plan_chinese_queries(query: str) -> tuple[str, ...]:
+    """Build a bounded set of deterministic lexical channels for Chinese retrieval."""
+
+    normalized = " ".join(query.strip().split())
+    if not normalized:
+        return ()
+    candidates = [normalized]
+    compact = " ".join(_QUERY_FILLER_PATTERN.sub(" ", normalized).split()).strip("，。！？? ")
+    if compact:
+        candidates.append(compact)
+    expansions = [value for pattern, value in _QUERY_EXPANSIONS if pattern.search(normalized)]
+    if expansions:
+        candidates.append(f"{compact or normalized} {' '.join(expansions)}")
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        bounded = candidate[:2000]
+        if bounded and bounded not in seen:
+            unique.append(bounded)
+            seen.add(bounded)
+    return tuple(unique[:3])
+
+
+class ReciprocalRankFusionRetriever:
+    """Fuse bounded Chinese lexical channels without trusting backend score scales."""
+
+    def __init__(self, retriever: KnowledgeRetriever, *, rank_constant: int = 60) -> None:
+        if not 1 <= rank_constant <= 1000:
+            raise ValueError("RRF rank constant must be between 1 and 1000")
+        self._retriever = retriever
+        self._rank_constant = rank_constant
+
+    @property
+    def index_version(self) -> str:
+        return self._retriever.index_version
+
+    async def check_ready(self) -> bool:
+        return await self._retriever.check_ready()
+
+    async def search(
+        self,
+        query: str,
+        *,
+        tenant_id: str,
+        locale: str,
+        limit: int,
+        moment: datetime,
+    ) -> Sequence[KnowledgeHit]:
+        queries = plan_chinese_queries(query)
+        if not queries:
+            return ()
+        channels = await asyncio.gather(
+            *(
+                self._retriever.search(
+                    item,
+                    tenant_id=tenant_id,
+                    locale=locale,
+                    limit=limit,
+                    moment=moment,
+                )
+                for item in queries
+            )
+        )
+        documents: dict[tuple[str, str, str], KnowledgeDocument] = {}
+        scores: dict[tuple[str, str, str], float] = {}
+        maximum = len(channels) / (self._rank_constant + 1)
+        for hits in channels:
+            for rank, hit in enumerate(hits, start=1):
+                identity = (
+                    hit.document.tenant_id,
+                    hit.document.document_id,
+                    hit.document.version,
+                )
+                documents[identity] = hit.document
+                scores[identity] = scores.get(identity, 0.0) + 1 / (self._rank_constant + rank)
+        fused = (
+            KnowledgeHit(document=documents[identity], score=score / maximum)
+            for identity, score in scores.items()
+        )
+        return tuple(
+            sorted(
+                fused,
+                key=lambda hit: (
+                    -hit.score,
+                    hit.document.document_id,
+                    hit.document.version,
+                ),
+            )[:limit]
+        )
+
+
+class DeterministicKnowledgeReranker:
+    """Provider-independent reranker whose features are stable and auditable."""
+
+    @staticmethod
+    def rerank(
+        query: str,
+        hits: Sequence[KnowledgeHit],
+        *,
+        tenant_id: str,
+    ) -> tuple[KnowledgeHit, ...]:
+        query_tokens = set(_tokens(query))
+        normalized_query = "".join(query.lower().split())
+        ranked: list[KnowledgeHit] = []
+        for rank, hit in enumerate(hits, start=1):
+            title_tokens = set(_tokens(hit.document.title))
+            content_tokens = set(_tokens(hit.document.content))
+            denominator = max(len(query_tokens), 1)
+            title_coverage = len(query_tokens & title_tokens) / denominator
+            content_coverage = len(query_tokens & content_tokens) / denominator
+            normalized_title = "".join(hit.document.title.lower().split())
+            normalized_content = "".join(hit.document.content.lower().split())
+            phrase_match = bool(
+                normalized_query
+                and (normalized_query in normalized_title or normalized_query in normalized_content)
+            )
+            score = (
+                0.50 / rank
+                + 0.25 * title_coverage
+                + 0.15 * content_coverage
+                + (0.08 if phrase_match else 0)
+                + (0.02 if hit.document.tenant_id == tenant_id else 0)
+            )
+            ranked.append(KnowledgeHit(hit.document, score))
+        return tuple(
+            sorted(
+                ranked,
+                key=lambda hit: (
+                    -hit.score,
+                    hit.document.document_id,
+                    hit.document.version,
+                ),
+            )
+        )
 
 
 def _tokens(text: str) -> tuple[str, ...]:
@@ -265,6 +414,7 @@ class RagBundle:
     citations: tuple[KnowledgeCitation, ...] = ()
     index_version: str = ""
     outcome: Literal["hit", "miss", "dynamic_blocked"] = "miss"
+    retrieval_variant: Literal["control", "rerank-v1"] = "control"
 
     @property
     def citation_required(self) -> bool:
@@ -294,6 +444,9 @@ class StableKnowledgeRag:
         top_k: int = 4,
         max_context_chars: int = 8_000,
         min_score: float = 0.01,
+        candidate_k: int | None = None,
+        rerank_rollout_percent: int = 0,
+        experiment_salt: str = "",
     ) -> None:
         if not 1 <= top_k <= 10:
             raise ValueError("RAG top_k must be between 1 and 10")
@@ -301,10 +454,21 @@ class StableKnowledgeRag:
             raise ValueError("RAG context limit must be between 512 and 32000")
         if not 0 <= min_score <= 1:
             raise ValueError("RAG minimum score must be between 0 and 1")
+        resolved_candidate_k = candidate_k or top_k
+        if not top_k <= resolved_candidate_k <= 20:
+            raise ValueError("RAG candidate_k must be between top_k and 20")
+        if not 0 <= rerank_rollout_percent <= 100:
+            raise ValueError("RAG rerank rollout must be between 0 and 100")
+        if 0 < rerank_rollout_percent < 100 and len(experiment_salt) < 16:
+            raise ValueError("partial RAG rerank rollout requires a 16-character salt")
         self._retriever = retriever
         self._top_k = top_k
+        self._retrieval_limit = resolved_candidate_k if rerank_rollout_percent > 0 else top_k
         self._max_context_chars = max_context_chars
         self._min_score = min_score
+        self._rerank_rollout_percent = rerank_rollout_percent
+        self._experiment_salt = experiment_salt
+        self._reranker = DeterministicKnowledgeReranker()
 
     @property
     def index_version(self) -> str:
@@ -320,20 +484,29 @@ class StableKnowledgeRag:
         tenant_id: str,
         locale: str,
         moment: datetime | None = None,
+        experiment_key: str = "",
     ) -> RagBundle:
+        variant = self._variant(experiment_key or tenant_id)
         if requires_live_tool(query):
-            return RagBundle(index_version=self.index_version, outcome="dynamic_blocked")
+            return RagBundle(
+                index_version=self.index_version,
+                outcome="dynamic_blocked",
+                retrieval_variant=variant,
+            )
         observed_at = moment or datetime.now(timezone.utc)
         hits = await self._retriever.search(
             query,
             tenant_id=tenant_id,
             locale=locale,
-            limit=self._top_k,
+            limit=self._retrieval_limit,
             moment=observed_at,
         )
         selected = [hit for hit in hits if hit.score >= self._min_score]
+        if variant == "rerank-v1":
+            selected = list(self._reranker.rerank(query, selected, tenant_id=tenant_id))
+        selected = selected[: self._top_k]
         if not selected:
-            return RagBundle(index_version=self.index_version)
+            return RagBundle(index_version=self.index_version, retrieval_variant=variant)
 
         payloads: list[dict[str, str]] = []
         citations: list[KnowledgeCitation] = []
@@ -369,13 +542,24 @@ class StableKnowledgeRag:
                 )
             )
         if not payloads:
-            return RagBundle(index_version=self.index_version)
+            return RagBundle(index_version=self.index_version, retrieval_variant=variant)
         serialized = _serialize_knowledge(payloads)
         context = (
             f'{_CONTEXT_PREFIX}<retrieved_knowledge indexVersion="{self.index_version}">'
             f"{serialized}{_CONTEXT_SUFFIX}"
         )
-        return RagBundle(context, tuple(citations), self.index_version, "hit")
+        return RagBundle(context, tuple(citations), self.index_version, "hit", variant)
+
+    def _variant(self, experiment_key: str) -> Literal["control", "rerank-v1"]:
+        if self._rerank_rollout_percent <= 0:
+            return "control"
+        if self._rerank_rollout_percent >= 100:
+            return "rerank-v1"
+        digest = hashlib.sha256(
+            f"{self._experiment_salt}\0{experiment_key}".encode("utf-8")
+        ).digest()
+        bucket = int.from_bytes(digest[:8], "big") % 100
+        return "rerank-v1" if bucket < self._rerank_rollout_percent else "control"
 
 
 def load_knowledge_catalog(

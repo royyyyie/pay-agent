@@ -45,6 +45,16 @@ def extract_max_price(user_text: str) -> Decimal | None:
     return min(candidates) if candidates else None
 
 
+def parse_price(value: object) -> Decimal | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return parsed if Decimal("0") <= parsed <= _MAX_PRICE and parsed.is_finite() else None
+
+
 def is_recommendation_query(user_text: str) -> bool:
     return _RECOMMENDATION_PATTERN.search(user_text) is not None
 
@@ -107,7 +117,7 @@ class RecommendationConstraintGuard:
                 call_changed = True
                 applied_types.add("liveInventoryRoute")
             if self.max_price is not None:
-                existing = self._price(arguments.get("maxPrice"))
+                existing = parse_price(arguments.get("maxPrice"))
                 enforced = self.max_price if existing is None else min(existing, self.max_price)
                 if existing != enforced:
                     arguments["maxPrice"] = float(enforced)
@@ -126,13 +136,3 @@ class RecommendationConstraintGuard:
             changed_calls=changed_calls,
             applied_types=tuple(sorted(applied_types)),
         )
-
-    @staticmethod
-    def _price(value: object) -> Decimal | None:
-        if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
-            return None
-        try:
-            parsed = Decimal(str(value))
-        except InvalidOperation:
-            return None
-        return parsed if Decimal("0") <= parsed <= _MAX_PRICE and parsed.is_finite() else None

@@ -224,14 +224,21 @@ class SettingsTest(unittest.TestCase):
                 "DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH": "config/knowledge.json",
                 "DAMAI_AGENT_KNOWLEDGE_SOURCE_HOSTS": "help.example.com, venue.example.com",
                 "DAMAI_AGENT_RAG_TOP_K": "3",
+                "DAMAI_AGENT_RAG_CANDIDATE_K": "9",
                 "DAMAI_AGENT_RAG_MAX_CONTEXT_CHARS": "4096",
                 "DAMAI_AGENT_RAG_MIN_SCORE": "0.05",
+                "DAMAI_AGENT_RAG_HYBRID_ENABLED": "true",
+                "DAMAI_AGENT_RAG_RERANK_ROLLOUT_PERCENT": "25",
+                "DAMAI_AGENT_RAG_EXPERIMENT_SALT": "stable-config-salt",
             }
         )
         self.assertTrue(settings.rag_enabled)
         self.assertEqual(settings.knowledge_catalog_path, "config/knowledge.json")
         self.assertEqual(settings.knowledge_source_hosts, ("help.example.com", "venue.example.com"))
         self.assertEqual(settings.rag_top_k, 3)
+        self.assertEqual(settings.rag_candidate_k, 9)
+        self.assertTrue(settings.rag_hybrid_enabled)
+        self.assertEqual(settings.rag_rerank_rollout_percent, 25)
         self.assertEqual(settings.rag_max_context_chars, 4096)
         self.assertEqual(settings.rag_min_score, 0.05)
         with self.assertRaisesRegex(ValidationError, "主机白名单格式无效"):
@@ -240,6 +247,10 @@ class SettingsTest(unittest.TestCase):
                 knowledge_catalog_path="knowledge.json",
                 knowledge_source_hosts=("help..example.com",),
             )
+        with self.assertRaisesRegex(ValidationError, "CANDIDATE_K"):
+            Settings(rag_top_k=5, rag_candidate_k=4)
+        with self.assertRaisesRegex(ValidationError, "实验盐"):
+            Settings(rag_rerank_rollout_percent=10, rag_experiment_salt="too-short")
 
     def test_elasticsearch_rag_requires_read_only_connection_identity(self) -> None:
         with self.assertRaisesRegex(ValidationError, "配置不完整"):

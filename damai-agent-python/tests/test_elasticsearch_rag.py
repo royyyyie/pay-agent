@@ -91,6 +91,11 @@ class ElasticsearchKnowledgeRetrieverTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.get_header("Authorization"), "ApiKey private-api-key")
         body = json.loads(request.data or b"{}")
         filters = body["query"]["bool"]["filter"]
+        lexical_channels = body["query"]["bool"]["should"]
+        self.assertEqual(body["query"]["bool"]["minimum_should_match"], 1)
+        self.assertEqual(len(lexical_channels), 3)
+        self.assertIn("multi_match", lexical_channels[0])
+        self.assertIn("match_phrase", lexical_channels[1])
         self.assertIn({"terms": {"tenant_id": ["tenant-a", "public"]}}, filters)
         self.assertIn({"term": {"locale": "zh-CN"}}, filters)
         self.assertEqual(body["size"], 4)

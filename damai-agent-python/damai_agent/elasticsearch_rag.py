@@ -129,7 +129,7 @@ class ElasticsearchKnowledgeRetriever:
             "sort": [{"_score": "desc"}, {"document_id": "asc"}, {"version": "desc"}],
             "query": {
                 "bool": {
-                    "must": [
+                    "should": [
                         {
                             "multi_match": {
                                 "query": query,
@@ -137,8 +137,11 @@ class ElasticsearchKnowledgeRetriever:
                                 "type": "best_fields",
                                 "minimum_should_match": "50%",
                             }
-                        }
+                        },
+                        {"match_phrase": {"title": {"query": query, "slop": 1, "boost": 5}}},
+                        {"match_phrase": {"content": {"query": query, "slop": 2, "boost": 2}}},
                     ],
+                    "minimum_should_match": 1,
                     "filter": [
                         {"terms": {"tenant_id": [tenant_id, "public"]}},
                         {"term": {"locale": locale}},

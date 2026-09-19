@@ -95,10 +95,49 @@ DAMAI_AGENT_ELASTICSEARCH_TIMEOUT_SECONDS=3
 
 发布、回滚、Secret 隔离和保留期流程见[知识索引发布与回滚](phase-4-knowledge-operations.md)。运行时只读 Key 与发布 Key 必须分离。
 
+## 第四批：中文混合检索、重排灰度与 Eval 门禁
+
+- [x] 原始查询、去礼貌语查询和受控中文同义扩展最多形成 3 个词法通道，经归一化 RRF 融合；不比较不同后端不可比的原始分数
+- [x] Elasticsearch 单通道同时使用 `multi_match`、标题短语和正文短语信号，并继续执行服务端与客户端双重隔离校验
+- [x] Provider 无关的确定性重排只使用基础排名、标题/正文覆盖、完整短语和租户专属信号；候选数最多 20
+- [x] 重排按 `sessionKey` 与部署侧实验盐稳定分桶，可配置 0～100% 灰度，不记录原始 Session 值
+- [x] 检索事件、OTLP Span 和 Prometheus 暴露有界实验组标签；新增 RAG 准备耗时直方图
+- [x] RAG Eval 增加 Recall、MRR、引用精度、引用完整性、禁止文档泄漏、平均/P95 延迟及可配置发布阈值
+- [x] 推荐 Eval 增加实时 Tool 路由、预算收紧、软偏好和实时库存核验 100% 红线
+
+运行时配置：
+
+```dotenv
+DAMAI_AGENT_RAG_HYBRID_ENABLED=true
+DAMAI_AGENT_RAG_RRF_RANK_CONSTANT=60
+DAMAI_AGENT_RAG_CANDIDATE_K=12
+DAMAI_AGENT_RAG_RERANK_ROLLOUT_PERCENT=10
+DAMAI_AGENT_RAG_EXPERIMENT_SALT=<deployment-secret-at-least-16-chars>
+```
+
+部分灰度（1～99%）必须设置实验盐；0 为控制组，100 为全量重排。变更百分比或盐会改变分桶，因此一次实验期间必须固定二者，并把知识版本、配置版本和时间窗写入发布记录。混合模式最多发起 3 次只读检索，启用前必须用云测试索引核算延迟和请求成本。
+
+本地发布门禁：
+
+```powershell
+python scripts/evaluate_rag.py `
+  --catalog tests/fixtures/rag_catalog.json `
+  --eval-set tests/fixtures/rag_eval.json `
+  --source-host help.example.com `
+  --hybrid --rerank `
+  --min-recall 0.9 --min-mrr 0.8 --min-precision 0.5 `
+  --max-p95-latency-ms 500
+
+python scripts/evaluate_recommendations.py `
+  --eval-set tests/fixtures/recommendation_eval.json
+```
+
+仓库 Fixture 只验证门禁机制，不代表业务大规模 Eval 已完成。正式集合应由业务方维护，覆盖各租户、Locale、同义表达、无答案问题、越权文档和边界预算；结果需要按控制组/实验组分别留档。
+
 ## 剩余退出标准
 
-- [ ] 中文语义/混合检索、重排和大规模 Eval；验证召回、引用正确率、延迟和成本
-- [ ] 推荐离线 Eval、安全红线、A/B 灰度和人工验收
+- [ ] 接入经安全评审的中文向量/语义通道，并在云测试索引完成维度、模型版本、延迟与成本验收
+- [ ] 用业务方大规模集合运行 RAG/推荐 Eval，完成控制组与实验组统计显著性、人工相关性和安全验收
 - [ ] 测试专用环境完成端到端 RAG/Java Trace、故障降级和 SLO 验收
 
-第三批完成代表实时推荐闭环和受控知识发布流程已经建立，不代表阶段 4 或生产准入已经完成。
+第四批完成代表混合词法检索、重排灰度和自动化门禁已经建立，不代表语义检索、业务人工验收、云 SLO 或生产准入已经完成。

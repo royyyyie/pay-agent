@@ -60,8 +60,13 @@ _ENV_FIELDS = {
     "knowledge_catalog_path": "DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH",
     "knowledge_source_hosts": "DAMAI_AGENT_KNOWLEDGE_SOURCE_HOSTS",
     "rag_top_k": "DAMAI_AGENT_RAG_TOP_K",
+    "rag_candidate_k": "DAMAI_AGENT_RAG_CANDIDATE_K",
     "rag_max_context_chars": "DAMAI_AGENT_RAG_MAX_CONTEXT_CHARS",
     "rag_min_score": "DAMAI_AGENT_RAG_MIN_SCORE",
+    "rag_hybrid_enabled": "DAMAI_AGENT_RAG_HYBRID_ENABLED",
+    "rag_rrf_rank_constant": "DAMAI_AGENT_RAG_RRF_RANK_CONSTANT",
+    "rag_rerank_rollout_percent": "DAMAI_AGENT_RAG_RERANK_ROLLOUT_PERCENT",
+    "rag_experiment_salt": "DAMAI_AGENT_RAG_EXPERIMENT_SALT",
     "elasticsearch_url": "DAMAI_AGENT_ELASTICSEARCH_URL",
     "elasticsearch_api_key": "DAMAI_AGENT_ELASTICSEARCH_API_KEY",
     "elasticsearch_index_alias": "DAMAI_AGENT_ELASTICSEARCH_INDEX_ALIAS",
@@ -150,8 +155,13 @@ class Settings(BaseModel):
     knowledge_catalog_path: str = ""
     knowledge_source_hosts: tuple[str, ...] = ()
     rag_top_k: int = Field(default=4, ge=1, le=10)
+    rag_candidate_k: int = Field(default=12, ge=1, le=20)
     rag_max_context_chars: int = Field(default=8000, ge=512, le=32000)
     rag_min_score: float = Field(default=0.01, ge=0, le=1)
+    rag_hybrid_enabled: bool = False
+    rag_rrf_rank_constant: int = Field(default=60, ge=1, le=1000)
+    rag_rerank_rollout_percent: int = Field(default=0, ge=0, le=100)
+    rag_experiment_salt: str = Field(default="", repr=False, max_length=256)
     elasticsearch_url: str = ""
     elasticsearch_api_key: str = Field(default="", repr=False, max_length=8192)
     elasticsearch_index_alias: str = ""
@@ -246,6 +256,10 @@ class Settings(BaseModel):
             raise ValueError("本地 RAG 必须配置 DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH")
         if self.rag_enabled and not self.knowledge_source_hosts:
             raise ValueError("启用 RAG 必须配置 DAMAI_AGENT_KNOWLEDGE_SOURCE_HOSTS")
+        if self.rag_candidate_k < self.rag_top_k:
+            raise ValueError("DAMAI_AGENT_RAG_CANDIDATE_K 不得小于 RAG_TOP_K")
+        if 0 < self.rag_rerank_rollout_percent < 100 and len(self.rag_experiment_salt) < 16:
+            raise ValueError("部分 RAG 重排灰度必须配置至少 16 个字符的实验盐")
         if self.rag_enabled and self.rag_backend == "elasticsearch":
             if not all(
                 (

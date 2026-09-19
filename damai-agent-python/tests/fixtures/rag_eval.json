@@ -3,13 +3,17 @@
     "case_id": "stable-identity",
     "query": "实名制购票有什么规则",
     "tenant_id": "tenant-a",
-    "expected_document_ids": ["identity-policy"]
+    "expected_document_ids": ["identity-policy"],
+    "expected_top_document_id": "identity-policy",
+    "forbidden_document_ids": ["tenant-b-identity"]
   },
   {
     "case_id": "stable-refund",
     "query": "退换票的申请条件是什么",
     "tenant_id": "tenant-a",
-    "expected_document_ids": ["refund-policy"]
+    "expected_document_ids": ["refund-policy"],
+    "expected_top_document_id": "refund-policy",
+    "forbidden_document_ids": ["tenant-b-identity"]
   },
   {
     "case_id": "dynamic-inventory",

@@ -128,6 +128,8 @@ uv run --frozen pytest --cov=damai_agent
 
 阶段 4 第一批加入租户隔离的稳定知识检索、动态事实隔离、来源白名单和强制引用门禁。无有效引用的 RAG 回答不会返回；流式内容在引用校验前会被缓冲。启用方式、知识目录结构及离线 Eval 见[阶段 4 检查清单](docs/phase-4-checklist.md)。
 
-阶段 4 第二批加入云 Elasticsearch 只读检索、索引别名与版本约束、双重租户/时效/来源校验，以及推荐预算硬上限。Python 会从用户明确表达中注入或收紧 `maxPrice`，Java Tool Gateway 会再次过滤城市、分类、自定义日期和最低票价；实时余票逐候选核验与偏好排序仍属于后续批次。
+阶段 4 第二批加入云 Elasticsearch 只读检索、索引别名与版本约束、双重租户/时效/来源校验，以及推荐预算硬上限。Python 会从用户明确表达中注入或收紧 `maxPrice`，Java Tool Gateway 会再次过滤城市、分类、自定义日期和最低票价。
 
 阶段 4 第三批新增 `recommend_programs` 复合只读 Tool：Java 对有界候选批量核验实时票档，只返回有预算内余票的节目并给出确定性排名原因；Python 会把明确推荐意图强制路由到该 Tool。知识索引发布支持审核后校验、不可变索引、原子别名切换、精确回滚和活动索引删除保护，操作见[知识索引发布与回滚](docs/phase-4-knowledge-operations.md)。
+
+阶段 4 第四批新增中文多路词法检索与 RRF 融合、可审计的确定性重排，以及按 `sessionKey` 稳定分桶的灰度开关。`knowledge.retrieved` 事件、Trace 和 Prometheus 指标会记录实验组及检索延迟。RAG 发布门禁现可检查 Recall、MRR、引用精度/完整性、租户泄漏红线和 P95；推荐门禁检查实时 Tool 路由、预算、偏好和实时核验。配置与命令见[阶段 4 检查清单](docs/phase-4-checklist.md)。
