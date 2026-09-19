@@ -279,17 +279,23 @@ class JavaToolClient:
         active_span = trace.get_current_span().get_span_context()
         trace_id = f"{active_span.trace_id:032x}" if active_span.is_valid else context.trace_id
         traceparent = f"00-{trace_id}-{uuid.uuid4().hex[:16]}-01"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Agent-Key": self._api_key,
+            "X-Agent-Session-Key": context.session_key,
+            "X-Agent-Turn-Id": context.turn_id,
+            "X-Agent-Tool-Call-Id": context.tool_call_id,
+            "X-Agent-Tenant-Id": context.tenant_id,
+            "X-Agent-User-Id": context.user_id,
+            "traceparent": traceparent,
+        }
+        if context.delegation_encoded and context.delegation_signature:
+            headers["X-Agent-Delegation"] = context.delegation_encoded
+            headers["X-Agent-Delegation-Signature"] = context.delegation_signature
         request = urllib.request.Request(
             f"{self._base_url}{path}",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-Agent-Key": self._api_key,
-                "X-Agent-Session-Key": context.session_key,
-                "X-Agent-Turn-Id": context.turn_id,
-                "X-Agent-Tool-Call-Id": context.tool_call_id,
-                "traceparent": traceparent,
-            },
+            headers=headers,
             method="POST",
         )
         status = 200

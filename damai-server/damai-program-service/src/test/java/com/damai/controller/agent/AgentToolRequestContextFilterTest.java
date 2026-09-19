@@ -69,6 +69,25 @@ class AgentToolRequestContextFilterTest {
         assertEquals(400, response.getStatus());
     }
 
+    @Test
+    void watchRuleWritesRequireTrustedOwnerHeaders() throws Exception {
+        MockHttpServletRequest request = validRequest();
+        request.setRequestURI("/internal/agent/v1/tools/watch-rules/create");
+        MockHttpServletResponse rejected = new MockHttpServletResponse();
+
+        filter.doFilter(request, rejected, (servletRequest, servletResponse) -> {});
+
+        assertEquals(400, rejected.getStatus());
+
+        request.addHeader("X-Agent-Tenant-Id", "tenant-contract-test");
+        request.addHeader("X-Agent-User-Id", "user-contract-test");
+        MockHttpServletResponse accepted = new MockHttpServletResponse();
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        filter.doFilter(request, accepted, (servletRequest, servletResponse) -> invoked.set(true));
+
+        assertTrue(invoked.get());
+    }
+
     private MockHttpServletRequest validRequest() {
         MockHttpServletRequest request = new MockHttpServletRequest(
                 "POST", "/internal/agent/v1/tools/programs/search");

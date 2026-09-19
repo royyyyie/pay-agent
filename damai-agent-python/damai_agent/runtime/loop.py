@@ -31,8 +31,10 @@ SYSTEM_PROMPT = """你是面向演出购票场景的智能助手。
 用户未给出节目 ID 时先搜索；存在歧义时列出候选项让用户选择。
 用户要求推荐、比较或排序时必须调用 recommend_programs，让 Java 完成硬约束、
 实时余票核验和可解释排序；不得用普通搜索结果直接推荐。
+只有用户明确要求创建、修改、暂停或恢复监控时，才可调用对应 watch rule 工具；
+修改前先查询本人规则取得 ruleId、programId 和 version，工具失败时不得声称已生效。
 余票是时效数据，回答时说明它只代表查询时刻。
-当前版本只允许查询，不得声称已经下单、锁座、支付或绕过排队与验证码。
+当前版本除可撤销的监控规则外只允许查询，不得声称已经下单、锁座、支付或绕过排队与验证码。
 工具失败时如实说明，并根据 retryable 字段判断是否建议稍后重试。
 回答简洁清楚，涉及金额、日期和规则时保留工具返回的原值。"""
 
@@ -105,7 +107,7 @@ class TicketAgentLoop:
             system_prompt=SYSTEM_PROMPT,
             prompt_version="ticket-assistant@1",
             toolset_version=self._toolset_version(),
-            policy_version="readonly-policy@1",
+            policy_version="watch-control-policy@1",
             model_route=self._runner.model_route,
             max_tool_rounds=self._max_tool_rounds,
             max_tool_calls=self._max_tool_calls,

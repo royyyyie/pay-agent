@@ -70,6 +70,16 @@ rules:
           standard:
             shardingColumn: program_id
             shardingAlgorithmName: tableTicketCategoryModModel
+      d_agent_watch_rule:
+        actualDataNodes: ds_${0..1}.d_agent_watch_rule_${0..1}
+        databaseStrategy:
+          standard:
+            shardingColumn: program_id
+            shardingAlgorithmName: databaseAgentWatchRuleModModel
+        tableStrategy:
+          standard:
+            shardingColumn: program_id
+            shardingAlgorithmName: tableAgentWatchRuleModModel
     broadcastTables:
       - d_program_category
     shardingAlgorithms:
@@ -113,5 +123,13 @@ rules:
         type: INLINE
         props:
           algorithm-expression: d_ticket_category_${(program_id.intdiv(2)) % 2}
+      databaseAgentWatchRuleModModel:
+        type: INLINE
+        props:
+          algorithm-expression: ds_${program_id % 2}
+      tableAgentWatchRuleModModel:
+        type: INLINE
+        props:
+          algorithm-expression: d_agent_watch_rule_${(program_id.intdiv(2)) % 2}
 props:
   sql-show: true

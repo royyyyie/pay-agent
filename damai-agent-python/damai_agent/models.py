@@ -195,6 +195,8 @@ class TicketTurnContext:
     risk_ceiling: ToolRisk
     delegation_token_id: str
     delegation_expires_at: int | None = None
+    delegation_encoded: str = field(default="", repr=False)
+    delegation_signature: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +209,8 @@ class ToolContext:
     user_id: str = "anonymous"
     tool_scopes: frozenset[str] = frozenset()
     risk_ceiling: ToolRisk = ToolRisk.READ_ONLY
+    delegation_encoded: str = field(default="", repr=False)
+    delegation_signature: str = field(default="", repr=False)
 
     @classmethod
     def from_turn(cls, turn: TicketTurnContext, tool_call_id: str) -> "ToolContext":
@@ -219,6 +223,8 @@ class ToolContext:
             user_id=turn.user_id,
             tool_scopes=turn.tool_scopes,
             risk_ceiling=turn.risk_ceiling,
+            delegation_encoded=turn.delegation_encoded,
+            delegation_signature=turn.delegation_signature,
         )
 
 

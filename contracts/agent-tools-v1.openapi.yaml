@@ -1,10 +1,10 @@
 openapi: 3.0.3
 info:
   title: Damai Java Agent Tool Gateway
-  version: 1.0.0
+  version: 1.1.0
   description: >-
-    Python Agent 调用 Java 购票业务的第一版内部契约。当前只开放节目查询、
-    实时推荐、节目详情和票档余量四个只读工具，不包含下单、锁座和支付。
+    Python Agent 调用 Java 购票业务的内部契约。除节目查询、实时推荐、节目详情和
+    票档余量外，阶段 5 开放受信身份下的监控规则控制面；仍不包含下单、锁座和支付。
 servers:
   - url: http://127.0.0.1:6086
     description: 本地 Program Service
@@ -155,6 +155,162 @@ paths:
                           $ref: '#/components/schemas/TicketCategory'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /internal/agent/v1/tools/watch-rules/create:
+    post:
+      operationId: createWatchRule
+      summary: 创建票务监控规则
+      x-agent-tool-name: create_watch_rule
+      x-agent-description: 为已确认的节目创建持久化票务监控规则。该操作会产生可暂停的业务状态，只有用户明确要求监控时才能调用。
+      x-agent-risk: REVERSIBLE_WRITE
+      x-agent-scope: watch:write
+      x-agent-timeout-ms: 8000
+      x-agent-max-calls-per-turn: 1
+      x-agent-concurrency-safe: false
+      x-agent-exclusive: true
+      parameters:
+        - $ref: '#/components/parameters/ToolCallId'
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/SessionKey'
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/Delegation'
+        - $ref: '#/components/parameters/DelegationSignature'
+        - $ref: '#/components/parameters/TraceParent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatchRuleCreateRequest'
+      responses:
+        '200':
+          description: 幂等创建后的监控规则
+          headers:
+            traceparent:
+              $ref: '#/components/headers/TraceParent'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchRuleResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /internal/agent/v1/tools/watch-rules/update:
+    post:
+      operationId: updateWatchRule
+      summary: 修改票务监控规则
+      x-agent-tool-name: update_watch_rule
+      x-agent-description: 使用规则版本号修改本人监控条件。节目 ID 也是分片键，必须来自已有规则，不得猜测。
+      x-agent-risk: REVERSIBLE_WRITE
+      x-agent-scope: watch:write
+      x-agent-timeout-ms: 8000
+      x-agent-max-calls-per-turn: 1
+      x-agent-concurrency-safe: false
+      x-agent-exclusive: true
+      parameters:
+        - $ref: '#/components/parameters/ToolCallId'
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/SessionKey'
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/Delegation'
+        - $ref: '#/components/parameters/DelegationSignature'
+        - $ref: '#/components/parameters/TraceParent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatchRuleUpdateRequest'
+      responses:
+        '200':
+          description: 修改后的监控规则
+          headers:
+            traceparent:
+              $ref: '#/components/headers/TraceParent'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchRuleResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /internal/agent/v1/tools/watch-rules/status:
+    post:
+      operationId: setWatchRuleStatus
+      summary: 暂停或恢复票务监控规则
+      x-agent-tool-name: set_watch_rule_status
+      x-agent-description: 使用规则版本号暂停或恢复本人监控规则。重复设置相同状态必须保持幂等。
+      x-agent-risk: REVERSIBLE_WRITE
+      x-agent-scope: watch:write
+      x-agent-timeout-ms: 8000
+      x-agent-max-calls-per-turn: 1
+      x-agent-concurrency-safe: false
+      x-agent-exclusive: true
+      parameters:
+        - $ref: '#/components/parameters/ToolCallId'
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/SessionKey'
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/Delegation'
+        - $ref: '#/components/parameters/DelegationSignature'
+        - $ref: '#/components/parameters/TraceParent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatchRuleStatusRequest'
+      responses:
+        '200':
+          description: 状态变更后的监控规则
+          headers:
+            traceparent:
+              $ref: '#/components/headers/TraceParent'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchRuleResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /internal/agent/v1/tools/watch-rules/list:
+    post:
+      operationId: listWatchRules
+      summary: 查询本人票务监控规则
+      x-agent-tool-name: list_watch_rules
+      x-agent-description: 分页查询当前受信用户的监控规则及版本；修改或暂停前应先用此工具获得 ruleId、programId 和 version。
+      x-agent-risk: READ_ONLY
+      x-agent-scope: watch:read
+      x-agent-timeout-ms: 8000
+      x-agent-max-calls-per-turn: 3
+      x-agent-concurrency-safe: true
+      x-agent-exclusive: false
+      parameters:
+        - $ref: '#/components/parameters/ToolCallId'
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/SessionKey'
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/Delegation'
+        - $ref: '#/components/parameters/DelegationSignature'
+        - $ref: '#/components/parameters/TraceParent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatchRuleListRequest'
+      responses:
+        '200':
+          description: 当前用户的监控规则分页
+          headers:
+            traceparent:
+              $ref: '#/components/headers/TraceParent'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchRulePageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 components:
   headers:
     TraceParent:
@@ -191,6 +347,40 @@ components:
       schema:
         type: string
         maxLength: 128
+    TenantId:
+      name: X-Agent-Tenant-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+      description: 从 Java BFF 签发的委托身份透传，禁止由模型或请求正文提供
+    UserId:
+      name: X-Agent-User-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+      description: 从 Java BFF 签发的委托身份透传，Java 端据此执行行级归属校验
+    Delegation:
+      name: X-Agent-Delegation
+      in: header
+      required: true
+      schema:
+        type: string
+        maxLength: 4096
+      description: Java BFF 签发且已由 Python 验证的短期委托正文；Java Tool Gateway 必须再次验证
+    DelegationSignature:
+      name: X-Agent-Delegation-Signature
+      in: header
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{64}$'
+      description: 委托正文的 HMAC-SHA256 签名
     TraceParent:
       name: traceparent
       in: header
@@ -344,6 +534,209 @@ components:
           maximum: 5
           default: 3
           description: 最多返回候选数量；服务端最多扫描前 10 个搜索结果
+    WatchRuleCreateRequest:
+      type: object
+      required: [programId]
+      additionalProperties: false
+      properties:
+        programId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 已由节目查询确认的节目 ID，也是监控规则分片键
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: 用户可识别的规则名称
+        ticketCategoryIds:
+          type: array
+          maxItems: 20
+          items:
+            type: integer
+            format: int64
+            minimum: 1
+          description: 可选票档白名单；空集合表示监控节目下全部票档
+        maxPrice:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 999999999.99
+          description: 只在可售价格不高于该值时触发；不设置表示不限价格
+        minRemaining:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 1000000
+          default: 1
+          description: 满足条件的票档最少剩余数量
+        checkIntervalSeconds:
+          type: integer
+          minimum: 30
+          maximum: 86400
+          default: 300
+          description: Java 可靠调度器的目标检查间隔，不承诺精确触发时刻
+        notificationChannel:
+          type: string
+          enum: [IN_APP]
+          default: IN_APP
+          description: 阶段 5 首批仅开放站内通知
+    WatchRuleUpdateRequest:
+      type: object
+      required: [ruleId, programId, expectedVersion]
+      additionalProperties: false
+      properties:
+        ruleId:
+          type: integer
+          format: int64
+          minimum: 1
+        programId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 从 list_watch_rules 获得的不可变分片键
+        expectedVersion:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 乐观锁版本；冲突后必须重新查询，禁止盲目覆盖
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        ticketCategoryIds:
+          type: array
+          maxItems: 20
+          items:
+            type: integer
+            format: int64
+            minimum: 1
+        maxPrice:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 999999999.99
+        clearMaxPrice:
+          type: boolean
+          default: false
+          description: 显式移除价格上限；不能与 maxPrice 同时为真
+        minRemaining:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 1000000
+        checkIntervalSeconds:
+          type: integer
+          minimum: 30
+          maximum: 86400
+    WatchRuleStatusRequest:
+      type: object
+      required: [ruleId, programId, expectedVersion, targetStatus]
+      additionalProperties: false
+      properties:
+        ruleId:
+          type: integer
+          format: int64
+          minimum: 1
+        programId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 从 list_watch_rules 获得的不可变分片键
+        expectedVersion:
+          type: integer
+          format: int64
+          minimum: 1
+        targetStatus:
+          type: string
+          enum: [ACTIVE, PAUSED]
+    WatchRuleListRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        ruleStatus:
+          type: string
+          enum: [ACTIVE, PAUSED]
+        pageNumber:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 1
+        pageSize:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 10
+    WatchRule:
+      type: object
+      required:
+        - ruleId
+        - programId
+        - minRemaining
+        - checkIntervalSeconds
+        - notificationChannel
+        - ruleStatus
+        - version
+        - nextCheckAt
+        - createdAt
+        - updatedAt
+      properties:
+        ruleId:
+          type: integer
+          format: int64
+        programId:
+          type: integer
+          format: int64
+        name:
+          type: string
+        ticketCategoryIds:
+          type: array
+          items:
+            type: integer
+            format: int64
+        maxPrice:
+          type: number
+        minRemaining:
+          type: integer
+          format: int64
+        checkIntervalSeconds:
+          type: integer
+        notificationChannel:
+          type: string
+          enum: [IN_APP]
+        ruleStatus:
+          type: string
+          enum: [ACTIVE, PAUSED]
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+        nextCheckAt:
+          type: string
+        lastCheckedAt:
+          type: string
+        lastTriggeredAt:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+    WatchRulePage:
+      type: object
+      required: [pageNumber, pageSize, totalSize, list]
+      properties:
+        pageNumber:
+          type: integer
+        pageSize:
+          type: integer
+        totalSize:
+          type: integer
+          format: int64
+        list:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/WatchRule'
     ToolResponse:
       type: object
       required: [requestId, success, code, message, retryable, freshnessAt]
@@ -370,6 +763,22 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/ProgramPage'
+    WatchRuleResponse:
+      allOf:
+        - $ref: '#/components/schemas/ToolResponse'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: '#/components/schemas/WatchRule'
+    WatchRulePageResponse:
+      allOf:
+        - $ref: '#/components/schemas/ToolResponse'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: '#/components/schemas/WatchRulePage'
     ProgramPage:
       type: object
       properties:

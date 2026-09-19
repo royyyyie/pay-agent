@@ -32,7 +32,7 @@ class DelegationClaims(BaseModel):
     locale: str = Field(min_length=1, max_length=32)
     channel: str = Field(min_length=1, max_length=100)
     toolScopes: list[str] = Field(max_length=32)
-    riskCeiling: Literal["READ_ONLY"]
+    riskCeiling: Literal["READ_ONLY", "REVERSIBLE_WRITE"]
     delegationTokenId: str = Field(min_length=1, max_length=200)
     issuedAt: int
     expiresAt: int
@@ -76,7 +76,9 @@ def verify_delegation(
         locale=claims.locale,
         channel=claims.channel,
         tool_scopes=frozenset(claims.toolScopes),
-        risk_ceiling=ToolRisk.READ_ONLY,
+        risk_ceiling=ToolRisk(claims.riskCeiling),
         delegation_token_id=claims.delegationTokenId,
         delegation_expires_at=claims.expiresAt,
+        delegation_encoded=encoded,
+        delegation_signature=signature,
     )

@@ -163,8 +163,8 @@ class DurableTurnService:
     ) -> AgentRunResult:
         if not user_text:
             raise ValueError("user text is required")
-        if context.risk_ceiling is not ToolRisk.READ_ONLY:
-            raise ValueError("durable runtime currently accepts read-only turns only")
+        if context.risk_ceiling not in {ToolRisk.READ_ONLY, ToolRisk.REVERSIBLE_WRITE}:
+            raise ValueError("durable runtime only accepts read or reversible-write turns")
         fingerprint = self._request_fingerprint(user_text, context)
         pending_token = RedisPendingTurnQueue.token_for(idempotency_key, fingerprint)
         if self._pending_queue is not None:
@@ -209,7 +209,11 @@ class DurableTurnService:
                 system_prompt=SYSTEM_PROMPT,
                 prompt_version="ticket-assistant@1",
                 toolset_version=toolset_version(tool_specs),
-                policy_version="readonly-policy@1",
+                policy_version=(
+                    "watch-control-policy@1"
+                    if context.risk_ceiling is ToolRisk.REVERSIBLE_WRITE
+                    else "readonly-policy@1"
+                ),
                 model_route=self._runner.model_route,
                 max_tool_rounds=self._max_tool_rounds,
                 max_tool_calls=self._max_tool_calls,
@@ -297,8 +301,11 @@ class DurableTurnService:
 
         if self._pending_queue is None:
             raise ValueError("pending queue is not configured")
-        if not user_text or context.risk_ceiling is not ToolRisk.READ_ONLY:
-            raise ValueError("pending request must be nonempty and read-only")
+        if not user_text or context.risk_ceiling not in {
+            ToolRisk.READ_ONLY,
+            ToolRisk.REVERSIBLE_WRITE,
+        }:
+            raise ValueError("pending request must be nonempty and safely reversible")
         token = RedisPendingTurnQueue.token_for(
             idempotency_key, self._request_fingerprint(user_text, context)
         )
@@ -314,8 +321,8 @@ class DurableTurnService:
 
         if user_text == "":
             raise ValueError("user text cannot be empty")
-        if context.risk_ceiling is not ToolRisk.READ_ONLY:
-            raise ValueError("durable runtime currently accepts read-only turns only")
+        if context.risk_ceiling not in {ToolRisk.READ_ONLY, ToolRisk.REVERSIBLE_WRITE}:
+            raise ValueError("durable runtime only accepts read or reversible-write turns")
         lease = await self._leases.acquire(
             context.tenant_id, context.session_key, ttl_ms=self._lease_ttl_ms
         )

@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from damai_agent.api import create_app
 from damai_agent.config import Settings
 from damai_agent.delegation import DelegationError, verify_delegation
-from damai_agent.models import AgentRunResult
+from damai_agent.models import AgentRunResult, ToolRisk
 from damai_agent.runtime.durable import SessionBusy
 
 
@@ -62,7 +62,10 @@ class DelegationTest(unittest.TestCase):
         )
         self.assertEqual(context.tenant_id, "tenant-1")
         self.assertEqual(context.tool_scopes, frozenset({"programs:read"}))
+        self.assertEqual(context.risk_ceiling, ToolRisk.READ_ONLY)
         self.assertIsNotNone(context.delegation_expires_at)
+        self.assertEqual(context.delegation_encoded, headers["X-Agent-Delegation"])
+        self.assertNotIn(context.delegation_encoded, repr(context))
         with self.assertRaises(DelegationError):
             verify_delegation(headers["X-Agent-Delegation"], "0" * 64, self.secret)
         expired = self.claims()
@@ -74,9 +77,21 @@ class DelegationTest(unittest.TestCase):
                 headers["X-Agent-Delegation-Signature"],
                 self.secret,
             )
-        write_claim = self.claims()
-        write_claim["riskCeiling"] = "ORDER_WRITE"
-        headers = self.signed_headers(write_claim)
+        reversible_claim = self.claims()
+        reversible_claim["toolScopes"] = ["programs:read", "watch:read", "watch:write"]
+        reversible_claim["riskCeiling"] = "REVERSIBLE_WRITE"
+        headers = self.signed_headers(reversible_claim)
+        context = verify_delegation(
+            headers["X-Agent-Delegation"],
+            headers["X-Agent-Delegation-Signature"],
+            self.secret,
+        )
+        self.assertEqual(context.risk_ceiling, ToolRisk.REVERSIBLE_WRITE)
+        self.assertIn("watch:write", context.tool_scopes)
+
+        order_claim = self.claims()
+        order_claim["riskCeiling"] = "ORDER_WRITE"
+        headers = self.signed_headers(order_claim)
         with self.assertRaises(DelegationError):
             verify_delegation(
                 headers["X-Agent-Delegation"],

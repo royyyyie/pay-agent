@@ -25,7 +25,7 @@ python scripts/check_contract_compatibility.py
 
 生成文件为 `damai_agent/generated/tool_schemas.py`。禁止直接编辑生成文件；CI 会重新生成并检查差异。兼容性检查以 `baselines/agent-tools-v1.0.0.openapi.yaml` 为冻结基线，新增兼容能力时不更新该基线。
 
-v1 内部调用必须携带 Tool Call、Turn、Session 和 W3C `traceparent` Header。Java 在进入控制器前验证上下文，Python 为每次 Java Tool 调用创建客户端 Span ID。
+v1 内部调用必须携带 Tool Call、Turn、Session 和 W3C `traceparent` Header。Java 在进入控制器前验证上下文，Python 为每次 Java Tool 调用创建客户端 Span ID。监控等所有者相关 Tool 还必须携带从签名委托透传的 Tenant/User Header；身份字段禁止出现在模型可写的请求 Schema 中。
 
 ## 变更流程
 

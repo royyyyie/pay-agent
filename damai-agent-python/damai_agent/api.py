@@ -132,7 +132,12 @@ def build_runner(
         api_key=settings.java_tool_api_key,
         timeout_seconds=settings.java_timeout_seconds,
     )
-    registry = ToolRegistry(build_java_tools(java_client))
+    java_tools = build_java_tools(java_client)
+    if not settings.watch_rules_enabled:
+        java_tools = [
+            tool for tool in java_tools if not tool.spec.required_scope.startswith("watch:")
+        ]
+    registry = ToolRegistry(java_tools)
     resolved_knowledge_rag = knowledge_rag or build_knowledge_rag(settings)
     return AgentRunner(
         provider=provider,

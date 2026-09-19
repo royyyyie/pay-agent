@@ -152,7 +152,7 @@ class RunnerCheckpointBoundaryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.calls, 1)
         recorder.commit_tool_round.assert_not_awaited()
 
-    async def test_durable_entry_rejects_write_ceiling(self) -> None:
+    async def test_durable_entry_rejects_order_write_ceiling(self) -> None:
         provider = ScriptedProvider()
         tool = CountingTool()
         runner = ToolCallingRunner(provider, ToolRegistry([tool]))
@@ -171,8 +171,31 @@ class RunnerCheckpointBoundaryTest(unittest.IsolatedAsyncioTestCase):
             risk_ceiling=ToolRisk.ORDER_WRITE,
             delegation_token_id=context.delegation_token_id,
         )
-        with self.assertRaisesRegex(ValueError, "read-only"):
+        with self.assertRaisesRegex(ValueError, "reversible-write"):
             await service.run("查票", context, "idem-1")
+
+    async def test_durable_entry_accepts_reversible_write_ceiling(self) -> None:
+        runner = ToolCallingRunner(ScriptedProvider(), ToolRegistry([CountingTool()]))
+        leases = AsyncMock()
+        leases.acquire.return_value = None
+        service = DurableTurnService(runner, AsyncMock(), leases)
+        original = make_context("session-reversible-write")
+        context = TicketTurnContext(
+            tenant_id=original.tenant_id,
+            user_id=original.user_id,
+            session_key=original.session_key,
+            turn_id=original.turn_id,
+            request_id=original.request_id,
+            trace_id=original.trace_id,
+            locale=original.locale,
+            channel=original.channel,
+            tool_scopes=frozenset({"watch:write"}),
+            risk_ceiling=ToolRisk.REVERSIBLE_WRITE,
+            delegation_token_id=original.delegation_token_id,
+        )
+
+        with self.assertRaises(SessionBusy):
+            await service.run("创建监控", context, "idem-watch-1")
 
     async def test_recovery_without_checkpoint_never_calls_provider_or_tool(self) -> None:
         provider = ScriptedProvider()
