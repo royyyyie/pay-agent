@@ -1,7 +1,9 @@
 package com.damai.controller.agent.dto;
 
 import com.damai.dto.ProgramSearchDto;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.Max;
@@ -61,6 +63,17 @@ public class AgentProgramSearchRequest {
     @Max(20)
     @Schema(description = "每页条数，Agent 侧最多查询 20 条")
     private Integer pageSize = 10;
+
+    @JsonIgnore
+    @AssertTrue(message = "自定义时间范围必须同时提供有效的开始和结束时间")
+    public boolean isCustomDateRangeValid() {
+        if (!Integer.valueOf(5).equals(timeType)) {
+            return true;
+        }
+        return startDateTime != null
+                && endDateTime != null
+                && !startDateTime.after(endDateTime);
+    }
 
     public ProgramSearchDto toProgramSearchDto() {
         ProgramSearchDto dto = new ProgramSearchDto();

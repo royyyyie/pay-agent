@@ -197,6 +197,11 @@ class ToolCallingRunner:
         recommendation_guard = RecommendationConstraintGuard.from_user_text(
             spec.messages[-1].content or ""
         )
+        recommendation_verification_required = (
+            recommendation_guard.recommendation_intent
+            and "recommend_programs" in allowed_tool_names
+        )
+        recommendation_verified = False
         rag_bundle = RagBundle()
         if self._knowledge_rag is not None:
             try:
@@ -293,12 +298,15 @@ class ToolCallingRunner:
                 if self._metrics is not None:
                     self._metrics.observe_model(False, elapsed_ms(model_started_at))
                 raise
-            hardened_calls, hardened_count = recommendation_guard.apply(response.tool_calls)
-            if hardened_count:
-                response = replace(response, tool_calls=list(hardened_calls))
+            guard_outcome = recommendation_guard.apply(response.tool_calls, allowed_tool_names)
+            if guard_outcome.changed_calls:
+                response = replace(response, tool_calls=list(guard_outcome.tool_calls))
                 await emitter.emit(
                     "recommendation.constraints.applied",
-                    {"types": ["maxPrice"], "toolCalls": hardened_count},
+                    {
+                        "types": list(guard_outcome.applied_types),
+                        "toolCalls": guard_outcome.changed_calls,
+                    },
                 )
             model_route = response.model_route or model_route
             model_duration_ms = elapsed_ms(model_started_at)
@@ -393,6 +401,17 @@ class ToolCallingRunner:
 
             if not response.tool_calls:
                 answer = (response.content or "暂时无法生成回答，请稍后重试。").strip()
+                if recommendation_verification_required and not recommendation_verified:
+                    return self._recommendation_failure(
+                        spec,
+                        turn_messages,
+                        tools_used,
+                        tool_events,
+                        hooks.usage.total,
+                        model_route,
+                        budget.cost_micro_usd,
+                        rag_bundle.index_version,
+                    )
                 if dynamic_fact_query and not tools_used:
                     return self._dynamic_fact_failure(
                         spec,
@@ -479,6 +498,8 @@ class ToolCallingRunner:
                             raise outcome
                     results = [cast(ToolResult, outcome) for outcome in outcomes]
                 for call, tool_result in zip(batch, results, strict=True):
+                    if call.name == "recommend_programs" and tool_result.success:
+                        recommendation_verified = True
                     tool_message = ChatMessage(
                         role="tool",
                         content=tool_result.to_model_content(),
@@ -742,6 +763,35 @@ class ToolCallingRunner:
             cost_micro_usd=cost_micro_usd,
             stop_reason="dynamic_fact_tool_required",
             error_code=AgentErrorCode.DYNAMIC_FACT_TOOL_REQUIRED,
+            tool_events=tuple(tool_events),
+            model_route=model_route,
+            knowledge_version=knowledge_version,
+        )
+
+    def _recommendation_failure(
+        self,
+        spec: AgentRunSpec,
+        turn_messages: List[ChatMessage],
+        tools_used: List[str],
+        tool_events: List[AgentEvent],
+        usage: ProviderUsage,
+        model_route: str,
+        cost_micro_usd: int | None,
+        knowledge_version: str,
+    ) -> AgentRunResult:
+        answer = "推荐候选尚未完成实时余票核验，已安全停止且不会放宽条件。"
+        turn_messages.append(ChatMessage(role="assistant", content=answer))
+        return AgentRunResult(
+            session_key=spec.context.session_key,
+            turn_id=spec.context.turn_id,
+            trace_id=spec.context.trace_id,
+            final_content=answer,
+            tools_used=tuple(tools_used),
+            messages=tuple(turn_messages),
+            usage=usage,
+            cost_micro_usd=cost_micro_usd,
+            stop_reason="recommendation_verification_required",
+            error_code=AgentErrorCode.RECOMMENDATION_VERIFICATION_REQUIRED,
             tool_events=tuple(tool_events),
             model_route=model_route,
             knowledge_version=knowledge_version,

@@ -1,0 +1,9 @@
+{
+  "keyword": "音乐剧",
+  "areaId": 310000,
+  "maxPrice": 800,
+  "timeType": 0,
+  "sortType": 1,
+  "preference": "LOWEST_PRICE",
+  "candidateLimit": 3
+}

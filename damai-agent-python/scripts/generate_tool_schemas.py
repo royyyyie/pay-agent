@@ -72,7 +72,7 @@ def _dereference(
 
 def _request_schema(document: Dict[str, Any], operation: Dict[str, Any]) -> Dict[str, Any]:
     schema = _request_schema_node(document, operation)
-    resolved = _dereference(document, schema)
+    resolved = _merge_object_schema(document, schema)
     if not isinstance(resolved, dict) or resolved.get("type") != "object":
         raise ContractError("Agent Tool 参数 Schema 必须是 object")
     if resolved.get("additionalProperties") is not False:

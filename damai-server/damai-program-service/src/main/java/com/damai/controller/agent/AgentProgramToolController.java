@@ -1,7 +1,12 @@
 package com.damai.controller.agent;
 
+import cn.hutool.core.bean.BeanUtil;
+import com.damai.controller.agent.dto.AgentProgramRecommendationRequest;
 import com.damai.controller.agent.dto.AgentProgramRequest;
 import com.damai.controller.agent.dto.AgentProgramSearchRequest;
+import com.damai.controller.agent.dto.AgentRecommendationPreference;
+import com.damai.controller.agent.vo.AgentProgramRecommendationPageVo;
+import com.damai.controller.agent.vo.AgentProgramRecommendationVo;
 import com.damai.controller.agent.vo.AgentToolResponse;
 import com.damai.dto.ProgramGetDto;
 import com.damai.dto.TicketCategoryListByProgramDto;
@@ -28,16 +33,19 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * 面向 Python Agent 的只读工具网关。
  *
- * 该控制器只做契约适配，不重新实现节目、搜索或库存业务规则。
+ * 该控制器做契约适配，并为推荐执行有界的硬约束、实时库存核验和确定性排序。
  */
 @Slf4j
 @RestController
@@ -62,6 +70,31 @@ public class AgentProgramToolController {
         String normalizedRequestId = normalizeRequestId(requestId);
         PageVo<ProgramListVo> programs = programService.search(request.toProgramSearchDto());
         return AgentToolResponse.ok(normalizedRequestId, applyHardConstraints(programs, request));
+    }
+
+    @Operation(summary = "推荐有实时余票的节目")
+    @PostMapping("/programs/recommendations")
+    public AgentToolResponse<AgentProgramRecommendationPageVo> recommendPrograms(
+            @Parameter(description = "Agent 工具调用 id")
+            @RequestHeader(value = REQUEST_ID_HEADER, required = false) String requestId,
+            @Valid @RequestBody AgentProgramRecommendationRequest request) {
+        PageVo<ProgramListVo> page = applyHardConstraints(
+                programService.search(request.toRecommendationSearchDto()), request);
+        List<ProgramListVo> programs = page == null || page.getList() == null
+                ? List.of()
+                : page.getList();
+        List<Long> programIds = programs.stream()
+                .filter(Objects::nonNull)
+                .map(ProgramListVo::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .limit(10)
+                .collect(Collectors.toList());
+        Map<Long, List<TicketCategoryDetailVo>> inventory =
+                ticketCategoryService.selectListByPrograms(programIds);
+        AgentProgramRecommendationPageVo recommendations =
+                buildRecommendations(programs, inventory, request);
+        return AgentToolResponse.ok(normalizeRequestId(requestId), recommendations);
     }
 
     @Operation(summary = "查询节目详情")
@@ -182,5 +215,105 @@ public class AgentProgramToolController {
             }
         }
         return true;
+    }
+
+    static AgentProgramRecommendationPageVo buildRecommendations(
+            List<ProgramListVo> programs,
+            Map<Long, List<TicketCategoryDetailVo>> inventoryByProgram,
+            AgentProgramRecommendationRequest request) {
+        List<ProgramListVo> scanned = programs == null
+                ? List.of()
+                : programs.stream().limit(10).collect(Collectors.toList());
+        List<AgentProgramRecommendationVo> eligible = new ArrayList<>();
+        for (ProgramListVo program : scanned) {
+            if (program == null || program.getId() == null) {
+                continue;
+            }
+            List<TicketCategoryDetailVo> available = inventoryByProgram
+                    .getOrDefault(program.getId(), List.of())
+                    .stream()
+                    .filter(Objects::nonNull)
+                    .filter(ticket -> ticket.getPrice() != null)
+                    .filter(ticket -> ticket.getRemainNumber() != null
+                            && ticket.getRemainNumber() > 0)
+                    .filter(ticket -> request.getMaxPrice() == null
+                            || ticket.getPrice().compareTo(request.getMaxPrice()) <= 0)
+                    .collect(Collectors.toList());
+            if (available.isEmpty()) {
+                continue;
+            }
+            AgentProgramRecommendationVo recommendation = new AgentProgramRecommendationVo();
+            BeanUtil.copyProperties(program, recommendation);
+            recommendation.setAvailableTicketCategoryCount(available.size());
+            recommendation.setLowestAvailablePrice(available.stream()
+                    .map(TicketCategoryDetailVo::getPrice)
+                    .min(Comparator.naturalOrder())
+                    .orElseThrow());
+            recommendation.setTotalRemaining(totalRemaining(available));
+            recommendation.setReasonCodes(reasonCodes(request));
+            eligible.add(recommendation);
+        }
+
+        AgentRecommendationPreference preference = Optional.ofNullable(request.getPreference())
+                .orElse(AgentRecommendationPreference.RELEVANCE);
+        Comparator<AgentProgramRecommendationVo> comparator = recommendationComparator(preference);
+        if (comparator != null) {
+            eligible.sort(comparator);
+        }
+        int eligibleCount = eligible.size();
+        int limit = Math.min(Optional.ofNullable(request.getCandidateLimit()).orElse(3), eligibleCount);
+        List<AgentProgramRecommendationVo> selected = new ArrayList<>(eligible.subList(0, limit));
+        for (int index = 0; index < selected.size(); index++) {
+            selected.get(index).setRank(index + 1);
+        }
+        return new AgentProgramRecommendationPageVo(
+                scanned.size(), eligibleCount, preference, selected);
+    }
+
+    private static long totalRemaining(List<TicketCategoryDetailVo> available) {
+        long total = 0;
+        for (TicketCategoryDetailVo ticket : available) {
+            long remaining = ticket.getRemainNumber();
+            if (Long.MAX_VALUE - total < remaining) {
+                return Long.MAX_VALUE;
+            }
+            total += remaining;
+        }
+        return total;
+    }
+
+    private static List<String> reasonCodes(AgentProgramRecommendationRequest request) {
+        List<String> reasons = new ArrayList<>();
+        reasons.add("LIVE_INVENTORY_CONFIRMED");
+        if (request.getMaxPrice() != null) {
+            reasons.add("BUDGET_VERIFIED");
+        }
+        AgentRecommendationPreference preference = Optional.ofNullable(request.getPreference())
+                .orElse(AgentRecommendationPreference.RELEVANCE);
+        reasons.add("RANKED_BY_" + preference.name());
+        return reasons;
+    }
+
+    private static Comparator<AgentProgramRecommendationVo> recommendationComparator(
+            AgentRecommendationPreference preference) {
+        Comparator<AgentProgramRecommendationVo> byId = Comparator.comparing(
+                AgentProgramRecommendationVo::getId,
+                Comparator.nullsLast(Comparator.naturalOrder()));
+        return switch (preference) {
+            case RELEVANCE -> null;
+            case LOWEST_PRICE -> Comparator.comparing(
+                            AgentProgramRecommendationVo::getLowestAvailablePrice)
+                    .thenComparing(byId);
+            case EARLIEST_SHOW -> Comparator.comparing(
+                            AgentProgramRecommendationVo::getShowTime,
+                            Comparator.nullsLast(Comparator.naturalOrder()))
+                    .thenComparing(AgentProgramRecommendationVo::getLowestAvailablePrice)
+                    .thenComparing(byId);
+            case MOST_AVAILABLE -> Comparator.comparing(
+                            AgentProgramRecommendationVo::getTotalRemaining,
+                            Comparator.reverseOrder())
+                    .thenComparing(AgentProgramRecommendationVo::getLowestAvailablePrice)
+                    .thenComparing(byId);
+        };
     }
 }

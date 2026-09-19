@@ -489,6 +489,8 @@ class DemoProvider:
         data = result.get("data")
         if message.name == "search_programs":
             return self._summarize_search(data)
+        if message.name == "recommend_programs":
+            return self._summarize_recommendations(data)
         if message.name == "get_program_detail":
             return self._summarize_detail(data)
         if message.name == "list_ticket_categories":
@@ -522,6 +524,20 @@ class DemoProvider:
             lines.append(f"重要提示：{data['importantNotice']}")
         if data.get("refundTicketRule"):
             lines.append(f"退换规则：{data['refundTicketRule']}")
+        return "\n".join(lines)
+
+    def _summarize_recommendations(self, data: Any) -> str:
+        items = data.get("list", []) if isinstance(data, dict) else []
+        if not items:
+            return "没有找到同时满足条件且已核验有实时余票的候选；我不会自动放宽条件。"
+        lines = ["以下候选均已核验实时票档余量（余量仍会随时变化）："]
+        for item in items:
+            lines.append(
+                f"- 第 {item.get('rank', '?')} 名：{item.get('title', '未命名演出')}"
+                f"（ID {item.get('id')}），最低可售票价 {item.get('lowestAvailablePrice')} 元，"
+                f"当前总余量 {item.get('totalRemaining')}，理由 "
+                f"{','.join(item.get('reasonCodes', []))}"
+            )
         return "\n".join(lines)
 
     def _summarize_ticket_categories(self, data: Any) -> str:

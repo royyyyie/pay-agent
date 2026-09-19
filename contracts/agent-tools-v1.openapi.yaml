@@ -4,7 +4,7 @@ info:
   version: 1.0.0
   description: >-
     Python Agent 调用 Java 购票业务的第一版内部契约。当前只开放节目查询、
-    节目详情和票档余量三个只读工具，不包含下单、锁座和支付。
+    实时推荐、节目详情和票档余量四个只读工具，不包含下单、锁座和支付。
 servers:
   - url: http://127.0.0.1:6086
     description: 本地 Program Service
@@ -44,6 +44,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProgramSearchResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /internal/agent/v1/tools/programs/recommendations:
+    post:
+      operationId: recommendPrograms
+      summary: 推荐有实时余票的节目
+      x-agent-tool-name: recommend_programs
+      x-agent-description: 按硬约束搜索节目，逐候选核验实时票档余量，并返回带稳定原因码的确定性排序。推荐场景必须使用此工具，不得用普通搜索替代。
+      x-agent-risk: READ_ONLY
+      x-agent-scope: programs:read
+      x-agent-timeout-ms: 8000
+      x-agent-max-calls-per-turn: 3
+      x-agent-concurrency-safe: true
+      x-agent-exclusive: false
+      parameters:
+        - $ref: '#/components/parameters/ToolCallId'
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/SessionKey'
+        - $ref: '#/components/parameters/TraceParent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProgramRecommendationRequest'
+      responses:
+        '200':
+          description: 只返回完成实时票档核验且至少一个预算内票档有余量的候选
+          headers:
+            traceparent:
+              $ref: '#/components/headers/TraceParent'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgramRecommendationResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
   /internal/agent/v1/tools/programs/detail:
@@ -243,6 +278,72 @@ components:
           type: integer
           format: int64
           description: 从节目搜索结果获得的节目 ID
+    ProgramRecommendationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        keyword:
+          type: string
+          maxLength: 100
+          description: 节目名或艺人关键词
+        areaId:
+          type: integer
+          format: int64
+          description: 城市或区域 ID
+        parentProgramCategoryId:
+          type: integer
+          format: int64
+          description: 父节目分类 ID
+        programCategoryId:
+          type: integer
+          format: int64
+          description: 节目分类 ID
+        maxPrice:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 999999999.99
+          description: 推荐预算硬上限；Java 会再次按实时可售票档执行过滤
+        timeType:
+          type: integer
+          default: 0
+          enum: [0, 1, 2, 3, 4, 5]
+          description: 0 全部、1 今天、2 明天、3 一周内、4 一月内、5 自定义
+        startDateTime:
+          type: string
+          example: '2026-09-03 00:00:00'
+          description: 自定义开始时间，格式 yyyy-MM-dd HH:mm:ss
+        endDateTime:
+          type: string
+          example: '2026-09-10 23:59:59'
+          description: 自定义结束时间，格式 yyyy-MM-dd HH:mm:ss
+        sortType:
+          type: integer
+          default: 1
+          enum: [1, 2, 3, 4]
+          description: 搜索阶段排序：1 相关度、2 推荐、3 最近开场、4 最新上架
+        pageNumber:
+          type: integer
+          minimum: 1
+          default: 1
+          description: 推荐服务固定从第一页开始扫描，此字段仅保留契约兼容性
+        pageSize:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 10
+          description: 推荐服务使用有界扫描窗口，此字段仅保留契约兼容性
+        preference:
+          type: string
+          default: RELEVANCE
+          enum: [RELEVANCE, LOWEST_PRICE, EARLIEST_SHOW, MOST_AVAILABLE]
+          description: 仅在硬约束和实时余票过滤后应用的软排序偏好
+        candidateLimit:
+          type: integer
+          minimum: 1
+          maximum: 5
+          default: 3
+          description: 最多返回候选数量；服务端最多扫描前 10 个搜索结果
     ToolResponse:
       type: object
       required: [requestId, success, code, message, retryable, freshnessAt]
@@ -304,6 +405,63 @@ components:
           type: number
         maxPrice:
           type: number
+    ProgramRecommendationCandidate:
+      allOf:
+        - $ref: '#/components/schemas/ProgramSummary'
+        - type: object
+          required:
+            - rank
+            - availableTicketCategoryCount
+            - lowestAvailablePrice
+            - totalRemaining
+            - reasonCodes
+          properties:
+            rank:
+              type: integer
+              minimum: 1
+            availableTicketCategoryCount:
+              type: integer
+              minimum: 1
+            lowestAvailablePrice:
+              type: number
+              minimum: 0
+            totalRemaining:
+              type: integer
+              format: int64
+              minimum: 1
+            reasonCodes:
+              type: array
+              minItems: 2
+              maxItems: 3
+              items:
+                type: string
+                enum:
+                  - LIVE_INVENTORY_CONFIRMED
+                  - BUDGET_VERIFIED
+                  - RANKED_BY_RELEVANCE
+                  - RANKED_BY_LOWEST_PRICE
+                  - RANKED_BY_EARLIEST_SHOW
+                  - RANKED_BY_MOST_AVAILABLE
+    ProgramRecommendationPage:
+      type: object
+      required: [scannedCount, eligibleCount, preference, list]
+      properties:
+        scannedCount:
+          type: integer
+          minimum: 0
+          maximum: 10
+        eligibleCount:
+          type: integer
+          minimum: 0
+          maximum: 10
+        preference:
+          type: string
+          enum: [RELEVANCE, LOWEST_PRICE, EARLIEST_SHOW, MOST_AVAILABLE]
+        list:
+          type: array
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/ProgramRecommendationCandidate'
     ProgramDetail:
       allOf:
         - $ref: '#/components/schemas/ProgramSummary'
@@ -338,3 +496,11 @@ components:
         remainNumber:
           type: integer
           format: int64
+    ProgramRecommendationResponse:
+      allOf:
+        - $ref: '#/components/schemas/ToolResponse'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: '#/components/schemas/ProgramRecommendationPage'
