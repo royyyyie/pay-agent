@@ -145,6 +145,16 @@ python scripts/evaluate_recommendations.py `
 - [x] API、完成事件、Trace 和 Prometheus 增加有界 `knowledgeProfile`，区分本地/Elastic 词法、语义混合和语义重排
 - [x] 保留 `lexical` 兼容 Profile；高级路径默认关闭，未经云 Eval/SLO 验收不会自动切换
 
+## 第六批：自动分块、Embedding 与生产发布门禁
+
+- [x] `semantic_text` 显式固定句子分块大小与重叠，中文边界由 Elasticsearch ICU 分词处理；策略变化强制新建不可变索引
+- [x] 发布前读取真实 Inference endpoint 元数据并执行 Embedding 探测，拒绝不存在或任务类型不兼容的端点
+- [x] Bulk 按文档数和字节数双上限自动分批；发布后核对父文档数、隐藏向量块、Mapping、向量存储大小和语义查询
+- [x] 语义发布拆分为 `stage -> acceptance -> promote`，未评测索引不会自动获得线上读别名
+- [x] 云 Eval 必须指向具体索引，输出带 Eval 集哈希的 Recall、MRR、P95、并发吞吐和费用报告
+- [x] 实际费用通过云账单/Provider Usage 证据二次证明；缺少索引费用、查询费用、证据编号或费用阈值时失败关闭
+- [x] `promote` 校验具体索引、语义 Profile、三类门禁、报告时效和 SHA-256 后才原子切换别名
+
 中文语义索引使用 `docs/elasticsearch-knowledge-index-semantic.json`。发布到新具体索引并完成别名切换后，运行时配置示例：
 
 ```dotenv
@@ -161,29 +171,35 @@ DAMAI_AGENT_RAG_RETRIEVAL_PROFILE=semantic_rerank
 DAMAI_AGENT_ELASTICSEARCH_RERANK_INFERENCE_ID=<versioned-rerank-endpoint>
 ```
 
-云 Eval 的 API Key 只通过 `DAMAI_EVAL_ELASTICSEARCH_API_KEY` 注入，不放入命令行。对同一集合依次运行 `semantic_hybrid` 与 `semantic_rerank`，比较 Recall、MRR、P95 和实际推理费用：
+云 Eval 的 API Key 只通过 `DAMAI_EVAL_ELASTICSEARCH_API_KEY` 注入，不放入命令行。验收必须指向暂存的具体索引，不能用可能漂移的活动别名。对同一集合依次运行 `semantic_hybrid` 与 `semantic_rerank`，比较 Recall、MRR、P95、吞吐和实际推理费用：
 
 ```powershell
 $env:DAMAI_EVAL_ELASTICSEARCH_URL = "https://your-deployment.example.com:9243"
 $env:DAMAI_EVAL_ELASTICSEARCH_API_KEY = "<read-only-eval-key>"
-$env:DAMAI_EVAL_ELASTICSEARCH_INDEX_ALIAS = "damai-knowledge-read"
+$env:DAMAI_EVAL_ELASTICSEARCH_INDEX = "damai-knowledge-read-v-20260919-001"
 $env:DAMAI_EVAL_ELASTICSEARCH_INDEX_VERSION = "knowledge-2026.09.19-semantic"
 
 python scripts/evaluate_rag.py `
   --backend elasticsearch `
   --retrieval-profile semantic_hybrid `
+  --index-name damai-knowledge-read-v-20260919-001 `
   --eval-set C:\secure\knowledge-eval.json `
   --source-host help.example.com `
+  --benchmark-repetitions 10 --benchmark-concurrency 8 `
+  --min-benchmark-requests 100 --min-throughput-qps 10 `
   --min-recall 0.9 --min-mrr 0.8 --min-precision 0.5 `
-  --max-p95-latency-ms 800
+  --max-p95-latency-ms 800 `
+  --report-out C:\secure\rag-benchmark.json
 ```
+
+费用二次证明与晋级命令见[知识索引发布与回滚](phase-4-knowledge-operations.md)。Elasticsearch Search 响应不提供统一的跨供应商账单金额，因此工具不会把字符数估算伪装成真实费用；最终报告必须引用同一窗口的 Elastic Billing 或推理供应商 Usage 导出。
 
 高级架构与不采用 GraphRAG/RAPTOR 作为默认路径的理由见 [ADR-011](adr/011-advanced-rag-retrieval.md)。
 
 ## 剩余退出标准
 
-- [ ] 在云测试索引发布中文语义 Mapping，验证推理端点、模型版本、召回、延迟、吞吐与成本
+- [ ] 使用受保护的云凭据执行 `stage`，以真实账单完成语义索引 Recall、MRR、P95、吞吐和费用验收，再执行 `promote`
 - [ ] 用业务方大规模集合运行 RAG/推荐 Eval，完成控制组与实验组统计显著性、人工相关性和安全验收
 - [ ] 测试专用环境完成端到端 RAG/Java Trace、故障降级和 SLO 验收
 
-第四批完成代表混合词法检索、重排灰度和自动化门禁已经建立，不代表语义检索、业务人工验收、云 SLO 或生产准入已经完成。
+第六批完成代表自动分块、Embedding、向量存储验证和失败关闭的云发布门禁已经建立；未留存真实云报告、账单证据和审批回执前，仍不得宣称云 SLO 或生产准入已经完成。

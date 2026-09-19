@@ -80,6 +80,10 @@ class KnowledgePublisherTest(unittest.TestCase):
             properties["semantic_content"]["inference_id"],
             ".multilingual-e5-small-elasticsearch",
         )
+        self.assertEqual(
+            properties["semantic_content"]["chunking_settings"],
+            {"strategy": "sentence", "max_chunk_size": 200, "sentence_overlap": 1},
+        )
         configured = configure_semantic_mapping(mapping, "eis-multilingual-large-v1")
         self.assertEqual(
             configured["mappings"]["properties"]["semantic_content"]["inference_id"],
@@ -89,6 +93,86 @@ class KnowledgePublisherTest(unittest.TestCase):
             properties["semantic_content"]["inference_id"],
             ".multilingual-e5-small-elasticsearch",
         )
+
+    def test_stage_rejects_unbounded_semantic_chunking_before_cloud_calls(self) -> None:
+        mapping_path = (
+            Path(__file__).parents[1] / "docs" / "elasticsearch-knowledge-index-semantic.json"
+        )
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        mapping["mappings"]["properties"]["semantic_content"]["chunking_settings"][
+            "max_chunk_size"
+        ] = 5_000
+        opener = FakeOpener([])
+        with self.assertRaisesRegex(ValueError, "explicit chunking policy"):
+            publisher(opener).stage(
+                "damai-knowledge-read-v-invalid-chunks",
+                (document("faq-1"),),
+                mapping,
+            )
+        self.assertFalse(opener.requests)
+
+    def test_stage_probes_embedding_and_verifies_hidden_vector_chunks_without_alias(self) -> None:
+        mapping_path = (
+            Path(__file__).parents[1] / "docs" / "elasticsearch-knowledge-index-semantic.json"
+        )
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        index_name = "damai-knowledge-read-v-semantic-001"
+        opener = FakeOpener(
+            [
+                {
+                    "endpoints": [
+                        {
+                            "inference_id": ".multilingual-e5-small-elasticsearch",
+                            "task_type": "text_embedding",
+                        }
+                    ]
+                },
+                {"text_embedding": [{"embedding": [0.1, 0.2]}]},
+                {"acknowledged": True},
+                {"errors": False, "items": []},
+                {"count": 2},
+                {index_name: {"mappings": mapping["mappings"]}},
+                {
+                    "indices": {
+                        index_name: {
+                            "primaries": {
+                                "docs": {"count": 5},
+                                "store": {"size_in_bytes": 4096},
+                            }
+                        }
+                    }
+                },
+                {"hits": {"hits": []}},
+            ]
+        )
+        receipt = publisher(opener).stage(
+            index_name,
+            (document("faq-1"), document("faq-2")),
+            mapping,
+        )
+
+        self.assertFalse(receipt.alias_switched)
+        self.assertEqual(receipt.vector_chunk_count, 3)
+        self.assertEqual(receipt.semantic_inference_id, ".multilingual-e5-small-elasticsearch")
+        self.assertEqual(receipt.bulk_batches, 1)
+        urls = [request.full_url for request in opener.requests]
+        self.assertIn(
+            "https://es.example.com/_inference/text_embedding/.multilingual-e5-small-elasticsearch",
+            urls,
+        )
+        self.assertNotIn("https://es.example.com/_aliases", urls)
+
+    def test_semantic_release_cannot_bypass_acceptance_with_legacy_publish(self) -> None:
+        mapping_path = (
+            Path(__file__).parents[1] / "docs" / "elasticsearch-knowledge-index-semantic.json"
+        )
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        with self.assertRaisesRegex(ValueError, "must be staged"):
+            publisher(FakeOpener([])).publish(
+                "damai-knowledge-read-v-semantic-unsafe",
+                (document("faq-1"),),
+                mapping,
+            )
 
     def test_publish_verifies_count_and_atomically_switches_explicit_alias_targets(self) -> None:
         missing_alias = urllib.error.HTTPError("https://es.example.com", 404, "not found", {}, None)
@@ -136,6 +220,31 @@ class KnowledgePublisherTest(unittest.TestCase):
                         "is_write_index": False,
                     }
                 }
+            ],
+        )
+
+    def test_stage_splits_large_releases_into_bounded_bulk_batches(self) -> None:
+        documents = tuple(document(f"faq-{position}") for position in range(501))
+        opener = FakeOpener(
+            [
+                {"acknowledged": True},
+                {"errors": False, "items": []},
+                {"errors": False, "items": []},
+                {"count": len(documents)},
+            ]
+        )
+        receipt = publisher(opener).stage(
+            "damai-knowledge-read-v-batched",
+            documents,
+            {"mappings": {"dynamic": "strict", "properties": {}}},
+        )
+        self.assertEqual(receipt.bulk_batches, 2)
+        bulk_urls = [request.full_url for request in opener.requests if "_bulk" in request.full_url]
+        self.assertEqual(
+            bulk_urls,
+            [
+                "https://es.example.com/_bulk?refresh=false",
+                "https://es.example.com/_bulk?refresh=wait_for",
             ],
         )
 

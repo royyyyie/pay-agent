@@ -128,6 +128,44 @@ class ElasticsearchKnowledgeRetriever:
             self._ready_until = time.monotonic() + (30 if self._ready_value else 5)
             return self._ready_value
 
+    async def semantic_configuration(self) -> dict[str, object]:
+        """Return bounded, non-secret semantic mapping metadata for acceptance evidence."""
+
+        if self._retrieval_profile == "elastic-lexical":
+            return {}
+        payload = await asyncio.to_thread(
+            self._request_path,
+            "GET",
+            f"/{quote(self._index_alias, safe='')}/_mapping",
+            None,
+        )
+        if len(payload) != 1:
+            raise ElasticsearchRetrievalError("Elasticsearch semantic target is not immutable")
+        index_payload = next(iter(payload.values()))
+        mappings = index_payload.get("mappings") if isinstance(index_payload, dict) else None
+        properties = mappings.get("properties") if isinstance(mappings, dict) else None
+        semantic = properties.get(self._semantic_field) if isinstance(properties, dict) else None
+        if not isinstance(semantic, dict) or semantic.get("type") != "semantic_text":
+            raise ElasticsearchRetrievalError("Elasticsearch semantic mapping is invalid")
+        inference_id = semantic.get("inference_id")
+        search_inference_id = semantic.get("search_inference_id", inference_id)
+        chunking = semantic.get("chunking_settings")
+        if (
+            not isinstance(inference_id, str)
+            or _INFERENCE_PATTERN.fullmatch(inference_id) is None
+            or not isinstance(search_inference_id, str)
+            or _INFERENCE_PATTERN.fullmatch(search_inference_id) is None
+            or not isinstance(chunking, dict)
+        ):
+            raise ElasticsearchRetrievalError("Elasticsearch semantic mapping is incomplete")
+        return {
+            "field": self._semantic_field,
+            "inferenceId": inference_id,
+            "searchInferenceId": search_inference_id,
+            "chunkingSettings": chunking,
+            "rerankInferenceId": self._rerank_inference_id,
+        }
+
     async def _probe_ready(self) -> bool:
         query: dict[str, object] = {"match_none": {}}
         if self._retrieval_profile != "elastic-lexical":
@@ -310,15 +348,27 @@ class ElasticsearchKnowledgeRetriever:
         return passage
 
     def _request(self, payload: dict[str, object]) -> dict[str, object]:
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        target = (
-            f"{self._base_url}/{quote(self._index_alias, safe='')}/_search"
-            "?allow_partial_search_results=false"
+        return self._request_path(
+            "POST",
+            f"/{quote(self._index_alias, safe='')}/_search?allow_partial_search_results=false",
+            payload,
+        )
+
+    def _request_path(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, object] | None,
+    ) -> dict[str, object]:
+        body = (
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if payload is not None
+            else None
         )
         request = urllib.request.Request(
-            target,
+            f"{self._base_url}{path}",
             data=body,
-            method="POST",
+            method=method,
             headers={
                 "Accept": "application/json",
                 "Content-Type": "application/json",
