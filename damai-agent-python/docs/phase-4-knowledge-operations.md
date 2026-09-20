@@ -25,7 +25,7 @@ uv run --frozen python scripts/manage_knowledge_index.py validate `
   --source-host venue.example.com
 ```
 
-3. 记录输出的 `contentVersion`，完成双人审批并生成不可变小写索引名，例如 `damai-knowledge-read-v-20260919-001`。
+3. 记录输出的 `contentVersion` 和完整 `catalogSha256`，完成双人审批并生成不可变小写索引名，例如 `damai-knowledge-read-v-20260919-001`。后续 Eval 数据集必须声明同一个 `catalogSha256`，索引版本必须等于 `knowledge@sha256:<目录哈希前 16 位>`。
 4. 词法索引使用默认 Mapping；高级语义 RAG 使用 `docs/elasticsearch-knowledge-index-semantic.json`。语义 Mapping 显式固定中文 Embedding endpoint 和 `sentence/200/overlap=1` 分块策略。修改端点、分块或向量索引参数均等同于新模型发布，必须创建新索引并重新评测。
 5. 在受保护的发布环境中设置凭据并暂存索引。`--confirm-index` 必须与 `--index` 完全一致。`stage` 只创建具体索引，不会切换线上别名：
 
@@ -41,6 +41,7 @@ uv run --frozen python scripts/manage_knowledge_index.py stage `
   --index damai-knowledge-read-v-20260919-001 `
   --confirm-index damai-knowledge-read-v-20260919-001 `
   --mapping docs/elasticsearch-knowledge-index-semantic.json `
+  --serverless `
   --semantic-inference-id eis-microsoft-multilingual-e5-large `
   --chunking-strategy sentence `
   --max-chunk-size 200 `
@@ -49,23 +50,47 @@ uv run --frozen python scripts/manage_knowledge_index.py stage `
 
 模板内置可自托管的中文基线 `.multilingual-e5-small-elasticsearch`。`--semantic-inference-id` 会在内存中绑定经过评测的版本化端点而不改写模板；示例端点是否可用取决于 Elastic Cloud 区域和许可。工具在创建索引前读取端点元数据并发起一次真实 Embedding；Bulk 写入触发 `semantic_text` 自动分块、Embedding 和向量存储。随后工具核对父文档数、隐藏向量块数、实际 Mapping、存储大小并执行语义查询冒烟测试。任一步失败都不会切换读别名。
 
+工具默认读取根端点的 `version.build_flavor` 自动识别 Elastic Cloud Serverless；根端点受代理限制时，可用 `--serverless` 或 `--stateful` 显式指定并跳过探测。Serverless 会托管分片和副本拓扑，工具只会从内存中的索引定义移除 `number_of_shards` 和 `number_of_replicas`，不会改写受审模板。Serverless 不开放索引 `_stats`，因此回执中的 `vectorChunkCount` 为 `null`，发布门禁改为核对父文档数量、实际 `semantic_text` Mapping，并要求真实语义查询至少命中一条；Stateful 部署仍额外核对隐藏向量块计数和存储大小。回执会记录 `deploymentMode`，供审批系统确认发布目标符合预期。
+
 Bulk 按 500 文档/5 MiB 双上限自动分批，最后一批等待刷新。发布账号还需要使用指定 inference endpoint 的最小权限和容量；运行时只读账号不得获得索引写权限。失败响应正文不会进入异常消息。
 
-6. 使用只读 Eval Key 对“具体索引”而非活动别名执行质量和负载验收。至少 30 个实测请求；正式集合应远大于该下限：
+运行时使用有上限的异步连接池复用 Elasticsearch HTTPS 连接，并在关闭应用时释放连接。负载验收按 1、2、4 直至目标并发阶梯预热连接，预热请求不计入正式指标。客户端不继承系统环境代理，避免认证头未经部署配置流经非预期代理；必须使用企业代理时，应先在部署网络层显式配置、审计并单独验收。
+
+6. 使用只读 Eval Key 对“具体索引”而非活动别名执行质量和负载验收。语义查询会调用 Inference API，因此最小权限为目标具体索引的 `read` 和集群级 `monitor_inference`；直接读取 Mapping 时还需要 `view_index_metadata`。如果发布/上一轮验收已经留下 72 小时内、目标索引和内容版本完全一致的报告，可以通过 `--semantic-evidence-report` 复用其中的 Mapping 证据。新报告会记录旧报告 SHA-256，不要求 Eval Key 获得 `view_index_metadata`，但仍强制要求 `monitor_inference`。
+
+生产验收使用版本化 `damai.rag.eval/v1` Bundle，而不是普通 JSON 数组。Bundle 至少包含 100 条互不重复的业务判断、检索与动态事实阻断两类用例、风险等级、分类、逐条人工判断引用、知识目录完整 SHA-256、责任团队、双人复核数量和变更审批引用；至少一条必须为 `safety_critical`。结构可从 [Eval Bundle 示例](rag-eval-bundle.example.json)复制，先替换目录哈希和业务案例，再由审批流程把 `approval_status` 改为 `approved`。旧数组仍可用于本地冒烟和性能诊断，但报告会标记为不具备发布资格，不能附加费用签证或执行 `promote`。
+
+```json
+{
+  "cluster": ["monitor_inference"],
+  "indices": [
+    {
+      "names": ["damai-knowledge-read-v-20260919-001"],
+      "privileges": ["read"]
+    }
+  ]
+}
+```
 
 ```powershell
 $env:DAMAI_EVAL_ELASTICSEARCH_URL = "https://your-deployment.example.com:9243"
 $env:DAMAI_EVAL_ELASTICSEARCH_API_KEY = "<read-only-eval-key>"
 $env:DAMAI_EVAL_ELASTICSEARCH_INDEX = "damai-knowledge-read-v-20260919-001"
-$env:DAMAI_EVAL_ELASTICSEARCH_INDEX_VERSION = "knowledge-2026.09.19-semantic"
+$env:DAMAI_EVAL_ELASTICSEARCH_INDEX_VERSION = "knowledge@sha256:<catalog-sha256前16位>"
+$env:DAMAI_EVAL_CATALOG_SHA256 = "<stage回执中的完整catalogSha256>"
 
 uv run --frozen python scripts/evaluate_rag.py `
   --backend elasticsearch `
   --retrieval-profile semantic_hybrid `
   --index-name damai-knowledge-read-v-20260919-001 `
-  --index-version knowledge-2026.09.19-semantic `
-  --eval-set C:\secure\knowledge-eval.json `
+  --index-version "knowledge@sha256:<catalog-sha256前16位>" `
+  --catalog-sha256 "<stage回执中的完整catalogSha256>" `
+  --eval-set C:\secure\knowledge-eval-bundle.json `
+  --require-approved-eval `
+  --min-eval-cases 100 `
   --source-host help.example.com `
+  --semantic-evidence-report C:\secure\previous-rag-benchmark.json `
+  --rank-window-size 20 `
   --benchmark-repetitions 10 `
   --benchmark-concurrency 8 `
   --warmup-requests 10 `
@@ -78,6 +103,21 @@ uv run --frozen python scripts/evaluate_rag.py `
 ```
 
 无费用证据时报告会保留 Recall、MRR、P95 和吞吐结果但返回非零，不允许晋级。查询 Elastic/推理供应商账单或 Usage 导出，取得同一测试窗口的索引 Embedding 和查询/重排实际费用后，生成新的费用证明报告：
+
+Elasticsearch 项目 API Key 不能读取组织账单，即使名称是“只读 Key”也不能代替组织级 Cloud Key。自动采集必须另建只读 Elastic Cloud API Key，通过环境变量注入；组织 ID 同样不放入命令行。采集器调用官方 Cloud Billing v2 `costs/instances`，只保留目标项目并记录原始响应 SHA-256：
+
+```powershell
+$env:ELASTIC_CLOUD_API_KEY = "<billing-read-cloud-api-key>"
+$env:ELASTIC_CLOUD_ORGANIZATION_ID = "<organization-id>"
+
+uv run --frozen python scripts/collect_elastic_billing.py `
+  --project-id <serverless-project-id> `
+  --from-time 2026-09-19T11:30:00Z `
+  --to-time 2026-09-19T12:00:00Z `
+  --report-out C:\secure\elastic-billing-20260919.json
+```
+
+证据保留 Elastic 原始 ECU 和产品行项目，不自动假设 ECU 与 USD 的换算关系。应按组织合同或 Billing Usage 导出的实际币种分别确认索引窗口和查询窗口费用，再交给费用证明工具。Cloud Key 的创建和权限见 [Elastic Cloud API keys](https://www.elastic.co/docs/deploy-manage/api-keys/elastic-cloud-api-keys)，账单接口见 [Cloud Billing API](https://www.elastic.co/docs/api/doc/cloud-billing/operation/operation-getcostsbyinstancesv2)。
 
 ```powershell
 uv run --frozen python scripts/attest_rag_cost.py `
@@ -101,10 +141,13 @@ uv run --frozen python scripts/manage_knowledge_index.py promote `
   --alias damai-knowledge-read `
   --index damai-knowledge-read-v-20260919-001 `
   --confirm-index damai-knowledge-read-v-20260919-001 `
-  --acceptance-report C:\secure\rag-acceptance.json
+  --acceptance-report C:\secure\rag-acceptance.json `
+  --experiment-report C:\secure\rag-experiment.json `
+  --recommendation-report C:\secure\recommendation-acceptance.json `
+  --slo-report C:\secure\phase4-slo-attestation.json
 ```
 
-费用证明报告会记录原始 Benchmark 和账单导出文件的 SHA-256，不复制可能敏感的账单正文。晋级工具校验报告版本、具体索引、语义 Profile、质量/负载/费用结果和 72 小时有效期，并把最终报告 SHA-256 写入回执。通过后保留 stage 回执、原始 Benchmark、账单证据、最终验收报告、审批记录和 promote 回执。
+费用证明报告会记录原始 Benchmark 和账单导出文件的 SHA-256，不复制可能敏感的账单正文。费用签证前会再次校验正式 Eval 资格；晋级工具还会校验报告版本、具体索引、目录哈希与索引版本绑定、分类/风险分层结果、语义 Profile、质量/负载/费用结果和 72 小时有效期。最终晋级还必须提供控制/实验统计与盲审、正式推荐 Eval、测试环境 SLO/Trace/故障/回滚三份报告，并把四份报告 SHA-256 写入回执。完整步骤见[阶段 4 最终验收](phase-4-final-acceptance.md)。通过后保留 stage 回执、Eval Bundle、原始 Benchmark、账单证据、最终验收报告、审批记录和 promote 回执。
 
 ## 回滚
 

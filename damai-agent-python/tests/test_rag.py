@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import unittest
@@ -128,6 +129,25 @@ class PassageRetriever:
                 passage="真正相关的实名核验规则位于文档中间。",
             ),
         )
+
+
+class WarmupConcurrencyRetriever(PassageRetriever):
+    def __init__(self, warmup_requests: int) -> None:
+        self._warmup_requests = warmup_requests
+        self._started = 0
+        self._warmup_active = 0
+        self.max_warmup_active = 0
+
+    async def search(self, *_: object, **__: object) -> Sequence[KnowledgeHit]:
+        self._started += 1
+        is_warmup = self._started <= self._warmup_requests
+        if is_warmup:
+            self._warmup_active += 1
+            self.max_warmup_active = max(self.max_warmup_active, self._warmup_active)
+        await asyncio.sleep(0.01)
+        if is_warmup:
+            self._warmup_active -= 1
+        return await super().search()
 
 
 class KnowledgeIndexTest(unittest.IsolatedAsyncioTestCase):
@@ -297,6 +317,8 @@ class KnowledgeValidationTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "source host"):
                 load_knowledge_catalog(path, allowed_source_hosts=("other.example.com",))
         self.assertRegex(index.index_version, r"^knowledge@sha256:[0-9a-f]{16}$")
+        self.assertRegex(index.content_sha256, r"^[0-9a-f]{64}$")
+        self.assertEqual(index.index_version, f"knowledge@sha256:{index.content_sha256[:16]}")
 
 
 class RagRunnerTest(unittest.IsolatedAsyncioTestCase):
@@ -389,6 +411,26 @@ class RagRunnerTest(unittest.IsolatedAsyncioTestCase):
 
 
 class RagOfflineEvalTest(unittest.IsolatedAsyncioTestCase):
+    async def test_benchmark_warms_connections_at_target_concurrency(self) -> None:
+        retriever = WarmupConcurrencyRetriever(warmup_requests=7)
+        rag = StableKnowledgeRag(retriever, top_k=1)  # type: ignore[arg-type]
+        await benchmark_rag(
+            rag,
+            (
+                RagEvalCase(
+                    case_id="stable-identity",
+                    query="实名购票有什么规定",
+                    tenant_id="tenant-a",
+                    expected_document_ids=("identity-policy",),
+                ),
+            ),
+            repetitions=1,
+            concurrency=4,
+            warmup_requests=7,
+            moment=NOW,
+        )
+        self.assertEqual(retriever.max_warmup_active, 4)
+
     async def test_retrieval_and_dynamic_red_lines(self) -> None:
         rag = StableKnowledgeRag(InMemoryKnowledgeIndex((document(),)))
         report = await evaluate_rag(
@@ -401,12 +443,15 @@ class RagOfflineEvalTest(unittest.IsolatedAsyncioTestCase):
                     expected_document_ids=("identity-policy",),
                     expected_top_document_id="identity-policy",
                     forbidden_document_ids=("tenant-b",),
+                    category="identity",
+                    risk_level="safety_critical",
                 ),
                 RagEvalCase(
                     case_id="dynamic-price",
                     query="现在票价多少钱",
                     tenant_id="tenant-a",
                     must_block_as_dynamic=True,
+                    category="dynamic",
                 ),
             ),
             moment=NOW,
@@ -416,6 +461,11 @@ class RagOfflineEvalTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report.mean_reciprocal_rank, 1.0)
         self.assertEqual(report.citation_integrity_rate, 1.0)
         self.assertEqual(report.dynamic_block_rate, 1.0)
+        slices = report.to_dict()["slices"]
+        self.assertIsInstance(slices, dict)
+        assert isinstance(slices, dict)
+        self.assertEqual(slices["category"]["identity"]["recall"], 1.0)
+        self.assertEqual(slices["riskLevel"]["safety_critical"]["passed"], 1)
 
     async def test_benchmark_counts_only_real_retrieval_requests(self) -> None:
         rag = StableKnowledgeRag(InMemoryKnowledgeIndex((document(),)))

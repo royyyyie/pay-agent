@@ -271,6 +271,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         try:
             yield
         finally:
+            if knowledge_rag is not None:
+                await knowledge_rag.aclose()
             if durable_redis is not None:
                 await durable_redis.aclose()
             await asyncio.to_thread(tracing.shutdown)

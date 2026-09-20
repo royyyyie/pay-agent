@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Literal, Protocol, Sequence
+from typing import Literal, Protocol, Sequence, runtime_checkable
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -166,6 +166,11 @@ class KnowledgeRetriever(Protocol):
     ) -> Sequence[KnowledgeHit]: ...
 
 
+@runtime_checkable
+class AsyncClosable(Protocol):
+    async def aclose(self) -> None: ...
+
+
 def plan_chinese_queries(query: str) -> tuple[str, ...]:
     """Build a bounded set of deterministic lexical channels for Chinese retrieval."""
 
@@ -209,6 +214,10 @@ class ReciprocalRankFusionRetriever:
 
     async def check_ready(self) -> bool:
         return await self._retriever.check_ready()
+
+    async def aclose(self) -> None:
+        if isinstance(self._retriever, AsyncClosable):
+            await self._retriever.aclose()
 
     async def search(
         self,
@@ -369,13 +378,18 @@ class InMemoryKnowledgeIndex:
             sort_keys=True,
             separators=(",", ":"),
         )
-        self._index_version = (
-            f"knowledge@sha256:{hashlib.sha256(canonical.encode()).hexdigest()[:16]}"
-        )
+        self._content_sha256 = hashlib.sha256(canonical.encode()).hexdigest()
+        self._index_version = f"knowledge@sha256:{self._content_sha256[:16]}"
 
     @property
     def index_version(self) -> str:
         return self._index_version
+
+    @property
+    def content_sha256(self) -> str:
+        """Canonical catalog digest used to bind Eval judgments to a release."""
+
+        return self._content_sha256
 
     @property
     def profile(self) -> RetrievalProfile:
@@ -387,6 +401,9 @@ class InMemoryKnowledgeIndex:
 
     async def check_ready(self) -> bool:
         return True
+
+    async def aclose(self) -> None:
+        return None
 
     async def search(
         self,
@@ -507,6 +524,10 @@ class StableKnowledgeRag:
 
     async def check_ready(self) -> bool:
         return await self._retriever.check_ready()
+
+    async def aclose(self) -> None:
+        if isinstance(self._retriever, AsyncClosable):
+            await self._retriever.aclose()
 
     async def prepare(
         self,

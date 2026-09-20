@@ -16,7 +16,9 @@ from damai_agent.knowledge_publish import (
     ElasticsearchKnowledgePublisher,
     configure_semantic_mapping,
 )
-from damai_agent.rag import load_knowledge_catalog
+from damai_agent.phase4_release import verify_phase4_release_evidence
+from damai_agent.rag import InMemoryKnowledgeIndex, load_knowledge_catalog
+from damai_agent.rag_eval import validate_release_eval_governance
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MAPPING = PROJECT_ROOT / "docs" / "elasticsearch-knowledge-index.json"
@@ -38,9 +40,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--index")
     parser.add_argument("--confirm-index")
     parser.add_argument("--acceptance-report", type=Path)
+    parser.add_argument("--experiment-report", type=Path)
+    parser.add_argument("--recommendation-report", type=Path)
+    parser.add_argument("--slo-report", type=Path)
     parser.add_argument("--max-report-age-hours", type=int, default=72)
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
     parser.add_argument("--allow-http", action="store_true")
+    deployment = parser.add_mutually_exclusive_group()
+    deployment.add_argument(
+        "--serverless",
+        action="store_true",
+        help="Treat the target as Serverless without deployment auto-detection.",
+    )
+    deployment.add_argument(
+        "--stateful",
+        action="store_true",
+        help="Treat the target as Stateful/self-managed without auto-detection.",
+    )
     parser.add_argument(
         "--semantic-inference-id",
         default=os.environ.get("DAMAI_KNOWLEDGE_SEMANTIC_INFERENCE_ID", ""),
@@ -55,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_release(args: argparse.Namespace):
+def load_release(args: argparse.Namespace) -> InMemoryKnowledgeIndex:
     if args.catalog is None:
         raise ValueError("--catalog is required")
     if not args.source_host:
@@ -78,17 +94,19 @@ def build_publisher(args: argparse.Namespace) -> ElasticsearchKnowledgePublisher
         raise ValueError("publisher URL and API key are required")
     if urlparse(args.url).scheme != "https" and not args.allow_http:
         raise ValueError("publisher URL must use HTTPS unless --allow-http is explicit")
+    serverless = True if args.serverless else False if args.stateful else None
     return ElasticsearchKnowledgePublisher(
         args.url,
         api_key,
         args.alias,
         timeout_seconds=args.timeout_seconds,
+        serverless=serverless,
     )
 
 
 def verify_acceptance_report(args: argparse.Namespace, index_name: str) -> str:
     path = args.acceptance_report
-    if path is None or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+    if path is None or not path.is_file() or path.stat().st_size > 8 * 1024 * 1024:
         raise ValueError("a bounded --acceptance-report is required for promotion")
     raw = path.read_bytes()
     try:
@@ -102,6 +120,7 @@ def verify_acceptance_report(args: argparse.Namespace, index_name: str) -> str:
     if report.get("retrievalProfile") not in {"semantic_hybrid", "semantic_rerank"}:
         raise ValueError("acceptance report did not exercise a semantic profile")
     semantic = report.get("semanticConfiguration")
+    benchmark = report.get("benchmarkConfiguration")
     inference_id = semantic.get("inferenceId") if isinstance(semantic, dict) else None
     chunking = semantic.get("chunkingSettings") if isinstance(semantic, dict) else None
     chunking_strategy = chunking.get("strategy") if isinstance(chunking, dict) else None
@@ -109,6 +128,13 @@ def verify_acceptance_report(args: argparse.Namespace, index_name: str) -> str:
     overlap_key = "sentence_overlap" if chunking_strategy == "sentence" else "overlap"
     chunk_overlap = chunking.get(overlap_key) if isinstance(chunking, dict) else None
     rerank_inference_id = semantic.get("rerankInferenceId") if isinstance(semantic, dict) else None
+    top_k = benchmark.get("topK") if isinstance(benchmark, dict) else None
+    candidate_k = benchmark.get("candidateK") if isinstance(benchmark, dict) else None
+    rank_window_size = benchmark.get("rankWindowSize") if isinstance(benchmark, dict) else None
+    rank_constant = benchmark.get("rrfRankConstant") if isinstance(benchmark, dict) else None
+    repetitions = benchmark.get("repetitions") if isinstance(benchmark, dict) else None
+    concurrency = benchmark.get("concurrency") if isinstance(benchmark, dict) else None
+    warmup_requests = benchmark.get("warmupRequests") if isinstance(benchmark, dict) else None
     if (
         not isinstance(inference_id, str)
         or _INFERENCE_PATTERN.fullmatch(inference_id) is None
@@ -129,8 +155,31 @@ def verify_acceptance_report(args: argparse.Namespace, index_name: str) -> str:
                 or _INFERENCE_PATTERN.fullmatch(rerank_inference_id) is None
             )
         )
+        or not isinstance(benchmark, dict)
+        or benchmark.get("backend") != "elasticsearch"
+        or isinstance(top_k, bool)
+        or not isinstance(top_k, int)
+        or not 1 <= top_k <= 20
+        or isinstance(candidate_k, bool)
+        or not isinstance(candidate_k, int)
+        or not top_k <= candidate_k <= 100
+        or isinstance(rank_window_size, bool)
+        or not isinstance(rank_window_size, int)
+        or not max(10, candidate_k) <= rank_window_size <= 200
+        or isinstance(rank_constant, bool)
+        or not isinstance(rank_constant, int)
+        or not 1 <= rank_constant <= 1000
+        or isinstance(repetitions, bool)
+        or not isinstance(repetitions, int)
+        or not 1 <= repetitions <= 100
+        or isinstance(concurrency, bool)
+        or not isinstance(concurrency, int)
+        or not 1 <= concurrency <= 64
+        or isinstance(warmup_requests, bool)
+        or not isinstance(warmup_requests, int)
+        or not 0 <= warmup_requests <= 1000
     ):
-        raise ValueError("acceptance report lacks semantic mapping evidence")
+        raise ValueError("acceptance report lacks semantic mapping or benchmark evidence")
     eval_hash = report.get("evalSetSha256")
     benchmark_hash = report.get("benchmarkReportSha256")
     if (
@@ -140,6 +189,13 @@ def verify_acceptance_report(args: argparse.Namespace, index_name: str) -> str:
         or _SHA256_PATTERN.fullmatch(benchmark_hash) is None
     ):
         raise ValueError("acceptance report evidence hashes are invalid")
+    eval_governance = report.get("evalGovernance")
+    validate_release_eval_governance(eval_governance)
+    assert isinstance(eval_governance, dict)
+    catalog_sha256 = eval_governance.get("catalogSha256")
+    assert isinstance(catalog_sha256, str)
+    if report.get("indexVersion") != f"knowledge@sha256:{catalog_sha256[:16]}":
+        raise ValueError("acceptance report index version does not match the approved catalog")
 
     quality = report.get("quality")
     load = report.get("load")
@@ -149,6 +205,62 @@ def verify_acceptance_report(args: argparse.Namespace, index_name: str) -> str:
     assert isinstance(quality, dict)
     assert isinstance(load, dict)
     assert isinstance(cost, dict)
+
+    slices = quality.get("slices")
+    if not isinstance(slices, dict):
+        raise ValueError("acceptance report lacks Eval slice metrics")
+    for dimension, counts_key in (
+        ("category", "categoryCounts"),
+        ("riskLevel", "riskLevelCounts"),
+    ):
+        dimension_metrics = slices.get(dimension)
+        expected_counts = eval_governance.get(counts_key)
+        if (
+            not isinstance(dimension_metrics, dict)
+            or not isinstance(expected_counts, dict)
+            or set(dimension_metrics) != set(expected_counts)
+        ):
+            raise ValueError("acceptance report Eval slice metrics are incomplete")
+        for name, expected_count in expected_counts.items():
+            metrics = dimension_metrics.get(name)
+            if not isinstance(metrics, dict):
+                raise ValueError("acceptance report Eval slice metrics failed verification")
+            retrieval_cases = metrics.get("retrievalCases")
+            dynamic_cases = metrics.get("dynamicCases")
+            bounded_rates = (
+                metrics.get("recall"),
+                metrics.get("meanReciprocalRank"),
+                metrics.get("citationPrecision"),
+                metrics.get("citationIntegrityRate"),
+                metrics.get("dynamicBlockRate"),
+            )
+            latencies = (metrics.get("meanLatencyMs"), metrics.get("p95LatencyMs"))
+            if (
+                metrics.get("total") != expected_count
+                or metrics.get("passed") != expected_count
+                or isinstance(retrieval_cases, bool)
+                or not isinstance(retrieval_cases, int)
+                or isinstance(dynamic_cases, bool)
+                or not isinstance(dynamic_cases, int)
+                or retrieval_cases < 0
+                or dynamic_cases < 0
+                or retrieval_cases + dynamic_cases != expected_count
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or not 0 <= float(value) <= 1
+                    for value in bounded_rates
+                )
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or float(value) < 0
+                    for value in latencies
+                )
+            ):
+                raise ValueError("acceptance report Eval slice metrics failed verification")
 
     def number(section: dict[str, object], key: str) -> float:
         value = section.get(key)
@@ -256,6 +368,7 @@ def main() -> int:
                     "valid": True,
                     "documentCount": len(release.documents),
                     "contentVersion": release.index_version,
+                    "catalogSha256": release.content_sha256,
                 },
                 ensure_ascii=False,
             )
@@ -266,6 +379,14 @@ def main() -> int:
     publisher = build_publisher(args)
     if args.command == "promote":
         report_sha256 = verify_acceptance_report(args, index_name)
+        evidence_hashes = verify_phase4_release_evidence(
+            acceptance_report=args.acceptance_report,
+            experiment_report=args.experiment_report,
+            recommendation_report=args.recommendation_report,
+            slo_report=args.slo_report,
+            index_name=index_name,
+            max_age_hours=args.max_report_age_hours,
+        )
         previous = publisher.switch_alias(index_name)
         print(
             json.dumps(
@@ -274,6 +395,7 @@ def main() -> int:
                     "previousIndices": previous,
                     "aliasSwitched": True,
                     "acceptanceReportSha256": report_sha256,
+                    "phase4Evidence": evidence_hashes,
                 }
             )
         )
@@ -319,6 +441,7 @@ def main() -> int:
                     "index": receipt.index_name,
                     "alias": receipt.alias,
                     "documentCount": receipt.document_count,
+                    "catalogSha256": release.content_sha256,
                     "previousIndices": receipt.previous_indices,
                     "semanticInferenceId": semantic_inference_id,
                     "semanticSearchInferenceId": receipt.search_inference_id,
@@ -326,6 +449,7 @@ def main() -> int:
                     "bulkBatches": receipt.bulk_batches,
                     "indexingDurationMs": round(receipt.indexing_duration_ms, 3),
                     "aliasSwitched": receipt.alias_switched,
+                    "deploymentMode": receipt.deployment_mode,
                     "readyForEvaluation": not receipt.alias_switched,
                 },
                 ensure_ascii=False,

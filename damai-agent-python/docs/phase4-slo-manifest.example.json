@@ -1,0 +1,48 @@
+{
+  "schema_version": "damai.phase4.slo/v1",
+  "environment_id": "phase4-test",
+  "environment_tier": "test",
+  "deployment_version": "replace-with-deployment-version",
+  "knowledge_index_version": "knowledge@sha256:0000000000000000",
+  "window_start": "2026-09-20T00:00:00Z",
+  "window_end": "2026-09-20T00:10:00Z",
+  "request_count": 100,
+  "availability": 0.0,
+  "p95_turn_latency_ms": 0,
+  "trace_sample_count": 0,
+  "trace_continuity_rate": 0.0,
+  "rag_java_trace_sample_count": 0,
+  "fault_scenarios": {
+    "provider": {
+      "passed": false,
+      "evidence_reference": "fault:provider-pending",
+      "recovery_time_ms": 0,
+      "duplicate_side_effects": 0
+    },
+    "java_gateway": {
+      "passed": false,
+      "evidence_reference": "fault:java-pending",
+      "recovery_time_ms": 0,
+      "duplicate_side_effects": 0
+    },
+    "redis": {
+      "passed": false,
+      "evidence_reference": "fault:redis-pending",
+      "recovery_time_ms": 0,
+      "duplicate_side_effects": 0
+    },
+    "postgresql": {
+      "passed": false,
+      "evidence_reference": "fault:postgresql-pending",
+      "recovery_time_ms": 0,
+      "duplicate_side_effects": 0
+    }
+  },
+  "rollback_drill_passed": false,
+  "operations_approved": false,
+  "security_approved": false,
+  "reviewer_count": 2,
+  "approval_status": "draft",
+  "approval_reference": "change:replace-before-approval",
+  "approved_at": "2026-09-20T00:00:00Z"
+}

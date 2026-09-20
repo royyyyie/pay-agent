@@ -7,6 +7,8 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
+
 from damai_agent.elasticsearch_rag import (
     ElasticsearchKnowledgeRetriever,
     ElasticsearchRetrievalError,
@@ -73,6 +75,69 @@ def retriever(opener: FakeOpener, **options: object) -> ElasticsearchKnowledgeRe
 
 
 class ElasticsearchKnowledgeRetrieverTest(unittest.IsolatedAsyncioTestCase):
+    async def test_async_transport_uses_bounded_http_client_and_closes(self) -> None:
+        requests: list[httpx.Request] = []
+
+        async def handle(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"hits": {"hits": []}})
+
+        instance = ElasticsearchKnowledgeRetriever(
+            "https://es.example.com",
+            "private-api-key",
+            "damai-knowledge-read",
+            "knowledge-2026.09.19",
+            ("help.example.com",),
+            transport=httpx.MockTransport(handle),
+        )
+        await instance.search(
+            "实名购票",
+            tenant_id="tenant-a",
+            locale="zh-CN",
+            limit=2,
+            moment=NOW,
+        )
+        await instance.aclose()
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0].headers["authorization"], "ApiKey private-api-key")
+        self.assertEqual(requests[0].url.host, "es.example.com")
+        with self.assertRaises(RuntimeError):
+            await instance.search(
+                "实名购票",
+                tenant_id="tenant-a",
+                locale="zh-CN",
+                limit=2,
+                moment=NOW,
+            )
+
+    async def test_acceptance_privileges_are_bounded_to_exact_index(self) -> None:
+        opener = FakeOpener(
+            {
+                "has_all_requested": False,
+                "cluster": {"monitor_inference": True},
+                "index": {
+                    "damai-knowledge-read": {
+                        "read": True,
+                        "view_index_metadata": False,
+                    }
+                },
+            }
+        )
+        privileges = await retriever(opener).acceptance_privileges()
+        self.assertEqual(
+            privileges,
+            {
+                "monitorInference": True,
+                "read": True,
+                "viewIndexMetadata": False,
+            },
+        )
+        request = opener.requests[0]
+        self.assertTrue(request.full_url.endswith("/_security/user/_has_privileges"))
+        body = json.loads(request.data or b"{}")
+        self.assertEqual(body["cluster"], ["monitor_inference"])
+        self.assertEqual(body["index"][0]["names"], ["damai-knowledge-read"])
+
     async def test_semantic_hybrid_uses_server_rrf_and_returns_bounded_passage(self) -> None:
         opener = FakeOpener(
             {
