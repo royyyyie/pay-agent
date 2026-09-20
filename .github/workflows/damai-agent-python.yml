@@ -6,11 +6,15 @@ on:
       - "damai-agent-python/**"
       - "contracts/**"
       - "damai-server/damai-program-service/pom.xml"
+      - "damai-server-client/damai-program-client/src/main/java/com/damai/vo/TicketCategoryDetailVo.java"
       - "damai-server/damai-program-service/src/main/java/com/damai/controller/agent/**"
+      - "damai-server/damai-program-service/src/main/java/com/damai/service/TicketCategoryService.java"
+      - "damai-server/damai-program-service/src/main/resources/application.yml"
       - "damai-server/damai-program-service/src/main/resources/log4j2.xml"
       - "damai-server/damai-program-service/src/main/resources/shardingsphere-program-*.yaml"
       - "damai-server/damai-program-service/src/test/java/com/damai/controller/agent/**"
       - "sql/migrations/20260919_agent_watch_rule.sql"
+      - "sql/migrations/20260920_agent_watch_scheduler.sql"
       - ".github/workflows/damai-agent-python.yml"
   push:
     branches: [main, "codex/phase-*"]
@@ -18,11 +22,15 @@ on:
       - "damai-agent-python/**"
       - "contracts/**"
       - "damai-server/damai-program-service/pom.xml"
+      - "damai-server-client/damai-program-client/src/main/java/com/damai/vo/TicketCategoryDetailVo.java"
       - "damai-server/damai-program-service/src/main/java/com/damai/controller/agent/**"
+      - "damai-server/damai-program-service/src/main/java/com/damai/service/TicketCategoryService.java"
+      - "damai-server/damai-program-service/src/main/resources/application.yml"
       - "damai-server/damai-program-service/src/main/resources/log4j2.xml"
       - "damai-server/damai-program-service/src/main/resources/shardingsphere-program-*.yaml"
       - "damai-server/damai-program-service/src/test/java/com/damai/controller/agent/**"
       - "sql/migrations/20260919_agent_watch_rule.sql"
+      - "sql/migrations/20260920_agent_watch_scheduler.sql"
       - ".github/workflows/damai-agent-python.yml"
 
 permissions:

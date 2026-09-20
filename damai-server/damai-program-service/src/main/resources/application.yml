@@ -127,6 +127,15 @@ springdoc:
       paths-to-match: '/**'
       #生成文档所需的扫包路径，一般为启动类目录
       packages-to-scan: com.damai.controller
+agent:
+  watch-rules:
+    enabled: ${AGENT_WATCH_RULES_ENABLED:false}
+    scheduler-enabled: ${AGENT_WATCH_SCHEDULER_ENABLED:false}
+    scheduler-instance-id: ${AGENT_WATCH_SCHEDULER_INSTANCE_ID:${HOSTNAME:local}}
+    scheduler-fixed-delay-ms: ${AGENT_WATCH_SCHEDULER_FIXED_DELAY_MS:5000}
+    scheduler-lease-seconds: ${AGENT_WATCH_SCHEDULER_LEASE_SECONDS:60}
+    scheduler-scan-partitions: ${AGENT_WATCH_SCHEDULER_SCAN_PARTITIONS:4}
+    scheduler-batch-size: ${AGENT_WATCH_SCHEDULER_BATCH_SIZE:50}
 #knife4j配置
 knife4j:
   #是否启用增强设置

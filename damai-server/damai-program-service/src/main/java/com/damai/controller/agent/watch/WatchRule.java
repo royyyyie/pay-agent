@@ -48,6 +48,17 @@ public class WatchRule {
 
     private Date lastTriggeredTime;
 
+    /** Owner of the current scheduler lease; null when the rule is unclaimed. */
+    private String leaseOwner;
+
+    /** Random fencing token changed for every successful claim. */
+    private String leaseToken;
+
+    private Date leaseExpiresAt;
+
+    /** Rule version captured when the lease was acquired. */
+    private Long claimedVersion;
+
     private Long version;
 
     @TableField(fill = FieldFill.INSERT)

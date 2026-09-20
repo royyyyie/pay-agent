@@ -26,8 +26,9 @@ import java.util.stream.Collectors;
 /**
  * Durable, owner-scoped watch-rule control plane.
  *
- * Scheduling and notification delivery consume this state in later phase-5 batches. All writes
- * are idempotent or optimistic and always include the immutable program sharding key.
+ * The scheduler consumes this state through fenced database leases. Notification delivery remains
+ * a later phase-5 batch. All writes are idempotent or optimistic and always include the immutable
+ * program sharding key.
  */
 @Service
 public class WatchRuleService {
@@ -121,10 +122,13 @@ public class WatchRuleService {
                         WatchRule::getCheckIntervalSeconds,
                         request.getCheckIntervalSeconds())
                 .set(
-                        request.getCheckIntervalSeconds() != null
-                                && WatchRuleState.ACTIVE.name().equals(current.getRuleState()),
+                        WatchRuleState.ACTIVE.name().equals(current.getRuleState()),
                         WatchRule::getNextCheckTime,
                         now)
+                .set(WatchRule::getLeaseOwner, null)
+                .set(WatchRule::getLeaseToken, null)
+                .set(WatchRule::getLeaseExpiresAt, null)
+                .set(WatchRule::getClaimedVersion, null)
                 .set(WatchRule::getVersion, nextVersion)
                 .set(WatchRule::getEditTime, now);
         if (watchRuleMapper.update(null, update) != 1) {
@@ -161,6 +165,10 @@ public class WatchRuleService {
                         request.getTargetStatus() == WatchRuleState.ACTIVE,
                         WatchRule::getNextCheckTime,
                         now)
+                .set(WatchRule::getLeaseOwner, null)
+                .set(WatchRule::getLeaseToken, null)
+                .set(WatchRule::getLeaseExpiresAt, null)
+                .set(WatchRule::getClaimedVersion, null)
                 .set(WatchRule::getVersion, current.getVersion() + 1)
                 .set(WatchRule::getEditTime, now);
         if (watchRuleMapper.update(null, update) != 1) {

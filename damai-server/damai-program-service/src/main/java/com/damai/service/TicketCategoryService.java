@@ -197,7 +197,7 @@ public class TicketCategoryService extends ServiceImpl<TicketCategoryMapper, Tic
         List<Long> uniqueProgramIds = programIds.stream()
                 .filter(Objects::nonNull)
                 .distinct()
-                .limit(10)
+                .limit(100)
                 .collect(Collectors.toList());
         if (uniqueProgramIds.isEmpty()) {
             return Map.of();
