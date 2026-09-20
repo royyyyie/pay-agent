@@ -1,0 +1,16 @@
+{
+  "schema_version": "damai.rag.human-review/v1",
+  "dataset_id": "knowledge-production",
+  "dataset_version": "2026.09.20-001",
+  "baseline_profile": "semantic_hybrid",
+  "candidate_profile": "semantic_rerank",
+  "review_protocol_version": "blind-review-v1",
+  "blind_review": true,
+  "judged_case_count": 100,
+  "reviewer_count": 2,
+  "agreement_rate": 0.8,
+  "safety_approved": false,
+  "approval_status": "draft",
+  "approval_reference": "change:replace-before-approval",
+  "approved_at": "2026-09-20T00:00:00Z"
+}

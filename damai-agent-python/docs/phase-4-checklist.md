@@ -207,6 +207,18 @@ python scripts/evaluate_rag.py `
 - [x] 报告按业务分类和风险等级分别输出 Recall、MRR、引用精度/完整性、动态阻断率和 P95
 - [x] 费用签证与 `promote` 均复验 Eval 审批、完整判断覆盖、分层结果、目录哈希和索引版本绑定
 
+## 第八批：统计实验、推荐治理与最终封板
+
+- [x] RAG 报告输出无查询正文的逐 Case 效用；同一 Eval 的控制/实验报告执行确定性配对 Bootstrap、精确符号检验和红线回退检查
+- [x] 人工复核证据要求盲审、至少两名评审、完整 Case 覆盖、评审一致率、安全批准和审批引用
+- [x] 推荐 Eval 升级为绑定 Tool OpenAPI SHA-256 的审批 Bundle，正式集合至少 100 条且包含安全关键案例
+- [x] 推荐报告按业务分类/风险等级输出路由、预算、偏好和实时核验红线结果
+- [x] SLO 证明要求至少 10 分钟/100 请求、99% 可用性、Turn P95 ≤ 10 秒、Trace 连续性和 RAG/Java 关联样本
+- [x] 故障证据固定覆盖 Provider、Java Gateway、Redis、PostgreSQL，要求零重复副作用并完成回滚演练和运维/安全审批
+- [x] `promote` 在别名切换前统一验证 RAG 质量/性能/费用、实验盲审、推荐 Eval、SLO/Trace/故障/回滚四份报告
+
+完整执行顺序、模板和阶段状态定义见[阶段 4 最终验收与封板](phase-4-final-acceptance.md)。
+
 ### 2026-09-19 Elastic Cloud Serverless 实测
 
 - Cloud Serverless 9.6.0、Enterprise 许可证和 API Key 鉴权通过；根端点、Inference 元数据和真实推理均可用。
@@ -222,10 +234,10 @@ python scripts/evaluate_rag.py `
 
 高级架构与不采用 GraphRAG/RAPTOR 作为默认路径的理由见 [ADR-011](adr/011-advanced-rag-retrieval.md)。
 
-## 剩余退出标准
+## 外部生产准入证据
 
 - [ ] 使用受保护的云凭据执行 `stage`，以真实账单完成语义索引 Recall、MRR、P95、吞吐和费用验收，再执行 `promote`
 - [ ] 用业务方大规模集合运行 RAG/推荐 Eval，完成控制组与实验组统计显著性、人工相关性和安全验收
 - [ ] 测试专用环境完成端到端 RAG/Java Trace、故障降级和 SLO 验收
 
-第六批完成代表自动分块、Embedding、向量存储验证和失败关闭的云发布门禁已经建立；未留存真实云报告、账单证据和审批回执前，仍不得宣称云 SLO 或生产准入已经完成。
+阶段 4 的工程开发在第八批封板；以上三项是必须由业务、云账单、测试环境和审批人产生的外部事实，不能由代码仓库自动伪造。未留存四份真实报告、账单证据和审批回执前，状态为“工程封板”，不得宣称测试环境验收或生产准入完成。

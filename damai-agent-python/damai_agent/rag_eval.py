@@ -231,6 +231,32 @@ class RagEvalObservation:
     dynamic_blocked: bool
     latency_ms: float
 
+    @property
+    def recall(self) -> float:
+        if not self.retrieval_case or not self.expected_documents:
+            return 1.0
+        return self.retrieved_expected / self.expected_documents
+
+    @property
+    def utility_score(self) -> float:
+        if self.dynamic_case:
+            return 1.0 if self.dynamic_blocked else 0.0
+        integrity = 1.0 if self.citation_integrity_passed else 0.0
+        return (self.recall + self.reciprocal_rank + integrity) / 3
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "caseId": self.case_id,
+            "passed": self.passed,
+            "retrievalCase": self.retrieval_case,
+            "recall": round(self.recall, 6),
+            "reciprocalRank": round(self.reciprocal_rank, 6),
+            "citationIntegrityPassed": self.citation_integrity_passed,
+            "dynamicBlocked": self.dynamic_blocked,
+            "utilityScore": round(self.utility_score, 6),
+            "latencyMs": round(self.latency_ms, 3),
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class RagEvalReport:
@@ -327,6 +353,7 @@ class RagEvalReport:
                 "category": self._slice_metrics("category"),
                 "riskLevel": self._slice_metrics("risk_level"),
             },
+            "caseResults": [observation.to_dict() for observation in self.observations],
         }
 
     def _slice_metrics(self, dimension: Literal["category", "risk_level"]) -> dict[str, object]:

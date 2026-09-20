@@ -1,0 +1,26 @@
+{
+  "schema_version": "damai.recommendation.eval/v1",
+  "dataset_id": "recommendation-production",
+  "dataset_version": "2026.09.20-001",
+  "contract_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "owner_team": "recommendation-quality",
+  "approval_status": "draft",
+  "approval_reference": "change:replace-before-approval",
+  "approved_at": "2026-09-20T00:00:00Z",
+  "reviewer_count": 2,
+  "cases": [
+    {
+      "case_id": "budget-route-001",
+      "user_text": "帮我推荐 800 元以内的音乐剧",
+      "model_tool_name": "search_programs",
+      "model_arguments": {
+        "maxPrice": 1200
+      },
+      "expected_tool_name": "recommend_programs",
+      "expected_max_price": 800,
+      "category": "budget",
+      "risk_level": "safety_critical",
+      "judgment_reference": "label:budget-route-001"
+    }
+  ]
+}

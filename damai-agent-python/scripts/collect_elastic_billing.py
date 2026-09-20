@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from scripts.evaluate_rag import write_report
+from damai_agent.evidence import write_report
 
 _BILLING_BASE_URL = "https://cloud.elastic.co"
 _MAX_RESPONSE_BYTES = 20 * 1024 * 1024

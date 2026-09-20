@@ -141,10 +141,13 @@ uv run --frozen python scripts/manage_knowledge_index.py promote `
   --alias damai-knowledge-read `
   --index damai-knowledge-read-v-20260919-001 `
   --confirm-index damai-knowledge-read-v-20260919-001 `
-  --acceptance-report C:\secure\rag-acceptance.json
+  --acceptance-report C:\secure\rag-acceptance.json `
+  --experiment-report C:\secure\rag-experiment.json `
+  --recommendation-report C:\secure\recommendation-acceptance.json `
+  --slo-report C:\secure\phase4-slo-attestation.json
 ```
 
-费用证明报告会记录原始 Benchmark 和账单导出文件的 SHA-256，不复制可能敏感的账单正文。费用签证前会再次校验正式 Eval 资格；晋级工具还会校验报告版本、具体索引、目录哈希与索引版本绑定、分类/风险分层结果、语义 Profile、质量/负载/费用结果和 72 小时有效期，并把最终报告 SHA-256 写入回执。通过后保留 stage 回执、Eval Bundle、原始 Benchmark、账单证据、最终验收报告、审批记录和 promote 回执。
+费用证明报告会记录原始 Benchmark 和账单导出文件的 SHA-256，不复制可能敏感的账单正文。费用签证前会再次校验正式 Eval 资格；晋级工具还会校验报告版本、具体索引、目录哈希与索引版本绑定、分类/风险分层结果、语义 Profile、质量/负载/费用结果和 72 小时有效期。最终晋级还必须提供控制/实验统计与盲审、正式推荐 Eval、测试环境 SLO/Trace/故障/回滚三份报告，并把四份报告 SHA-256 写入回执。完整步骤见[阶段 4 最终验收](phase-4-final-acceptance.md)。通过后保留 stage 回执、Eval Bundle、原始 Benchmark、账单证据、最终验收报告、审批记录和 promote 回执。
 
 ## 回滚
 

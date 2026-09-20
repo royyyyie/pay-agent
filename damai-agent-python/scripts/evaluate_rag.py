@@ -7,11 +7,11 @@ import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import cast
 
 from damai_agent.elasticsearch_rag import ElasticsearchKnowledgeRetriever
+from damai_agent.evidence import bounded_cost_evidence, usd_to_micro, write_report
 from damai_agent.rag import (
     AsyncClosable,
     KnowledgeRetriever,
@@ -21,10 +21,9 @@ from damai_agent.rag import (
 )
 from damai_agent.rag_eval import benchmark_rag, evaluate_rag, load_eval_asset
 
-_COST_EVIDENCE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}")
 _FIELD_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
 _INFERENCE_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
-_MAX_SEMANTIC_EVIDENCE_BYTES = 2 * 1024 * 1024
+_MAX_SEMANTIC_EVIDENCE_BYTES = 8 * 1024 * 1024
 
 
 def parse_args() -> argparse.Namespace:
@@ -119,32 +118,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-query-cost-per-1k-usd")
     parser.add_argument("--report-out", type=Path)
     return parser.parse_args()
-
-
-def usd_to_micro(value: str, *, label: str) -> int | None:
-    if not value:
-        return None
-    try:
-        amount = Decimal(value)
-    except InvalidOperation as exc:
-        raise ValueError(f"{label} must be a decimal USD amount") from exc
-    if not amount.is_finite() or amount < 0 or amount > Decimal("1000000"):
-        raise ValueError(f"{label} is outside the accepted range")
-    return int((amount * 1_000_000).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-
-
-def bounded_cost_evidence(value: str) -> str:
-    if value and _COST_EVIDENCE_PATTERN.fullmatch(value) is None:
-        raise ValueError("cost evidence identifier is invalid")
-    return value
-
-
-def write_report(path: Path, payload: dict[str, object]) -> None:
-    target = path.resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(target)
 
 
 def sha256_file(path: str) -> str:

@@ -8,8 +8,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from damai_agent.evidence import bounded_cost_evidence, usd_to_micro, write_report
 from damai_agent.rag_eval import validate_release_eval_governance
-from scripts.evaluate_rag import bounded_cost_evidence, usd_to_micro, write_report
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,7 +31,7 @@ def main() -> int:
     target = args.report_out.resolve()
     if source == target:
         raise ValueError("cost attestation must create a new report")
-    if not source.is_file() or source.stat().st_size > 2 * 1024 * 1024:
+    if not source.is_file() or source.stat().st_size > 8 * 1024 * 1024:
         raise ValueError("benchmark report is missing or too large")
     raw = source.read_bytes()
     try:

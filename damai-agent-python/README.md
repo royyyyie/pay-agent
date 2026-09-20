@@ -139,4 +139,6 @@ uv run --frozen pytest --cov=damai_agent
 
 阶段 4 把语义索引发布升级为 `stage -> acceptance -> promote`：显式中文分块策略、真实 Embedding 探测、隐藏向量块验证、分批 Bulk，以及针对具体索引的 Recall/MRR/P95/QPS/真实费用报告均为晋级硬门禁。正式验收还要求至少 100 条经双人审批、绑定目录 SHA-256 且包含安全关键案例的业务 Eval Bundle，并输出分类/风险分层指标；小型 Fixture 和缺少云账单证据的报告都不能切换线上别名，详见[知识索引发布与回滚](docs/phase-4-knowledge-operations.md)。
 
+阶段 4 最终封板增加控制/实验配对统计与盲审、绑定 Tool 契约的正式推荐 Eval，以及测试环境 SLO、RAG/Java Trace、Provider/Java/Redis/PostgreSQL 故障和回滚证明。`promote` 必须同时验证四份证据报告后才切换别名；执行顺序见[阶段 4 最终验收](docs/phase-4-final-acceptance.md)。仓库工程封板不等于真实业务、账单和测试环境已经完成生产准入。
+
 阶段 5 第一批建立票务监控安全控制面：规则由 Java 持久化，Python 仅通过 `REVERSIBLE_WRITE` Tool 管理；受信租户/用户身份不进入模型参数，原始 HMAC 委托会在 Java 再验证，创建具备幂等键，修改使用乐观版本。Java 与 Python 双侧默认关闭，启用前必须执行 MySQL 迁移、打开持久化 Tool 审计，并由 Java BFF 签发 `watch:*` Scope。当前尚未交付调度 Worker 和通知 Outbox，因此不会把“规则已创建”描述为“通知闭环已完成”。详见[阶段 5 检查清单](docs/phase-5-checklist.md)和 [ADR-012](docs/adr/012-watch-rule-ownership.md)。

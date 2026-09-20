@@ -16,6 +16,7 @@ from damai_agent.knowledge_publish import (
     ElasticsearchKnowledgePublisher,
     configure_semantic_mapping,
 )
+from damai_agent.phase4_release import verify_phase4_release_evidence
 from damai_agent.rag import InMemoryKnowledgeIndex, load_knowledge_catalog
 from damai_agent.rag_eval import validate_release_eval_governance
 
@@ -39,6 +40,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--index")
     parser.add_argument("--confirm-index")
     parser.add_argument("--acceptance-report", type=Path)
+    parser.add_argument("--experiment-report", type=Path)
+    parser.add_argument("--recommendation-report", type=Path)
+    parser.add_argument("--slo-report", type=Path)
     parser.add_argument("--max-report-age-hours", type=int, default=72)
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
     parser.add_argument("--allow-http", action="store_true")
@@ -102,7 +106,7 @@ def build_publisher(args: argparse.Namespace) -> ElasticsearchKnowledgePublisher
 
 def verify_acceptance_report(args: argparse.Namespace, index_name: str) -> str:
     path = args.acceptance_report
-    if path is None or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+    if path is None or not path.is_file() or path.stat().st_size > 8 * 1024 * 1024:
         raise ValueError("a bounded --acceptance-report is required for promotion")
     raw = path.read_bytes()
     try:
@@ -375,6 +379,14 @@ def main() -> int:
     publisher = build_publisher(args)
     if args.command == "promote":
         report_sha256 = verify_acceptance_report(args, index_name)
+        evidence_hashes = verify_phase4_release_evidence(
+            acceptance_report=args.acceptance_report,
+            experiment_report=args.experiment_report,
+            recommendation_report=args.recommendation_report,
+            slo_report=args.slo_report,
+            index_name=index_name,
+            max_age_hours=args.max_report_age_hours,
+        )
         previous = publisher.switch_alias(index_name)
         print(
             json.dumps(
@@ -383,6 +395,7 @@ def main() -> int:
                     "previousIndices": previous,
                     "aliasSwitched": True,
                     "acceptanceReportSha256": report_sha256,
+                    "phase4Evidence": evidence_hashes,
                 }
             )
         )
