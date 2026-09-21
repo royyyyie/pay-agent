@@ -75,6 +75,7 @@ public interface WatchRuleMapper extends BaseMapper<WatchRule> {
             UPDATE d_agent_watch_rule
             SET last_checked_time = #{checkedAt},
                 next_check_time = #{nextCheckTime},
+                last_triggered_time = COALESCE(#{triggeredAt}, last_triggered_time),
                 lease_owner = NULL,
                 lease_token = NULL,
                 lease_expires_at = NULL,
@@ -95,7 +96,16 @@ public interface WatchRuleMapper extends BaseMapper<WatchRule> {
             @Param("leaseOwner") String leaseOwner,
             @Param("leaseToken") String leaseToken,
             @Param("checkedAt") Date checkedAt,
-            @Param("nextCheckTime") Date nextCheckTime);
+            @Param("nextCheckTime") Date nextCheckTime,
+            @Param("triggeredAt") Date triggeredAt);
+
+    @Select("""
+            SELECT * FROM d_agent_watch_rule
+            WHERE id = #{id} AND program_id = #{programId}
+            LIMIT 1
+            """)
+    WatchRule selectCurrent(
+            @Param("id") Long id, @Param("programId") Long programId);
 
     @Select("""
             SELECT COUNT(*)

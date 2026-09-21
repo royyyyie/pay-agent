@@ -49,13 +49,29 @@
 
 ## 第三批：通知 Outbox 与去重
 
-- [ ] 规则状态更新与通知 Outbox 在同一事务提交
-- [ ] 去重键至少包含规则 ID、规则版本、条件指纹和受控时间窗
-- [ ] Kafka 发布支持重试，消费者以事件 ID 幂等；任一侧重启不重复送达
-- [ ] 通知包含节目、匹配票档、实时价格/余量和 `freshnessAt`，不包含敏感身份
-- [ ] 支持冷却窗口、退订/暂停和失败死信处置
-- [ ] 完成规则重启不丢失、并发认领、通知重复投递和 Kafka 故障注入
+- [x] 规则状态更新、执行流水与通知 Outbox 在同一节目分片事务提交
+- [x] 去重键包含规则 ID、规则版本、条件指纹和受控时间窗
+- [x] Kafka 发布支持 DB 租约、指数退避和幂等 Producer；消费者以事件 ID 幂等
+- [x] 通知包含节目、匹配票档、实时价格/余量和 `freshnessAt`，Kafka 内容不包含租户或用户身份
+- [x] 支持冷却窗口、退订/暂停抑制、Publisher DEAD 状态和 Consumer DLT
+- [x] CI 覆盖 fencing、冷却去重、重复消费、暂停抑制和 Kafka 故障注入
+
+可靠性语义：
+
+- Scheduler 在确认规则版本和租约 token 后，同事务更新 `last_checked_time` / `last_triggered_time`、写执行流水并写唯一 Outbox；任一写入失败都会整体回滚。
+- Outbox Publisher 只有收到 Kafka Broker ACK 后才标记 `PUBLISHED`。ACK 后数据库更新失败会造成重复投递，但事件 ID 不变，`d_agent_watch_notification` 的唯一键会吸收重复。
+- Kafka 事件不携带 `tenantId`、`userId` 或用户输入的规则名称。Consumer 使用 `ruleId + programId` 本地查询当前归属；规则已暂停或版本已变化时只写 `SUPPRESSED` 回执，不生成可展示通知。
+- Producer 连续失败达到上限后 Outbox 进入 `DEAD`；Consumer 连续失败由专用 Listener Factory 投递至 `<notification-topic>.dlt`，不会阻塞正常事件。
+
+部署和外部验收顺序：
+
+1. 备份后执行 `sql/migrations/20260921_agent_watch_outbox.sql`，部署包含 Outbox/通知分片规则的应用，保持 `AGENT_WATCH_NOTIFICATION_ENABLED=false`。
+2. 预创建 `${AGENT_WATCH_NOTIFICATION_TOPIC}` 与同分区数的 `${AGENT_WATCH_NOTIFICATION_TOPIC}.dlt`；生产至少 4 个分区，副本数和 `min.insync.replicas` 按 Kafka 集群容灾标准设置。
+3. 确认 Producer 使用 `acks=all`、`enable.idempotence=true`，Consumer 使用独立版本化 Group ID；再开启 `AGENT_WATCH_NOTIFICATION_ENABLED=true`。
+4. 触发一条匹配规则，核对执行流水、Outbox `PUBLISHED`、站内通知 `DELIVERED` 三段证据及 `freshnessAt`；Kafka Payload 不得出现租户或用户标识。
+5. 重复投递相同事件，通知表只能有一条；发布后立即暂停或修改规则，旧版本事件必须为 `SUPPRESSED`。
+6. 阻断 Kafka 后确认 Outbox 指数退避并最终 `DEAD`；注入不可解析消息后确认进入 `.dlt`；恢复后通过受控运维流程重放，不直接修改去重键。
 
 ## 当前退出判断
 
-第一批完成只代表“监控规则可以安全持久化和管理”，不代表监控闭环已经完成。阶段 5 的退出标准仍需第二、三批全部通过，并在测试专用环境证明：Java/Agent 重启不丢规则，多副本不重复执行，同一触发不会重复通知。
+阶段 5 的代码与自动化测试已经覆盖三批能力，但退出仍需在测试专用 MySQL/Kafka 环境执行上述外部验收，证明：Java/Agent 重启不丢规则，多副本不重复执行，同一事件不重复生成站内通知，Kafka 故障可进入并恢复自 Outbox/DLT。生产开关在外部验收前保持关闭。
