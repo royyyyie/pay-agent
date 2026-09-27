@@ -41,6 +41,39 @@ class ProgramRecommendationRequest(BaseModel):
     preference: Literal['RELEVANCE', 'LOWEST_PRICE', 'EARLIEST_SHOW', 'MOST_AVAILABLE'] = Field('RELEVANCE', description='仅在硬约束和实时余票过滤后应用的软排序偏好')
     candidateLimit: int = Field(3, ge=1, le=5, description='最多返回候选数量；服务端最多扫描前 10 个搜索结果')
 
+class PurchaseIntentPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    programId: int = Field(..., ge=1, description='已由实时节目工具确认的节目 ID，也是购买意向分片键')
+    ticketCategoryId: int = Field(..., ge=1, description='必须属于 programId 且由实时票档工具确认')
+    quantity: int = Field(1, ge=1, le=6, description='购票数量；价格和库存由 Java 重新读取，模型不得提供金额')
+
+class PurchaseIntentGetRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    intentId: int = Field(..., ge=1)
+    programId: int = Field(..., ge=1, description='创建意向时返回的不可变分片键')
+
+class PurchaseIntentCancelRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    intentId: int = Field(..., ge=1)
+    programId: int = Field(..., ge=1, description='创建意向时返回的不可变分片键')
+    expectedVersion: int = Field(..., ge=1, description='乐观锁版本；冲突后必须重新查询')
+
+class PurchaseIntent(BaseModel):
+    model_config = ConfigDict(extra='allow', populate_by_name=True)
+    intentId: int = Field(...)
+    programId: int = Field(...)
+    ticketCategoryId: int = Field(...)
+    quantity: int = Field(..., ge=1, le=6)
+    unitAmountFen: int = Field(..., ge=0, description='Java 从实时票档价格生成的单价，单位为人民币分')
+    totalAmountFen: int = Field(..., ge=0, description='Java 计算的总金额，单位为人民币分')
+    currency: Literal['CNY'] = Field(...)
+    quoteHash: str = Field(..., pattern='^[0-9a-f]{64}$', description='绑定归属、节目、票档、数量、金额和有效期的报价摘要，不是确认凭据')
+    quoteExpiresAt: datetime = Field(...)
+    intentStatus: Literal['PENDING_CONFIRMATION', 'CONFIRMED', 'CANCELLED', 'EXPIRED', 'SUBMITTED'] = Field(...)
+    version: int = Field(..., ge=1)
+    createdAt: datetime = Field(...)
+    updatedAt: datetime = Field(...)
+
 class WatchRuleCreateRequest(BaseModel):
     model_config = ConfigDict(extra='forbid', populate_by_name=True)
     programId: int = Field(..., ge=1, description='已由节目查询确认的节目 ID，也是监控规则分片键')
@@ -128,6 +161,16 @@ class WatchRuleResponse(BaseModel):
     code: int = Field(...)
     message: str = Field(...)
     data: WatchRule = Field(...)
+    retryable: bool = Field(...)
+    freshnessAt: datetime = Field(...)
+
+class PurchaseIntentResponse(BaseModel):
+    model_config = ConfigDict(extra='allow', populate_by_name=True)
+    requestId: str = Field(...)
+    success: bool = Field(...)
+    code: int = Field(...)
+    message: str = Field(...)
+    data: PurchaseIntent = Field(...)
     retryable: bool = Field(...)
     freshnessAt: datetime = Field(...)
 
@@ -240,7 +283,7 @@ class ListTicketCategoriesResponse(BaseModel):
     retryable: bool = Field(...)
     freshnessAt: datetime = Field(...)
 
-GENERATED_MODELS = (ProgramSearchRequest, ProgramIdRequest, ProgramRecommendationRequest, WatchRuleCreateRequest, WatchRuleUpdateRequest, WatchRuleStatusRequest, WatchRuleListRequest, WatchRule, WatchRulePage, ToolResponse, ProgramSearchResponse, WatchRuleResponse, WatchRulePageResponse, ProgramPage, ProgramSummary, ProgramRecommendationCandidate, ProgramRecommendationPage, ProgramDetail, TicketCategory, ProgramRecommendationResponse, GetProgramDetailResponse, ListTicketCategoriesResponse,)
+GENERATED_MODELS = (ProgramSearchRequest, ProgramIdRequest, ProgramRecommendationRequest, PurchaseIntentPrepareRequest, PurchaseIntentGetRequest, PurchaseIntentCancelRequest, PurchaseIntent, WatchRuleCreateRequest, WatchRuleUpdateRequest, WatchRuleStatusRequest, WatchRuleListRequest, WatchRule, WatchRulePage, ToolResponse, ProgramSearchResponse, WatchRuleResponse, PurchaseIntentResponse, WatchRulePageResponse, ProgramPage, ProgramSummary, ProgramRecommendationCandidate, ProgramRecommendationPage, ProgramDetail, TicketCategory, ProgramRecommendationResponse, GetProgramDetailResponse, ListTicketCategoriesResponse,)
 for _model in GENERATED_MODELS:
     _model.model_rebuild()
 
@@ -249,6 +292,9 @@ REQUEST_MODELS: Dict[str, type[BaseModel]] = {
     'recommend_programs': ProgramRecommendationRequest,
     'search_programs': ProgramSearchRequest,
     'list_ticket_categories': ProgramIdRequest,
+    'cancel_purchase_intent': PurchaseIntentCancelRequest,
+    'get_purchase_intent': PurchaseIntentGetRequest,
+    'prepare_purchase_intent': PurchaseIntentPrepareRequest,
     'create_watch_rule': WatchRuleCreateRequest,
     'list_watch_rules': WatchRuleListRequest,
     'set_watch_rule_status': WatchRuleStatusRequest,
@@ -260,6 +306,9 @@ RESPONSE_MODELS: Dict[str, type[BaseModel]] = {
     'recommend_programs': ProgramRecommendationResponse,
     'search_programs': ProgramSearchResponse,
     'list_ticket_categories': ListTicketCategoriesResponse,
+    'cancel_purchase_intent': PurchaseIntentResponse,
+    'get_purchase_intent': PurchaseIntentResponse,
+    'prepare_purchase_intent': PurchaseIntentResponse,
     'create_watch_rule': WatchRuleResponse,
     'list_watch_rules': WatchRulePageResponse,
     'set_watch_rule_status': WatchRuleResponse,

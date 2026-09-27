@@ -69,6 +69,32 @@ class AgentToolWatchDelegationFilterTest {
         assertTrue(invoked.get());
     }
 
+    @Test
+    void enforcesPurchaseIntentScopesWithoutOpeningOrderRisk() throws Exception {
+        MockHttpServletRequest prepare = request(
+                "/internal/agent/v1/tools/purchase-intents/prepare");
+        sign(prepare, "tenant-1", "REVERSIBLE_WRITE", "purchase:intent:write");
+        MockHttpServletResponse prepared = new MockHttpServletResponse();
+        AtomicBoolean prepareInvoked = new AtomicBoolean(false);
+        filter.doFilter(
+                prepare, prepared, (servletRequest, servletResponse) -> prepareInvoked.set(true));
+        assertTrue(prepareInvoked.get());
+
+        MockHttpServletRequest get = request("/internal/agent/v1/tools/purchase-intents/get");
+        sign(get, "tenant-1", "READ_ONLY", "purchase:intent:read");
+        MockHttpServletResponse queried = new MockHttpServletResponse();
+        AtomicBoolean getInvoked = new AtomicBoolean(false);
+        filter.doFilter(get, queried, (servletRequest, servletResponse) -> getInvoked.set(true));
+        assertTrue(getInvoked.get());
+
+        MockHttpServletRequest denied = request(
+                "/internal/agent/v1/tools/purchase-intents/cancel");
+        sign(denied, "tenant-1", "READ_ONLY", "purchase:intent:write");
+        MockHttpServletResponse rejected = new MockHttpServletResponse();
+        filter.doFilter(denied, rejected, (servletRequest, servletResponse) -> {});
+        assertEquals(401, rejected.getStatus());
+    }
+
     private MockHttpServletRequest request(String path) {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", path);
         request.addHeader("X-Agent-Tool-Call-Id", "call-1");

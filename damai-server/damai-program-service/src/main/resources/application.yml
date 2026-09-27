@@ -139,6 +139,11 @@ springdoc:
       #生成文档所需的扫包路径，一般为启动类目录
       packages-to-scan: com.damai.controller
 agent:
+  purchase-intents:
+    enabled: ${AGENT_PURCHASE_INTENTS_ENABLED:false}
+    quote-ttl-seconds: ${AGENT_PURCHASE_QUOTE_TTL_SECONDS:120}
+    grant-ttl-seconds: ${AGENT_CONFIRMATION_GRANT_TTL_SECONDS:90}
+    confirmation-clock-skew-seconds: ${AGENT_CONFIRMATION_CLOCK_SKEW_SECONDS:120}
   watch-rules:
     enabled: ${AGENT_WATCH_RULES_ENABLED:false}
     scheduler-enabled: ${AGENT_WATCH_SCHEDULER_ENABLED:false}

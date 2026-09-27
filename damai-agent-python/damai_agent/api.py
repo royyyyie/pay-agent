@@ -137,6 +137,12 @@ def build_runner(
         java_tools = [
             tool for tool in java_tools if not tool.spec.required_scope.startswith("watch:")
         ]
+    if not settings.purchase_intents_enabled:
+        java_tools = [
+            tool
+            for tool in java_tools
+            if not tool.spec.required_scope.startswith("purchase:intent:")
+        ]
     registry = ToolRegistry(java_tools)
     resolved_knowledge_rag = knowledge_rag or build_knowledge_rag(settings)
     return AgentRunner(

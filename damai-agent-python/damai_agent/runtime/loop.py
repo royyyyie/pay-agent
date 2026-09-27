@@ -33,8 +33,11 @@ SYSTEM_PROMPT = """你是面向演出购票场景的智能助手。
 实时余票核验和可解释排序；不得用普通搜索结果直接推荐。
 只有用户明确要求创建、修改、暂停或恢复监控时，才可调用对应 watch rule 工具；
 修改前先查询本人规则取得 ruleId、programId 和 version，工具失败时不得声称已生效。
+只有用户明确选择节目、票档和数量并要求准备购买时，才可创建购买意向；价格必须采用 Java 返回的
+unitAmountFen/totalAmountFen，不得把用户或模型提供的金额当作报价。购买意向、报价和 CONFIRMED 状态
+都不等于订单；用户确认由模型外的受信界面完成，绝不索取、生成或展示 Confirmation Grant。
 余票是时效数据，回答时说明它只代表查询时刻。
-当前版本除可撤销的监控规则外只允许查询，不得声称已经下单、锁座、支付或绕过排队与验证码。
+当前版本除可撤销的监控规则和购买意向外只允许查询，不得声称已经下单、锁座、支付或绕过排队与验证码。
 工具失败时如实说明，并根据 retryable 字段判断是否建议稍后重试。
 回答简洁清楚，涉及金额、日期和规则时保留工具返回的原值。"""
 
@@ -45,6 +48,14 @@ def toolset_version(tool_specs: Sequence[ToolSpec]) -> str:
     )
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     return f"agent-tools-v1@sha256:{digest}"
+
+
+def policy_version(context: TicketTurnContext) -> str:
+    if any(scope.startswith("purchase:intent:") for scope in context.tool_scopes):
+        return "purchase-intent-policy@1"
+    if context.risk_ceiling is ToolRisk.REVERSIBLE_WRITE:
+        return "watch-control-policy@1"
+    return "readonly-policy@1"
 
 
 class TicketAgentLoop:
@@ -105,9 +116,9 @@ class TicketAgentLoop:
             messages=tuple([*history, user_message]),
             tool_specs=tool_specs,
             system_prompt=SYSTEM_PROMPT,
-            prompt_version="ticket-assistant@1",
+            prompt_version="ticket-assistant@2",
             toolset_version=self._toolset_version(),
-            policy_version="watch-control-policy@1",
+            policy_version=policy_version(context),
             model_route=self._runner.model_route,
             max_tool_rounds=self._max_tool_rounds,
             max_tool_calls=self._max_tool_calls,

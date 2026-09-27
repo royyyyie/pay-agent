@@ -141,4 +141,6 @@ uv run --frozen pytest --cov=damai_agent
 
 阶段 4 最终封板增加控制/实验配对统计与盲审、绑定 Tool 契约的正式推荐 Eval，以及测试环境 SLO、RAG/Java Trace、Provider/Java/Redis/PostgreSQL 故障和回滚证明。`promote` 必须同时验证四份证据报告后才切换别名；执行顺序见[阶段 4 最终验收](docs/phase-4-final-acceptance.md)。仓库工程封板不等于真实业务、账单和测试环境已经完成生产准入。
 
-阶段 5 第一批建立票务监控安全控制面：规则由 Java 持久化，Python 仅通过 `REVERSIBLE_WRITE` Tool 管理；受信租户/用户身份不进入模型参数，原始 HMAC 委托会在 Java 再验证，创建具备幂等键，修改使用乐观版本。Java 与 Python 双侧默认关闭，启用前必须执行 MySQL 迁移、打开持久化 Tool 审计，并由 Java BFF 签发 `watch:*` Scope。当前尚未交付调度 Worker 和通知 Outbox，因此不会把“规则已创建”描述为“通知闭环已完成”。详见[阶段 5 检查清单](docs/phase-5-checklist.md)和 [ADR-012](docs/adr/012-watch-rule-ownership.md)。
+阶段 5 已交付 Java 可靠调度、实时条件求值、Transactional Outbox、Kafka 重试/DLT、通知去重与暂停抑制；生产开关仍须等待测试专用 MySQL/Kafka 外部验收。详见[阶段 5 检查清单](docs/phase-5-checklist.md)和 [ADR-012](docs/adr/012-watch-rule-ownership.md)。
+
+阶段 6 第一批建立购买意向与受信确认边界：模型只能准备、查询或取消意向，Java 根据实时票档生成“分”整数报价；确认由 BFF 使用独立 HMAC 证明签发服务器侧一次性 Grant，确认凭据不进入模型。真实订单提交仍未开放，详见[阶段 6 检查清单](docs/phase-6-checklist.md)和 [ADR-013](docs/adr/013-purchase-intent-confirmation.md)。

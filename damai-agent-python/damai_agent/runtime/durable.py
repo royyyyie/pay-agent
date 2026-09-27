@@ -25,7 +25,7 @@ from ..redis_control import RedisTurnCancellationStore
 from ..redis_lease import RedisSessionLeaseStore, SessionLease
 from ..redis_queue import RedisPendingTurnQueue
 from .events import EventSink, TurnEventEmitter
-from .loop import SYSTEM_PROMPT, toolset_version
+from .loop import SYSTEM_PROMPT, policy_version, toolset_version
 from .runner import ToolCallingRunner
 
 
@@ -207,13 +207,9 @@ class DurableTurnService:
                 messages=(*history, ChatMessage(role="user", content=user_text)),
                 tool_specs=tool_specs,
                 system_prompt=SYSTEM_PROMPT,
-                prompt_version="ticket-assistant@1",
+                prompt_version="ticket-assistant@2",
                 toolset_version=toolset_version(tool_specs),
-                policy_version=(
-                    "watch-control-policy@1"
-                    if context.risk_ceiling is ToolRisk.REVERSIBLE_WRITE
-                    else "readonly-policy@1"
-                ),
+                policy_version=policy_version(context),
                 model_route=self._runner.model_route,
                 max_tool_rounds=self._max_tool_rounds,
                 max_tool_calls=self._max_tool_calls,
