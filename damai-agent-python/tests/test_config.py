@@ -236,6 +236,19 @@ class SettingsTest(unittest.TestCase):
         )
         self.assertTrue(settings.watch_rules_enabled)
 
+    def test_purchase_intents_require_durable_runtime_and_strict_audit(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "购买意向需要 durable"):
+            Settings(purchase_intents_enabled=True)
+        settings = Settings(
+            runtime_backend="durable",
+            postgres_dsn="postgresql://user:pass@db.example/test",
+            redis_url="rediss://cache.example:6379/0",
+            delegation_hmac_key="d" * 32,
+            persist_tool_audit=True,
+            purchase_intents_enabled=True,
+        )
+        self.assertTrue(settings.purchase_intents_enabled)
+
     def test_rag_requires_a_bounded_catalog_configuration(self) -> None:
         with self.assertRaisesRegex(ValidationError, "KNOWLEDGE_CATALOG_PATH"):
             Settings(rag_enabled=True)

@@ -37,6 +37,10 @@ public class AgentToolRequestContextFilter extends OncePerRequestFilter {
     static final String USER_ID_HEADER = "X-Agent-User-Id";
     static final String TRACEPARENT_HEADER = "traceparent";
     static final String WATCH_RULE_PATH_PREFIX = "/internal/agent/v1/tools/watch-rules/";
+    static final String PURCHASE_INTENT_PATH_PREFIX =
+            "/internal/agent/v1/tools/purchase-intents/";
+    static final String PURCHASE_CONFIRMATION_PATH_PREFIX =
+            "/internal/agent/v1/confirmations/purchase-intents/";
 
     private static final int MAX_CONTEXT_ID_LENGTH = 128;
     private static final Pattern TRACEPARENT_PATTERN = Pattern.compile(
@@ -67,7 +71,7 @@ public class AgentToolRequestContextFilter extends OncePerRequestFilter {
         if (!isValidContextId(toolCallId)
                 || !isValidContextId(turnId)
                 || !isValidContextId(sessionKey)
-                || (request.getRequestURI().startsWith(WATCH_RULE_PATH_PREFIX)
+                || (requiresOwner(request.getRequestURI())
                         && (!isValidOwnerId(tenantId) || !isValidOwnerId(userId)))
                 || !isValidTraceparent(traceparentMatcher)) {
             writeBadRequest(response, toolCallId);
@@ -98,6 +102,12 @@ public class AgentToolRequestContextFilter extends OncePerRequestFilter {
 
     private boolean isValidContextId(String value) {
         return value != null && !value.isBlank() && value.length() <= MAX_CONTEXT_ID_LENGTH;
+    }
+
+    private boolean requiresOwner(String path) {
+        return path.startsWith(WATCH_RULE_PATH_PREFIX)
+                || path.startsWith(PURCHASE_INTENT_PATH_PREFIX)
+                || path.startsWith(PURCHASE_CONFIRMATION_PATH_PREFIX);
     }
 
     private boolean isValidOwnerId(String value) {

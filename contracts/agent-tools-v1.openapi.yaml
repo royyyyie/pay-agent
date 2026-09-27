@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Damai Java Agent Tool Gateway
-  version: 1.1.0
+  version: 1.2.0
   description: >-
     Python Agent 调用 Java 购票业务的内部契约。除节目查询、实时推荐、节目详情和
     票档余量外，阶段 5 开放受信身份下的监控规则控制面；仍不包含下单、锁座和支付。
@@ -311,6 +311,123 @@ paths:
                 $ref: '#/components/schemas/WatchRulePageResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /internal/agent/v1/tools/purchase-intents/prepare:
+    post:
+      operationId: preparePurchaseIntent
+      summary: 准备购买意向和短时有效报价
+      x-agent-tool-name: prepare_purchase_intent
+      x-agent-description: 根据已确认的节目、票档和数量创建购买意向。价格、库存和报价有效期只由 Java 实时读取；该工具不会确认或提交订单。
+      x-agent-risk: REVERSIBLE_WRITE
+      x-agent-scope: purchase:intent:write
+      x-agent-timeout-ms: 8000
+      x-agent-max-calls-per-turn: 1
+      x-agent-concurrency-safe: false
+      x-agent-exclusive: true
+      parameters:
+        - $ref: '#/components/parameters/ToolCallId'
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/SessionKey'
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/Delegation'
+        - $ref: '#/components/parameters/DelegationSignature'
+        - $ref: '#/components/parameters/TraceParent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseIntentPrepareRequest'
+      responses:
+        '200':
+          description: 幂等创建的购买意向和 Java 权威报价快照
+          headers:
+            traceparent:
+              $ref: '#/components/headers/TraceParent'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseIntentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /internal/agent/v1/tools/purchase-intents/get:
+    post:
+      operationId: getPurchaseIntent
+      summary: 查询本人购买意向
+      x-agent-tool-name: get_purchase_intent
+      x-agent-description: 查询当前受信用户的购买意向、报价金额、有效期、状态和版本。该工具不会延长报价有效期。
+      x-agent-risk: READ_ONLY
+      x-agent-scope: purchase:intent:read
+      x-agent-timeout-ms: 8000
+      x-agent-max-calls-per-turn: 3
+      x-agent-concurrency-safe: true
+      x-agent-exclusive: false
+      parameters:
+        - $ref: '#/components/parameters/ToolCallId'
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/SessionKey'
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/Delegation'
+        - $ref: '#/components/parameters/DelegationSignature'
+        - $ref: '#/components/parameters/TraceParent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseIntentGetRequest'
+      responses:
+        '200':
+          description: 当前购买意向
+          headers:
+            traceparent:
+              $ref: '#/components/headers/TraceParent'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseIntentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /internal/agent/v1/tools/purchase-intents/cancel:
+    post:
+      operationId: cancelPurchaseIntent
+      summary: 取消本人尚未提交的购买意向
+      x-agent-tool-name: cancel_purchase_intent
+      x-agent-description: 使用当前版本取消购买意向。已确认或已提交的意向不能由模型取消；该操作不会调用订单或支付服务。
+      x-agent-risk: REVERSIBLE_WRITE
+      x-agent-scope: purchase:intent:write
+      x-agent-timeout-ms: 8000
+      x-agent-max-calls-per-turn: 1
+      x-agent-concurrency-safe: false
+      x-agent-exclusive: true
+      parameters:
+        - $ref: '#/components/parameters/ToolCallId'
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/SessionKey'
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/Delegation'
+        - $ref: '#/components/parameters/DelegationSignature'
+        - $ref: '#/components/parameters/TraceParent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseIntentCancelRequest'
+      responses:
+        '200':
+          description: 已取消的购买意向
+          headers:
+            traceparent:
+              $ref: '#/components/headers/TraceParent'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseIntentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 components:
   headers:
     TraceParent:
@@ -534,6 +651,123 @@ components:
           maximum: 5
           default: 3
           description: 最多返回候选数量；服务端最多扫描前 10 个搜索结果
+    PurchaseIntentPrepareRequest:
+      type: object
+      required: [programId, ticketCategoryId]
+      additionalProperties: false
+      properties:
+        programId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 已由实时节目工具确认的节目 ID，也是购买意向分片键
+        ticketCategoryId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 必须属于 programId 且由实时票档工具确认
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 6
+          default: 1
+          description: 购票数量；价格和库存由 Java 重新读取，模型不得提供金额
+    PurchaseIntentGetRequest:
+      type: object
+      required: [intentId, programId]
+      additionalProperties: false
+      properties:
+        intentId:
+          type: integer
+          format: int64
+          minimum: 1
+        programId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 创建意向时返回的不可变分片键
+    PurchaseIntentCancelRequest:
+      type: object
+      required: [intentId, programId, expectedVersion]
+      additionalProperties: false
+      properties:
+        intentId:
+          type: integer
+          format: int64
+          minimum: 1
+        programId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 创建意向时返回的不可变分片键
+        expectedVersion:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 乐观锁版本；冲突后必须重新查询
+    PurchaseIntent:
+      type: object
+      required:
+        - intentId
+        - programId
+        - ticketCategoryId
+        - quantity
+        - unitAmountFen
+        - totalAmountFen
+        - currency
+        - quoteHash
+        - quoteExpiresAt
+        - intentStatus
+        - version
+        - createdAt
+        - updatedAt
+      properties:
+        intentId:
+          type: integer
+          format: int64
+        programId:
+          type: integer
+          format: int64
+        ticketCategoryId:
+          type: integer
+          format: int64
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 6
+        unitAmountFen:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Java 从实时票档价格生成的单价，单位为人民币分
+        totalAmountFen:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Java 计算的总金额，单位为人民币分
+        currency:
+          type: string
+          enum: [CNY]
+        quoteHash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: 绑定归属、节目、票档、数量、金额和有效期的报价摘要，不是确认凭据
+        quoteExpiresAt:
+          type: string
+          format: date-time
+        intentStatus:
+          type: string
+          enum: [PENDING_CONFIRMATION, CONFIRMED, CANCELLED, EXPIRED, SUBMITTED]
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
     WatchRuleCreateRequest:
       type: object
       required: [programId]
@@ -771,6 +1005,14 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/WatchRule'
+    PurchaseIntentResponse:
+      allOf:
+        - $ref: '#/components/schemas/ToolResponse'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: '#/components/schemas/PurchaseIntent'
     WatchRulePageResponse:
       allOf:
         - $ref: '#/components/schemas/ToolResponse'

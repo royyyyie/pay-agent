@@ -29,7 +29,7 @@ import java.util.regex.Pattern;
 import java.util.stream.StreamSupport;
 
 /**
- * Re-verifies the original Java-BFF delegation before owner-scoped read or write operations.
+ * Re-verifies the original Java-BFF delegation before owner-scoped Agent operations.
  * The internal API key authenticates Python as a service; this filter independently authenticates
  * the end-user authority, scope, risk ceiling, expiry, and binding to the current request.
  */
@@ -57,8 +57,9 @@ public class AgentWatchDelegationFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return !request.getRequestURI().startsWith(
-                AgentToolRequestContextFilter.WATCH_RULE_PATH_PREFIX);
+        String path = request.getRequestURI();
+        return !path.startsWith(AgentToolRequestContextFilter.WATCH_RULE_PATH_PREFIX)
+                && !path.startsWith(AgentToolRequestContextFilter.PURCHASE_INTENT_PATH_PREFIX);
     }
 
     @Override
@@ -108,8 +109,15 @@ public class AgentWatchDelegationFilter extends OncePerRequestFilter {
                     && constantTimeTextEquals(
                             claims.path("turnId").asText(),
                             request.getHeader(AgentToolRequestContextFilter.TURN_ID_HEADER));
-            boolean writeOperation = !request.getRequestURI().endsWith("/list");
-            String requiredScope = writeOperation ? "watch:write" : "watch:read";
+            String path = request.getRequestURI();
+            boolean purchaseIntent = path.startsWith(
+                    AgentToolRequestContextFilter.PURCHASE_INTENT_PATH_PREFIX);
+            boolean writeOperation = purchaseIntent
+                    ? !path.endsWith("/get")
+                    : !path.endsWith("/list");
+            String requiredScope = purchaseIntent
+                    ? (writeOperation ? "purchase:intent:write" : "purchase:intent:read")
+                    : (writeOperation ? "watch:write" : "watch:read");
             boolean hasScope = claims.path("toolScopes").isArray()
                     && StreamSupport.stream(claims.path("toolScopes").spliterator(), false)
                             .map(JsonNode::asText)
@@ -166,7 +174,7 @@ public class AgentWatchDelegationFilter extends OncePerRequestFilter {
                         .filter(value -> !value.isBlank())
                         .orElseGet(() -> UUID.randomUUID().toString()),
                 401,
-                "Agent 监控委托身份无效",
+                "Agent 委托身份无效",
                 false);
         response.getWriter().write(JSON.toJSONString(body));
     }

@@ -110,6 +110,26 @@ rules:
           standard:
             shardingColumn: program_id
             shardingAlgorithmName: tableAgentWatchNotificationModModel
+      d_agent_purchase_intent:
+        actualDataNodes: ds_${0..1}.d_agent_purchase_intent_${0..1}
+        databaseStrategy:
+          standard:
+            shardingColumn: program_id
+            shardingAlgorithmName: databaseAgentWatchRuleModModel
+        tableStrategy:
+          standard:
+            shardingColumn: program_id
+            shardingAlgorithmName: tableAgentPurchaseIntentModModel
+      d_agent_confirmation_grant:
+        actualDataNodes: ds_${0..1}.d_agent_confirmation_grant_${0..1}
+        databaseStrategy:
+          standard:
+            shardingColumn: program_id
+            shardingAlgorithmName: databaseAgentWatchRuleModModel
+        tableStrategy:
+          standard:
+            shardingColumn: program_id
+            shardingAlgorithmName: tableAgentConfirmationGrantModModel
     broadcastTables:
       - d_program_category
     shardingAlgorithms:
@@ -173,5 +193,13 @@ rules:
         type: INLINE
         props:
           algorithm-expression: d_agent_watch_notification_${(program_id.intdiv(2)) % 2}
+      tableAgentPurchaseIntentModModel:
+        type: INLINE
+        props:
+          algorithm-expression: d_agent_purchase_intent_${(program_id.intdiv(2)) % 2}
+      tableAgentConfirmationGrantModModel:
+        type: INLINE
+        props:
+          algorithm-expression: d_agent_confirmation_grant_${(program_id.intdiv(2)) % 2}
 props:
   sql-show: true

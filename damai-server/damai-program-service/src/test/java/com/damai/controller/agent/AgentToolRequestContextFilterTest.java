@@ -88,6 +88,29 @@ class AgentToolRequestContextFilterTest {
         assertTrue(invoked.get());
     }
 
+    @Test
+    void purchaseIntentAndConfirmationRequireTrustedOwnerHeaders() throws Exception {
+        for (String path : new String[] {
+            "/internal/agent/v1/tools/purchase-intents/prepare",
+            "/internal/agent/v1/confirmations/purchase-intents/issue"
+        }) {
+            MockHttpServletRequest request = validRequest();
+            request.setRequestURI(path);
+            MockHttpServletResponse rejected = new MockHttpServletResponse();
+            filter.doFilter(request, rejected, (servletRequest, servletResponse) -> {});
+            assertEquals(400, rejected.getStatus());
+
+            request.addHeader("X-Agent-Tenant-Id", "tenant-contract-test");
+            request.addHeader("X-Agent-User-Id", "user-contract-test");
+            AtomicBoolean invoked = new AtomicBoolean(false);
+            filter.doFilter(
+                    request,
+                    new MockHttpServletResponse(),
+                    (servletRequest, servletResponse) -> invoked.set(true));
+            assertTrue(invoked.get());
+        }
+    }
+
     private MockHttpServletRequest validRequest() {
         MockHttpServletRequest request = new MockHttpServletRequest(
                 "POST", "/internal/agent/v1/tools/programs/search");

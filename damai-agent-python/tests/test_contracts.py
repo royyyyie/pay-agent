@@ -8,6 +8,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from damai_agent.api import build_runner
+from damai_agent.config import Settings
 from damai_agent.generated.tool_models import REQUEST_MODELS, RESPONSE_MODELS
 from damai_agent.tools import JavaToolClient, ToolRegistry, build_java_tools
 
@@ -42,10 +44,13 @@ class ContractGenerationTest(unittest.TestCase):
                 "update_watch_rule",
                 "set_watch_rule_status",
                 "list_watch_rules",
+                "prepare_purchase_intent",
+                "get_purchase_intent",
+                "cancel_purchase_intent",
             },
         )
         for spec in registry.specs:
-            self.assertEqual(spec.version, "1.1.0")
+            self.assertEqual(spec.version, "1.2.0")
             self.assertFalse(spec.parameters["additionalProperties"])
             self.assertIs(spec.request_model, REQUEST_MODELS[spec.name])
             self.assertIs(spec.response_model, RESPONSE_MODELS[spec.name])
@@ -63,12 +68,42 @@ class ContractGenerationTest(unittest.TestCase):
                 self.assertEqual(spec.risk, "READ_ONLY")
                 self.assertEqual(spec.required_scope, "watch:read")
                 self.assertTrue(spec.concurrency_safe)
+            elif spec.name in {"prepare_purchase_intent", "cancel_purchase_intent"}:
+                self.assertEqual(spec.risk, "REVERSIBLE_WRITE")
+                self.assertEqual(spec.required_scope, "purchase:intent:write")
+                self.assertEqual(spec.max_calls_per_turn, 1)
+                self.assertFalse(spec.concurrency_safe)
+                self.assertTrue(spec.exclusive)
+            elif spec.name == "get_purchase_intent":
+                self.assertEqual(spec.risk, "READ_ONLY")
+                self.assertEqual(spec.required_scope, "purchase:intent:read")
+                self.assertTrue(spec.concurrency_safe)
             else:
                 self.assertEqual(spec.risk, "READ_ONLY")
                 self.assertEqual(spec.required_scope, "programs:read")
                 self.assertEqual(spec.max_calls_per_turn, 3)
                 self.assertTrue(spec.concurrency_safe)
                 self.assertFalse(spec.exclusive)
+
+    def test_purchase_intent_tools_are_hidden_until_explicitly_enabled(self) -> None:
+        default_runner = build_runner(Settings())
+        self.assertNotIn("prepare_purchase_intent", default_runner.tool_names)
+        self.assertNotIn("create_watch_rule", default_runner.tool_names)
+
+        enabled_runner = build_runner(
+            Settings(
+                runtime_backend="durable",
+                postgres_dsn="postgresql://user:pass@db.example/test",
+                redis_url="rediss://cache.example:6379/0",
+                delegation_hmac_key="d" * 32,
+                persist_tool_audit=True,
+                purchase_intents_enabled=True,
+            )
+        )
+        self.assertIn("prepare_purchase_intent", enabled_runner.tool_names)
+        self.assertIn("get_purchase_intent", enabled_runner.tool_names)
+        self.assertIn("cancel_purchase_intent", enabled_runner.tool_names)
+        self.assertNotIn("create_watch_rule", enabled_runner.tool_names)
 
     def test_generated_request_model_applies_defaults_and_rejects_unknown_fields(self) -> None:
         request_model = REQUEST_MODELS["search_programs"]
@@ -94,6 +129,31 @@ class ContractGenerationTest(unittest.TestCase):
                     "message": "success",
                     "retryable": False,
                 }
+            )
+
+    def test_purchase_intent_contract_never_accepts_price_or_confirmation(self) -> None:
+        prepare_model = REQUEST_MODELS["prepare_purchase_intent"]
+        prepared = prepare_model.model_validate({"programId": 1001, "ticketCategoryId": 3001})
+        self.assertEqual(prepared.quantity, 1)
+        with self.assertRaises(ValidationError):
+            prepare_model.model_validate(
+                {
+                    "programId": 1001,
+                    "ticketCategoryId": 3001,
+                    "unitAmountFen": 1,
+                }
+            )
+        with self.assertRaises(ValidationError):
+            prepare_model.model_validate(
+                {
+                    "programId": 1001,
+                    "ticketCategoryId": 3001,
+                    "confirmationGrant": "forged",
+                }
+            )
+        with self.assertRaises(ValidationError):
+            prepare_model.model_validate(
+                {"programId": 1001, "ticketCategoryId": 3001, "quantity": 7}
             )
 
     def test_recommendation_contract_is_bounded_and_defaults_to_relevance(self) -> None:
