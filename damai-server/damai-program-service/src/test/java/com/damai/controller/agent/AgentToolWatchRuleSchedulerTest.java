@@ -10,6 +10,7 @@ import com.damai.controller.agent.watch.WatchRuleLeaseService;
 import com.damai.controller.agent.watch.WatchRuleMapper;
 import com.damai.controller.agent.watch.WatchRuleScheduler;
 import com.damai.controller.agent.watch.WatchRuleState;
+import com.damai.controller.agent.watch.WatchNotificationOutboxMapper;
 import com.damai.service.TicketCategoryService;
 import com.damai.vo.TicketCategoryDetailVo;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -151,9 +152,16 @@ class AgentToolWatchRuleSchedulerTest {
     void databaseLeaseUsesAtomicClaimAndFencedCompletion() {
         WatchRuleMapper ruleMapper = mock(WatchRuleMapper.class);
         WatchRuleExecutionMapper executionMapper = mock(WatchRuleExecutionMapper.class);
+        WatchNotificationOutboxMapper outboxMapper = mock(WatchNotificationOutboxMapper.class);
         UidGenerator uidGenerator = mock(UidGenerator.class);
         WatchRuleLeaseService databaseLeases =
-                new WatchRuleLeaseService(ruleMapper, executionMapper, uidGenerator);
+                new WatchRuleLeaseService(
+                        ruleMapper,
+                        executionMapper,
+                        outboxMapper,
+                        uidGenerator,
+                        Duration.ofMinutes(15),
+                        true);
         WatchRule candidate = dueRule();
         Date now = Date.from(NOW);
         when(ruleMapper.selectDueCandidates(now, 0, 1, 1)).thenReturn(List.of(candidate));
@@ -182,6 +190,7 @@ class AgentToolWatchRuleSchedulerTest {
                         eq("replica-a"),
                         eq(claimed.getLeaseToken()),
                         eq(now),
+                        any(),
                         any()))
                 .thenReturn(1);
         when(uidGenerator.getUid()).thenReturn(7001L);
@@ -202,11 +211,17 @@ class AgentToolWatchRuleSchedulerTest {
     void rejectedFenceDoesNotPersistAnAcceptedExecution() {
         WatchRuleMapper ruleMapper = mock(WatchRuleMapper.class);
         WatchRuleExecutionMapper executionMapper = mock(WatchRuleExecutionMapper.class);
+        WatchNotificationOutboxMapper outboxMapper = mock(WatchNotificationOutboxMapper.class);
         WatchRuleLeaseService databaseLeases = new WatchRuleLeaseService(
-                ruleMapper, executionMapper, mock(UidGenerator.class));
+                ruleMapper,
+                executionMapper,
+                outboxMapper,
+                mock(UidGenerator.class),
+                Duration.ofMinutes(15),
+                true);
         WatchRule claimed = claimedRule();
         when(ruleMapper.completeClaim(
-                        anyLong(), anyLong(), anyLong(), anyString(), anyString(), any(), any()))
+                        anyLong(), anyLong(), anyLong(), anyString(), anyString(), any(), any(), any()))
                 .thenReturn(0);
 
         boolean accepted = databaseLeases.complete(

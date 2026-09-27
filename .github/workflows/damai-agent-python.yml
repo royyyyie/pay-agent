@@ -15,6 +15,7 @@ on:
       - "damai-server/damai-program-service/src/test/java/com/damai/controller/agent/**"
       - "sql/migrations/20260919_agent_watch_rule.sql"
       - "sql/migrations/20260920_agent_watch_scheduler.sql"
+      - "sql/migrations/20260921_agent_watch_outbox.sql"
       - ".github/workflows/damai-agent-python.yml"
   push:
     branches: [main, "codex/phase-*"]
@@ -31,6 +32,7 @@ on:
       - "damai-server/damai-program-service/src/test/java/com/damai/controller/agent/**"
       - "sql/migrations/20260919_agent_watch_rule.sql"
       - "sql/migrations/20260920_agent_watch_scheduler.sql"
+      - "sql/migrations/20260921_agent_watch_outbox.sql"
       - ".github/workflows/damai-agent-python.yml"
 
 permissions:

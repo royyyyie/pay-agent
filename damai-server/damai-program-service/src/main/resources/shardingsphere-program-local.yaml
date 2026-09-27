@@ -90,6 +90,26 @@ rules:
           standard:
             shardingColumn: program_id
             shardingAlgorithmName: tableAgentWatchExecutionModModel
+      d_agent_watch_outbox:
+        actualDataNodes: ds_${0..1}.d_agent_watch_outbox_${0..1}
+        databaseStrategy:
+          standard:
+            shardingColumn: program_id
+            shardingAlgorithmName: databaseAgentWatchRuleModModel
+        tableStrategy:
+          standard:
+            shardingColumn: program_id
+            shardingAlgorithmName: tableAgentWatchOutboxModModel
+      d_agent_watch_notification:
+        actualDataNodes: ds_${0..1}.d_agent_watch_notification_${0..1}
+        databaseStrategy:
+          standard:
+            shardingColumn: program_id
+            shardingAlgorithmName: databaseAgentWatchRuleModModel
+        tableStrategy:
+          standard:
+            shardingColumn: program_id
+            shardingAlgorithmName: tableAgentWatchNotificationModModel
     broadcastTables:
       - d_program_category
     shardingAlgorithms:
@@ -145,5 +165,13 @@ rules:
         type: INLINE
         props:
           algorithm-expression: d_agent_watch_execution_${(program_id.intdiv(2)) % 2}
+      tableAgentWatchOutboxModModel:
+        type: INLINE
+        props:
+          algorithm-expression: d_agent_watch_outbox_${(program_id.intdiv(2)) % 2}
+      tableAgentWatchNotificationModModel:
+        type: INLINE
+        props:
+          algorithm-expression: d_agent_watch_notification_${(program_id.intdiv(2)) % 2}
 props:
   sql-show: true

@@ -49,9 +49,20 @@ spring:
   kafka:
     bootstrap-servers: 127.0.0.1:9092
     producer:
-      retries: 1
+      acks: all
+      retries: 5
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+    consumer:
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: record
     topic: create_order
 
 bloom-filter:
@@ -136,6 +147,19 @@ agent:
     scheduler-lease-seconds: ${AGENT_WATCH_SCHEDULER_LEASE_SECONDS:60}
     scheduler-scan-partitions: ${AGENT_WATCH_SCHEDULER_SCAN_PARTITIONS:4}
     scheduler-batch-size: ${AGENT_WATCH_SCHEDULER_BATCH_SIZE:50}
+    notification-enabled: ${AGENT_WATCH_NOTIFICATION_ENABLED:false}
+    notification-topic: ${AGENT_WATCH_NOTIFICATION_TOPIC:damai-agent-watch-notification}
+    notification-cooldown-seconds: ${AGENT_WATCH_NOTIFICATION_COOLDOWN_SECONDS:900}
+    notification-publisher-id: ${AGENT_WATCH_NOTIFICATION_PUBLISHER_ID:${HOSTNAME:local}}
+    notification-publish-delay-ms: ${AGENT_WATCH_NOTIFICATION_PUBLISH_DELAY_MS:1000}
+    notification-publish-timeout-ms: ${AGENT_WATCH_NOTIFICATION_PUBLISH_TIMEOUT_MS:5000}
+    notification-outbox-lease-seconds: ${AGENT_WATCH_NOTIFICATION_OUTBOX_LEASE_SECONDS:30}
+    notification-retry-seconds: ${AGENT_WATCH_NOTIFICATION_RETRY_SECONDS:5}
+    notification-maximum-attempts: ${AGENT_WATCH_NOTIFICATION_MAXIMUM_ATTEMPTS:8}
+    notification-batch-size: ${AGENT_WATCH_NOTIFICATION_BATCH_SIZE:50}
+    notification-consumer-group: ${AGENT_WATCH_NOTIFICATION_CONSUMER_GROUP:damai-watch-notification-v1}
+    notification-consumer-backoff-ms: ${AGENT_WATCH_NOTIFICATION_CONSUMER_BACKOFF_MS:1000}
+    notification-consumer-retries: ${AGENT_WATCH_NOTIFICATION_CONSUMER_RETRIES:2}
 #knife4j配置
 knife4j:
   #是否启用增强设置

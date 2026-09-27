@@ -1,6 +1,8 @@
 package com.damai.controller.agent.watch;
 
 import com.baidu.fsg.uid.UidGenerator;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,15 +18,43 @@ public class WatchRuleLeaseService {
 
     private final WatchRuleMapper watchRuleMapper;
     private final WatchRuleExecutionMapper executionMapper;
+    private final WatchNotificationOutboxMapper outboxMapper;
     private final UidGenerator uidGenerator;
+    private final Duration notificationCooldown;
+    private final boolean notificationEnabled;
+
+    @Autowired
+    public WatchRuleLeaseService(
+            WatchRuleMapper watchRuleMapper,
+            WatchRuleExecutionMapper executionMapper,
+            WatchNotificationOutboxMapper outboxMapper,
+            UidGenerator uidGenerator,
+            @Value("${agent.watch-rules.notification-cooldown-seconds:900}")
+                    long notificationCooldownSeconds,
+            @Value("${agent.watch-rules.notification-enabled:false}")
+                    boolean notificationEnabled) {
+        this.watchRuleMapper = watchRuleMapper;
+        this.executionMapper = executionMapper;
+        this.outboxMapper = outboxMapper;
+        this.uidGenerator = uidGenerator;
+        this.notificationCooldown =
+                Duration.ofSeconds(Math.max(30, notificationCooldownSeconds));
+        this.notificationEnabled = notificationEnabled;
+    }
 
     public WatchRuleLeaseService(
             WatchRuleMapper watchRuleMapper,
             WatchRuleExecutionMapper executionMapper,
-            UidGenerator uidGenerator) {
+            WatchNotificationOutboxMapper outboxMapper,
+            UidGenerator uidGenerator,
+            Duration notificationCooldown,
+            boolean notificationEnabled) {
         this.watchRuleMapper = watchRuleMapper;
         this.executionMapper = executionMapper;
+        this.outboxMapper = outboxMapper;
         this.uidGenerator = uidGenerator;
+        this.notificationCooldown = notificationCooldown;
+        this.notificationEnabled = notificationEnabled;
     }
 
     public List<WatchRule> claimDue(
@@ -69,6 +99,11 @@ public class WatchRuleLeaseService {
             WatchEvaluation evaluation,
             Date checkedAt,
             Date nextCheckTime) {
+        WatchRuleExecution execution = toExecution(
+                claimedRule, evaluation, checkedAt, nextCheckTime);
+        WatchNotificationOutbox outbox = shouldNotify(claimedRule, evaluation, checkedAt)
+                ? toOutbox(claimedRule, evaluation, execution.getId(), checkedAt)
+                : null;
         int updated = watchRuleMapper.completeClaim(
                 claimedRule.getId(),
                 claimedRule.getProgramId(),
@@ -76,13 +111,16 @@ public class WatchRuleLeaseService {
                 claimedRule.getLeaseOwner(),
                 claimedRule.getLeaseToken(),
                 checkedAt,
-                nextCheckTime);
+                nextCheckTime,
+                outbox == null ? null : checkedAt);
         if (updated != 1) {
             return false;
         }
-        if (executionMapper.insertIdempotent(toExecution(
-                        claimedRule, evaluation, checkedAt, nextCheckTime)) != 1) {
+        if (executionMapper.insertIdempotent(execution) != 1) {
             throw new IllegalStateException("watch execution was not persisted");
+        }
+        if (outbox != null) {
+            outboxMapper.insertIdempotent(outbox);
         }
         return true;
     }
@@ -118,5 +156,55 @@ public class WatchRuleLeaseService {
         execution.setNextCheckTime(nextCheckTime);
         execution.setCreateTime(checkedAt);
         return execution;
+    }
+
+    private boolean shouldNotify(
+            WatchRule rule, WatchEvaluation evaluation, Date checkedAt) {
+        if (!notificationEnabled
+                || evaluation.outcome() != WatchCheckOutcome.MATCHED
+                || evaluation.matchedCategoryCount() <= 0
+                || evaluation.minimumPrice() == null
+                || evaluation.matchedTicketCategoryIds() == null
+                || evaluation.matchedTicketCategoryIds().isBlank()) {
+            return false;
+        }
+        Date lastTriggered = rule.getLastTriggeredTime();
+        return lastTriggered == null
+                || !checkedAt.before(Date.from(
+                        lastTriggered.toInstant().plus(notificationCooldown)));
+    }
+
+    private WatchNotificationOutbox toOutbox(
+            WatchRule rule,
+            WatchEvaluation evaluation,
+            Long executionId,
+            Date checkedAt) {
+        String fingerprint = WatchNotificationFingerprint.condition(rule);
+        Date windowStart = WatchNotificationFingerprint.windowStart(
+                checkedAt, notificationCooldown);
+        String dedupeKey = WatchNotificationFingerprint.dedupeKey(
+                rule, fingerprint, windowStart);
+        WatchNotificationOutbox outbox = new WatchNotificationOutbox();
+        outbox.setId(uidGenerator.getUid());
+        outbox.setEventId("watch-" + dedupeKey);
+        outbox.setRuleId(rule.getId());
+        outbox.setProgramId(rule.getProgramId());
+        outbox.setRuleVersion(rule.getClaimedVersion());
+        outbox.setExecutionId(executionId);
+        outbox.setConditionFingerprint(fingerprint);
+        outbox.setDedupeWindowStart(windowStart);
+        outbox.setDedupeKey(dedupeKey);
+        outbox.setChannel(rule.getNotificationChannel());
+        outbox.setMatchedTicketCategoryIds(evaluation.matchedTicketCategoryIds());
+        outbox.setMatchedCategoryCount(evaluation.matchedCategoryCount());
+        outbox.setMatchedRemaining(evaluation.matchedRemaining());
+        outbox.setMinimumPrice(evaluation.minimumPrice());
+        outbox.setFreshnessAt(checkedAt);
+        outbox.setPublishState(WatchOutboxState.PENDING.name());
+        outbox.setAttemptCount(0);
+        outbox.setNextAttemptTime(checkedAt);
+        outbox.setCreateTime(checkedAt);
+        outbox.setEditTime(checkedAt);
+        return outbox;
     }
 }
