@@ -17,6 +17,7 @@ from .config import Settings
 from .delegation import DelegationError, verify_delegation
 from .elasticsearch_rag import ElasticsearchKnowledgeRetriever
 from .governance import TenantQuota
+from .lifecycle import LifecycleState, RequestDrainMiddleware, ServiceLifecycle
 from .models import AgentRunResult, TicketTurnContext
 from .observability import RuntimeMetrics
 from .provider_routing import ResilientProvider
@@ -219,6 +220,16 @@ def build_knowledge_rag(settings: Settings) -> StableKnowledgeRag | None:
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
     metrics = RuntimeMetrics()
+    lifecycle = ServiceLifecycle()
+
+    def sync_lifecycle_metrics() -> None:
+        metrics.set_lifecycle(
+            inflight=lifecycle.inflight,
+            accepting=lifecycle.accepting,
+            drain_timeouts=lifecycle.drain_timeouts,
+        )
+
+    sync_lifecycle_metrics()
     tracing = (
         TraceManager.from_otlp(resolved_settings.otlp_traces_endpoint)
         if resolved_settings.otlp_traces_endpoint
@@ -282,17 +293,28 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         try:
             yield
         finally:
+            await lifecycle.begin_drain()
+            sync_lifecycle_metrics()
+            await lifecycle.wait_for_idle(resolved_settings.shutdown_timeout_seconds)
+            sync_lifecycle_metrics()
             if knowledge_rag is not None:
                 await knowledge_rag.aclose()
             if durable_redis is not None:
                 await durable_redis.aclose()
             await asyncio.to_thread(tracing.shutdown)
+            await lifecycle.stop()
+            sync_lifecycle_metrics()
 
     app = FastAPI(
         title="Damai Agent API",
         description="Java 业务系统 + Python Agent 的只读运行时",
         version="0.2.0",
         lifespan=lifespan,
+    )
+    app.add_middleware(
+        RequestDrainMiddleware,
+        lifecycle=lifecycle,
+        on_change=sync_lifecycle_metrics,
     )
     app.state.runner = runner
     app.state.metrics = metrics
@@ -303,6 +325,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.state.durable_redis = durable_redis
     app.state.audit_store = audit_store
     app.state.knowledge_rag = knowledge_rag
+    app.state.lifecycle = lifecycle
 
     async def require_internal_api_key(
         supplied_key: Optional[str] = Header(default=None, alias="X-Agent-Internal-Key"),
@@ -354,33 +377,64 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "tools": runner.tool_names,
         }
 
+    @app.get("/livez")
+    async def livez(response: Response) -> Dict[str, str]:
+        response.headers["Cache-Control"] = "no-store"
+        return {"status": "UP"}
+
     @app.get("/metrics", dependencies=[Depends(require_internal_api_key)])
     async def prometheus_metrics() -> PlainTextResponse:
+        sync_lifecycle_metrics()
         return PlainTextResponse(
             metrics.render_prometheus(),
             media_type="text/plain; version=0.0.4",
             headers={"Cache-Control": "no-store"},
         )
 
-    @app.get("/ready")
-    async def ready() -> Dict[str, str]:
+    async def readiness(response: Response) -> Dict[str, str]:
+        response.headers["Cache-Control"] = "no-store"
+        if lifecycle.state is not LifecycleState.READY:
+            raise HTTPException(
+                status_code=503,
+                detail="Agent 正在排空",
+                headers={"Cache-Control": "no-store", "Retry-After": "5"},
+            )
         if knowledge_rag is not None:
             try:
                 knowledge_ready = await knowledge_rag.check_ready()
             except Exception as exc:
-                raise HTTPException(status_code=503, detail="Agent 知识检索依赖不可用") from exc
+                raise HTTPException(
+                    status_code=503,
+                    detail="Agent 知识检索依赖不可用",
+                    headers={"Cache-Control": "no-store"},
+                ) from exc
             if not knowledge_ready:
-                raise HTTPException(status_code=503, detail="Agent 知识检索依赖不可用")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Agent 知识检索依赖不可用",
+                    headers={"Cache-Control": "no-store"},
+                )
         if durable_turns is not None and durable_redis is not None:
             try:
                 database_ready = await durable_turns.check_ready()
                 cache_ready = bool(await durable_redis.ping())
                 audit_ready = audit_store is None or await audit_store.check_ready()
             except Exception as exc:
-                raise HTTPException(status_code=503, detail="Agent 持久化依赖不可用") from exc
+                raise HTTPException(
+                    status_code=503,
+                    detail="Agent 持久化依赖不可用",
+                    headers={"Cache-Control": "no-store"},
+                ) from exc
             if not database_ready or not cache_ready or not audit_ready:
-                raise HTTPException(status_code=503, detail="Agent 持久化依赖不可用")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Agent 持久化依赖不可用",
+                    headers={"Cache-Control": "no-store"},
+                )
         return {"status": "UP"}
+
+    app.add_api_route("/ready", readiness, methods=["GET"], include_in_schema=False)
+    app.add_api_route("/readyz", readiness, methods=["GET"])
 
     @app.post(
         "/api/v1/chat",
@@ -589,6 +643,3 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return StreamingResponse(replay(), media_type="text/event-stream")
 
     return app
-
-
-app = create_app()

@@ -61,6 +61,15 @@ class RuntimeMetrics:
             "semantic-hybrid": 0,
             "semantic-rerank": 0,
         }
+        self._inflight_requests = 0
+        self._accepting_requests = 1
+        self._drain_timeouts = 0
+
+    def set_lifecycle(self, *, inflight: int, accepting: bool, drain_timeouts: int) -> None:
+        with self._lock:
+            self._inflight_requests = max(0, inflight)
+            self._accepting_requests = int(accepting)
+            self._drain_timeouts = max(0, drain_timeouts)
 
     def observe_turn(self, outcome: _Outcome, duration_ms: int) -> None:
         with self._lock:
@@ -177,5 +186,19 @@ class RuntimeMetrics:
             lines.append(
                 "damai_agent_knowledge_duration_seconds_sum "
                 f"{self._knowledge_duration.total_seconds:g}"
+            )
+            lines.extend(
+                (
+                    "# HELP damai_agent_inflight_requests Current admitted HTTP requests.",
+                    "# TYPE damai_agent_inflight_requests gauge",
+                    f"damai_agent_inflight_requests {self._inflight_requests}",
+                    "# HELP damai_agent_accepting_requests "
+                    "Whether new business requests are accepted.",
+                    "# TYPE damai_agent_accepting_requests gauge",
+                    f"damai_agent_accepting_requests {self._accepting_requests}",
+                    "# HELP damai_agent_drain_timeouts_total Graceful drain timeouts.",
+                    "# TYPE damai_agent_drain_timeouts_total counter",
+                    f"damai_agent_drain_timeouts_total {self._drain_timeouts}",
+                )
             )
         return "\n".join(lines) + "\n"

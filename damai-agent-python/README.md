@@ -64,7 +64,8 @@ DAMAI_LLM_MODEL=your-model-name
 健康检查：
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:9010/health
+Invoke-RestMethod http://127.0.0.1:9010/livez
+Invoke-RestMethod http://127.0.0.1:9010/readyz
 ```
 
 查询节目：
@@ -113,6 +114,9 @@ uv run --frozen pytest --cov=damai_agent
 - [阶段 5 检查清单](docs/phase-5-checklist.md)
 - [阶段 6 检查清单](docs/phase-6-checklist.md)
 - [阶段 6 交易 Runbook](docs/phase-6-operations.md)
+- [阶段 7 检查清单](docs/phase-7-checklist.md)
+- [阶段 7 灰度与回滚 Runbook](docs/phase-7-operations.md)
+- [阶段 7 威胁模型](docs/phase-7-threat-model.md)
 - [Architecture Decision Records](docs/adr/README.md)
 
 阶段 0 将 Python 运行基线提升到 3.11，并建立配置 Profile、生产启动保护、OpenAPI 单一来源、Tool Schema 生成与 CI 质量门禁。
@@ -146,3 +150,5 @@ uv run --frozen pytest --cov=damai_agent
 阶段 5 已交付 Java 可靠调度、实时条件求值、Transactional Outbox、Kafka 重试/DLT、通知去重与暂停抑制；生产开关仍须等待测试专用 MySQL/Kafka 外部验收。详见[阶段 5 检查清单](docs/phase-5-checklist.md)和 [ADR-012](docs/adr/012-watch-rule-ownership.md)。
 
 阶段 6 仓库工程已完成购买意向、模型外受信确认、Java 管理的购票人引用和可恢复订单提交。`submit_confirmed_order` 默认不可见，只有 durable runtime、持久化审计、双侧功能开关、`order:submit` Scope 与精确 `ORDER_WRITE` 上限同时满足时才会开放。Java 在同一分片事务中消费一次性 Grant、建立唯一持久化命令并复用 V3 库存/订单状态机；创建超时进入 `RECONCILE`，后续只能按稳定订单号查询对账，不能盲目重放。真实测试环境的并发、进程中断、补偿和多副本验收仍是生产准入条件，详见[阶段 6 检查清单](docs/phase-6-checklist.md)、[交易 Runbook](docs/phase-6-operations.md)、[ADR-013](docs/adr/013-purchase-intent-confirmation.md)和 [ADR-014](docs/adr/014-durable-order-submission.md)。
+
+阶段 7 第一批已建立 `/livez`、`/readyz`、全响应生命周期排空、生命周期指标、单一 Uvicorn Bootstrap、非 root 只读容器和 Kubernetes 多副本安全基线，并提供不记录 Payload 的有界只读压测入口。真实镜像 SBOM/签名/漏洞门禁、Staging 长稳压测、故障注入、回滚演练和联合审批仍未完成，因此当前只能标记为“生产加固开发中”，详见[阶段 7 检查清单](docs/phase-7-checklist.md)、[Runbook](docs/phase-7-operations.md)、[威胁模型](docs/phase-7-threat-model.md)和 [ADR-015](docs/adr/015-production-lifecycle-and-draining.md)。
