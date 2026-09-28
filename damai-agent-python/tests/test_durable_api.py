@@ -90,14 +90,16 @@ class DelegationTest(unittest.TestCase):
         self.assertIn("watch:write", context.tool_scopes)
 
         order_claim = self.claims()
+        order_claim["toolScopes"] = ["order:submit"]
         order_claim["riskCeiling"] = "ORDER_WRITE"
         headers = self.signed_headers(order_claim)
-        with self.assertRaises(DelegationError):
-            verify_delegation(
-                headers["X-Agent-Delegation"],
-                headers["X-Agent-Delegation-Signature"],
-                self.secret,
-            )
+        context = verify_delegation(
+            headers["X-Agent-Delegation"],
+            headers["X-Agent-Delegation-Signature"],
+            self.secret,
+        )
+        self.assertEqual(context.risk_ceiling, ToolRisk.ORDER_WRITE)
+        self.assertIn("order:submit", context.tool_scopes)
 
 
 class DurableApiTest(DelegationTest):

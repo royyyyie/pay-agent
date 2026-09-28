@@ -2,6 +2,8 @@ package com.damai.controller.agent.vo;
 
 import lombok.Data;
 
+import java.util.List;
+
 @Data
 public class AgentPurchaseIntentVo {
 
@@ -9,6 +11,7 @@ public class AgentPurchaseIntentVo {
     private Long programId;
     private Long ticketCategoryId;
     private Integer quantity;
+    private List<Long> ticketUserIds;
     private Long unitAmountFen;
     private Long totalAmountFen;
     private String currency;
@@ -18,4 +21,6 @@ public class AgentPurchaseIntentVo {
     private Long version;
     private String createdAt;
     private String updatedAt;
+    private Long orderNumber;
+    private String submittedAt;
 }

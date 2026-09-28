@@ -23,6 +23,7 @@ public final class PurchaseQuoteFingerprint {
                 String.valueOf(intent.getProgramId()),
                 String.valueOf(intent.getTicketCategoryId()),
                 String.valueOf(intent.getQuantity()),
+                intent.getTicketUserRefs(),
                 String.valueOf(intent.getUnitAmountFen()),
                 String.valueOf(intent.getTotalAmountFen()),
                 intent.getCurrency(),

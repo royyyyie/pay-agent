@@ -3,10 +3,13 @@ package com.damai.client;
 import com.damai.common.ApiResponse;
 import com.damai.dto.AccountOrderCountDto;
 import com.damai.dto.OrderCreateDto;
+import com.damai.dto.OrderFactGetDto;
 import com.damai.vo.AccountOrderCountVo;
+import com.damai.vo.OrderFactVo;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 
 import static com.damai.constant.Constant.SPRING_INJECT_PREFIX_DISTINCTION_NAME;
 
@@ -26,6 +29,12 @@ public interface OrderClient {
      * */
     @PostMapping("/order/create")
     ApiResponse<String> create(OrderCreateDto dto);
+
+    /** Read a minimal order fact before retrying an ambiguous create operation. */
+    @PostMapping("/order/fact")
+    ApiResponse<OrderFactVo> fact(
+            @RequestHeader("X-Agent-Order-Fact-Key") String internalKey,
+            OrderFactGetDto dto);
     
     /**
      * 账户下某个节目的订单数量

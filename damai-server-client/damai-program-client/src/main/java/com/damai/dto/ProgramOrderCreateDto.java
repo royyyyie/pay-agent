@@ -1,5 +1,6 @@
 package com.damai.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.media.Schema.RequiredMode;
 import jakarta.validation.constraints.NotNull;
@@ -36,4 +37,10 @@ public class ProgramOrderCreateDto {
     
     @Schema(name ="ticketCount", type ="Integer", description = "购买票数量(如果不选座位，那么购买票数量必填)")
     private Integer ticketCount;
+
+    /**
+     * Internal stable order number for trusted recovery flows. It is never accepted from HTTP JSON.
+     */
+    @JsonIgnore
+    private Long trustedOrderNumber;
 }

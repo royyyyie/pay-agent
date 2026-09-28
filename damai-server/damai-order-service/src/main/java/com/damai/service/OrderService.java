@@ -18,6 +18,7 @@ import com.damai.dto.AccountOrderCountDto;
 import com.damai.dto.NotifyDto;
 import com.damai.dto.OrderCancelDto;
 import com.damai.dto.OrderCreateDto;
+import com.damai.dto.OrderFactGetDto;
 import com.damai.dto.OrderGetDto;
 import com.damai.dto.OrderListDto;
 import com.damai.dto.OrderPayCheckDto;
@@ -55,6 +56,7 @@ import com.damai.util.StringUtil;
 import com.damai.vo.AccountOrderCountVo;
 import com.damai.vo.NotifyVo;
 import com.damai.vo.OrderGetVo;
+import com.damai.vo.OrderFactVo;
 import com.damai.vo.OrderListVo;
 import com.damai.vo.OrderPayCheckVo;
 import com.damai.vo.OrderTicketInfoVo;
@@ -172,6 +174,18 @@ public class OrderService extends ServiceImpl<OrderMapper, Order> {
                         orderCreateDto.getProgramId()),
                 orderCreateDto.getOrderTicketUserCreateDtoList().size());
         return String.valueOf(order.getOrderNumber());
+    }
+
+    /** Minimal, PII-free order lookup for query-before-retry reconciliation. */
+    public OrderFactVo fact(OrderFactGetDto dto) {
+        Order order = orderMapper.selectOne(Wrappers.lambdaQuery(Order.class)
+                .eq(Order::getOrderNumber, dto.getOrderNumber()));
+        if (Objects.isNull(order)) {
+            throw new DaMaiFrameException(BaseCode.ORDER_NOT_EXIST);
+        }
+        OrderFactVo fact = new OrderFactVo();
+        BeanUtil.copyProperties(order, fact);
+        return fact;
     }
     
     /**

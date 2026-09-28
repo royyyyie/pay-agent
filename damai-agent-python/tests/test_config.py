@@ -249,6 +249,29 @@ class SettingsTest(unittest.TestCase):
         )
         self.assertTrue(settings.purchase_intents_enabled)
 
+    def test_order_submission_requires_the_complete_safety_chain(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "订单提交需要购买意向"):
+            Settings(order_submission_enabled=True)
+        with self.assertRaisesRegex(ValidationError, "订单提交需要购买意向"):
+            Settings(
+                runtime_backend="durable",
+                postgres_dsn="postgresql://user:pass@db.example/test",
+                redis_url="rediss://cache.example:6379/0",
+                delegation_hmac_key="d" * 32,
+                persist_tool_audit=True,
+                order_submission_enabled=True,
+            )
+        settings = Settings(
+            runtime_backend="durable",
+            postgres_dsn="postgresql://user:pass@db.example/test",
+            redis_url="rediss://cache.example:6379/0",
+            delegation_hmac_key="d" * 32,
+            persist_tool_audit=True,
+            purchase_intents_enabled=True,
+            order_submission_enabled=True,
+        )
+        self.assertTrue(settings.order_submission_enabled)
+
     def test_rag_requires_a_bounded_catalog_configuration(self) -> None:
         with self.assertRaisesRegex(ValidationError, "KNOWLEDGE_CATALOG_PATH"):
             Settings(rag_enabled=True)

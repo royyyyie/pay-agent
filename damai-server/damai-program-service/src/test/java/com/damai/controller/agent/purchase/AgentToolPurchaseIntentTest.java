@@ -1,14 +1,18 @@
 package com.damai.controller.agent.purchase;
 
 import com.baidu.fsg.uid.UidGenerator;
+import com.damai.client.UserClient;
+import com.damai.common.ApiResponse;
 import com.damai.controller.agent.dto.AgentPurchaseConfirmationRequest;
 import com.damai.controller.agent.dto.AgentPurchaseIntentCancelRequest;
 import com.damai.controller.agent.dto.AgentPurchaseIntentPrepareRequest;
 import com.damai.controller.agent.vo.AgentPurchaseIntentVo;
 import com.damai.service.TicketCategoryService;
 import com.damai.vo.TicketCategoryDetailVo;
+import com.damai.vo.TicketUserVo;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -57,8 +61,11 @@ class AgentToolPurchaseIntentTest {
         assertEquals(58025L, persisted.getUnitAmountFen());
         assertEquals(116050L, persisted.getTotalAmountFen());
         assertEquals(PurchaseIntentState.PENDING_CONFIRMATION.name(), persisted.getIntentState());
+        assertEquals("9001,9002", persisted.getTicketUserRefs());
         assertEquals(64, persisted.getQuoteHash().length());
         assertEquals(116050L, result.getTotalAmountFen());
+        verify(fixture.attendeeService).requireOwned(
+                "user-1", List.of(9001L, 9002L));
     }
 
     @Test
@@ -215,7 +222,52 @@ class AgentToolPurchaseIntentTest {
                                 "proof-2", "nonce-used", Date.from(NOW))));
 
         assertEquals(409, error.getCode());
+        assertEquals(
+                1.0,
+                fixture.metricRegistry
+                        .get("damai.agent.purchase.grant.replays")
+                        .tag("reason", "nonce")
+                        .counter()
+                        .count());
         verify(fixture.intentMapper, never()).selectOwned(any(), any(), any(), any());
+    }
+
+    @Test
+    void confirmationProofReplayIsIdempotentAndMeasured() {
+        Fixture fixture = new Fixture();
+        ConfirmationGrant grant = new ConfirmationGrant();
+        grant.setTenantId("tenant-1");
+        grant.setUserId("user-1");
+        grant.setSessionKey("session-1");
+        grant.setQuoteHash(QUOTE_HASH);
+        PurchaseIntent confirmed = pendingIntent();
+        confirmed.setIntentState(PurchaseIntentState.CONFIRMED.name());
+        confirmed.setVersion(2L);
+        when(fixture.grantMapper.selectByProof(7001L, 1001L, "proof-1"))
+                .thenReturn(grant);
+        when(fixture.intentMapper.selectOwned("tenant-1", "user-1", 7001L, 1001L))
+                .thenReturn(confirmed);
+
+        AgentPurchaseIntentVo result = fixture.service.confirm(
+                "tenant-1",
+                "user-1",
+                "session-1",
+                7001L,
+                1001L,
+                1L,
+                QUOTE_HASH,
+                new ConfirmationProof("proof-1", "nonce-1", Date.from(NOW)));
+
+        assertEquals(PurchaseIntentState.CONFIRMED.name(), result.getIntentStatus());
+        assertEquals(
+                1.0,
+                fixture.metricRegistry
+                        .get("damai.agent.purchase.grant.replays")
+                        .tag("reason", "idempotent")
+                        .counter()
+                        .count());
+        verify(fixture.intentMapper, never()).confirm(
+                any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -255,11 +307,40 @@ class AgentToolPurchaseIntentTest {
         new PurchaseIntentSecurityConfiguration("c".repeat(32), "d".repeat(32));
     }
 
+    @Test
+    void attendeeReferencesNeverExposeNamesOrDocuments() {
+        UserClient userClient = mock(UserClient.class);
+        TicketUserVo owned = new TicketUserVo();
+        owned.setId(9001L);
+        owned.setUserId(42L);
+        owned.setRelName("张三");
+        owned.setIdNumber("110101199001011234");
+        TicketUserVo anotherUser = new TicketUserVo();
+        anotherUser.setId(9999L);
+        anotherUser.setUserId(99L);
+        when(userClient.list(any())).thenReturn(ApiResponse.ok(List.of(owned, anotherUser)));
+        PurchaseAttendeeService service = new PurchaseAttendeeService(userClient);
+
+        List<com.damai.controller.agent.vo.AgentPurchaseAttendeeRefVo> result =
+                service.list("42");
+
+        assertEquals(1, result.size());
+        assertEquals(9001L, result.get(0).getTicketUserId());
+        assertEquals("购票人-9001", result.get(0).getDisplayLabel());
+        service.requireOwned("42", List.of(9001L));
+        assertThrows(
+                PurchaseIntentException.class,
+                () -> service.requireOwned("42", List.of(9999L)));
+    }
+
     private AgentPurchaseIntentPrepareRequest prepareRequest(int quantity) {
         AgentPurchaseIntentPrepareRequest request = new AgentPurchaseIntentPrepareRequest();
         request.setProgramId(1001L);
         request.setTicketCategoryId(3001L);
         request.setQuantity(quantity);
+        request.setTicketUserIds(java.util.stream.LongStream.rangeClosed(9001L, 9000L + quantity)
+                .boxed()
+                .toList());
         return request;
     }
 
@@ -300,6 +381,7 @@ class AgentToolPurchaseIntentTest {
         intent.setProgramId(1001L);
         intent.setTicketCategoryId(3001L);
         intent.setQuantity(2);
+        intent.setTicketUserRefs("9001,9002");
         intent.setUnitAmountFen(58000L);
         intent.setTotalAmountFen(116000L);
         intent.setCurrency("CNY");
@@ -325,14 +407,18 @@ class AgentToolPurchaseIntentTest {
         private final PurchaseIntentMapper intentMapper = mock(PurchaseIntentMapper.class);
         private final ConfirmationGrantMapper grantMapper = mock(ConfirmationGrantMapper.class);
         private final TicketCategoryService ticketService = mock(TicketCategoryService.class);
+        private final PurchaseAttendeeService attendeeService = mock(PurchaseAttendeeService.class);
         private final UidGenerator uidGenerator = mock(UidGenerator.class);
+        private final SimpleMeterRegistry metricRegistry = new SimpleMeterRegistry();
         private final PurchaseIntentService service = new PurchaseIntentService(
                 intentMapper,
                 grantMapper,
                 ticketService,
+                attendeeService,
                 uidGenerator,
                 Duration.ofSeconds(120),
                 Duration.ofSeconds(90),
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                new PurchaseSecurityMetrics(metricRegistry));
     }
 }
