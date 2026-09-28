@@ -32,7 +32,7 @@ class DelegationClaims(BaseModel):
     locale: str = Field(min_length=1, max_length=32)
     channel: str = Field(min_length=1, max_length=100)
     toolScopes: list[str] = Field(max_length=32)
-    riskCeiling: Literal["READ_ONLY", "REVERSIBLE_WRITE"]
+    riskCeiling: Literal["READ_ONLY", "REVERSIBLE_WRITE", "ORDER_WRITE"]
     delegationTokenId: str = Field(min_length=1, max_length=200)
     issuedAt: int
     expiresAt: int

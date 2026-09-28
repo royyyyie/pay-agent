@@ -5,5 +5,8 @@ public enum PurchaseIntentState {
     CONFIRMED,
     CANCELLED,
     EXPIRED,
-    SUBMITTED
+    SUBMITTING,
+    SUBMITTED,
+    SUBMISSION_FAILED,
+    SUBMISSION_UNKNOWN
 }

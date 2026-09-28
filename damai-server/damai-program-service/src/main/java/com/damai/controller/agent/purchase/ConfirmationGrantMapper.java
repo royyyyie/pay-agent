@@ -5,6 +5,9 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
+
+import java.util.Date;
 
 @Mapper
 public interface ConfirmationGrantMapper extends BaseMapper<ConfirmationGrant> {
@@ -41,4 +44,25 @@ public interface ConfirmationGrantMapper extends BaseMapper<ConfirmationGrant> {
     ConfirmationGrant selectByNonce(
             @Param("programId") Long programId,
             @Param("nonceHash") String nonceHash);
+
+    @Select("""
+            SELECT * FROM d_agent_confirmation_grant
+            WHERE intent_id = #{intentId} AND program_id = #{programId}
+            LIMIT 1 FOR UPDATE
+            """)
+    ConfirmationGrant selectByIntentForUpdate(
+            @Param("intentId") Long intentId,
+            @Param("programId") Long programId);
+
+    @Update("""
+            UPDATE d_agent_confirmation_grant
+            SET grant_state = 'CONSUMED', consumed_at = #{now}, edit_time = #{now}
+            WHERE id = #{id} AND intent_id = #{intentId} AND program_id = #{programId}
+              AND grant_state = 'AVAILABLE' AND expires_at > #{now}
+            """)
+    int consume(
+            @Param("id") Long id,
+            @Param("intentId") Long intentId,
+            @Param("programId") Long programId,
+            @Param("now") Date now);
 }

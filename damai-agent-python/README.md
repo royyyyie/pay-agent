@@ -111,13 +111,15 @@ uv run --frozen pytest --cov=damai_agent
 - [阶段 3 检查清单](docs/phase-3-checklist.md)
 - [阶段 4 检查清单](docs/phase-4-checklist.md)
 - [阶段 5 检查清单](docs/phase-5-checklist.md)
+- [阶段 6 检查清单](docs/phase-6-checklist.md)
+- [阶段 6 交易 Runbook](docs/phase-6-operations.md)
 - [Architecture Decision Records](docs/adr/README.md)
 
 阶段 0 将 Python 运行基线提升到 3.11，并建立配置 Profile、生产启动保护、OpenAPI 单一来源、Tool Schema 生成与 CI 质量门禁。
 
 阶段 1 已完成运行契约、Tool 输入/输出边界、Provider 真实流式、受控只读 Tool 并发、基础 Hook 链和字符级上下文治理。审计当前仅为进程日志或由部署方提供的 Sink，尚无持久化、不可篡改和跨服务关联保证；模型 Token 级预算与真实链路故障验收仍在后续批次。
 
-阶段 2 新增 PostgreSQL Session/Turn/Message/Checkpoint/Event 存储、Redis 租约/取消/有界排队，以及签名委托保护的 `/api/v2/turns` 和可用 `Last-Event-ID` 续传的 SSE。迁移脚本 `001`、`002`、`003` 须按序执行；分别通过 `postgres`、`redis` 可选依赖安装。设置 `DAMAI_AGENT_RUNTIME_BACKEND=durable` 后，旧匿名 `/api/v1/chat` 禁用；默认本地配置仍用内存模式。阶段 5 起持久化入口可在显式开关、Scope 和审计保护下接受可撤销监控写操作，仍拒绝订单写入。中断恢复会保留已确认结果、把未知结果明确标记为未知并终结 Turn，不会盲目重放工具。外部请求的副作用不受数据库 fencing 保护，生产准入仍以真实 Java 链路、进程中断和多副本故障验收为前提。生产须配置独立账号、TLS、加密、保留期、备份与连接容量。详见[阶段 2 检查清单](docs/phase-2-checklist.md)和[操作说明](docs/phase-2-operations.md)。
+阶段 2 新增 PostgreSQL Session/Turn/Message/Checkpoint/Event 存储、Redis 租约/取消/有界排队，以及签名委托保护的 `/api/v2/turns` 和可用 `Last-Event-ID` 续传的 SSE。迁移脚本 `001`、`002`、`003` 须按序执行；分别通过 `postgres`、`redis` 可选依赖安装。设置 `DAMAI_AGENT_RUNTIME_BACKEND=durable` 后，旧匿名 `/api/v1/chat` 禁用；默认本地配置仍用内存模式。阶段 5 起持久化入口可在显式开关、Scope 和审计保护下接受可撤销监控写操作；阶段 6 只有在完整确认链、订单功能开关和 `ORDER_WRITE` 委托同时满足时才接受订单提交。中断恢复会保留已确认结果、把未知结果明确标记为未知并终结 Turn，不会盲目重放工具。生产须配置独立账号、TLS、加密、保留期、备份与连接容量。详见[阶段 2 检查清单](docs/phase-2-checklist.md)和[操作说明](docs/phase-2-operations.md)。
 
 阶段 3 首批加入可选的模型暂时性故障重试与备用路由，默认关闭。流式输出一旦开始就不会重试或切换，以免客户端收到拼接的两次模型回复；详见[阶段 3 检查清单](docs/phase-3-checklist.md)。
 
@@ -143,4 +145,4 @@ uv run --frozen pytest --cov=damai_agent
 
 阶段 5 已交付 Java 可靠调度、实时条件求值、Transactional Outbox、Kafka 重试/DLT、通知去重与暂停抑制；生产开关仍须等待测试专用 MySQL/Kafka 外部验收。详见[阶段 5 检查清单](docs/phase-5-checklist.md)和 [ADR-012](docs/adr/012-watch-rule-ownership.md)。
 
-阶段 6 第一批建立购买意向与受信确认边界：模型只能准备、查询或取消意向，Java 根据实时票档生成“分”整数报价；确认由 BFF 使用独立 HMAC 证明签发服务器侧一次性 Grant，确认凭据不进入模型。真实订单提交仍未开放，详见[阶段 6 检查清单](docs/phase-6-checklist.md)和 [ADR-013](docs/adr/013-purchase-intent-confirmation.md)。
+阶段 6 仓库工程已完成购买意向、模型外受信确认、Java 管理的购票人引用和可恢复订单提交。`submit_confirmed_order` 默认不可见，只有 durable runtime、持久化审计、双侧功能开关、`order:submit` Scope 与精确 `ORDER_WRITE` 上限同时满足时才会开放。Java 在同一分片事务中消费一次性 Grant、建立唯一持久化命令并复用 V3 库存/订单状态机；创建超时进入 `RECONCILE`，后续只能按稳定订单号查询对账，不能盲目重放。真实测试环境的并发、进程中断、补偿和多副本验收仍是生产准入条件，详见[阶段 6 检查清单](docs/phase-6-checklist.md)、[交易 Runbook](docs/phase-6-operations.md)、[ADR-013](docs/adr/013-purchase-intent-confirmation.md)和 [ADR-014](docs/adr/014-durable-order-submission.md)。

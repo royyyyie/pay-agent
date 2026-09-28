@@ -15,12 +15,12 @@ public interface PurchaseIntentMapper extends BaseMapper<PurchaseIntent> {
     @Insert("""
             INSERT IGNORE INTO d_agent_purchase_intent (
                 id, tenant_id, user_id, session_key, idempotency_key, program_id,
-                ticket_category_id, quantity, unit_amount_fen, total_amount_fen,
+                ticket_category_id, quantity, ticket_user_refs, unit_amount_fen, total_amount_fen,
                 currency, quote_hash, quote_expires_at, intent_state, version,
                 create_time, edit_time
             ) VALUES (
                 #{id}, #{tenantId}, #{userId}, #{sessionKey}, #{idempotencyKey}, #{programId},
-                #{ticketCategoryId}, #{quantity}, #{unitAmountFen}, #{totalAmountFen},
+                #{ticketCategoryId}, #{quantity}, #{ticketUserRefs}, #{unitAmountFen}, #{totalAmountFen},
                 #{currency}, #{quoteHash}, #{quoteExpiresAt}, #{intentState}, #{version},
                 #{createTime}, #{editTime}
             )
@@ -46,6 +46,18 @@ public interface PurchaseIntentMapper extends BaseMapper<PurchaseIntent> {
             LIMIT 1
             """)
     PurchaseIntent selectOwned(
+            @Param("tenantId") String tenantId,
+            @Param("userId") String userId,
+            @Param("intentId") Long intentId,
+            @Param("programId") Long programId);
+
+    @Select("""
+            SELECT * FROM d_agent_purchase_intent
+            WHERE id = #{intentId} AND program_id = #{programId}
+              AND tenant_id = #{tenantId} AND user_id = #{userId}
+            LIMIT 1 FOR UPDATE
+            """)
+    PurchaseIntent selectOwnedForUpdate(
             @Param("tenantId") String tenantId,
             @Param("userId") String userId,
             @Param("intentId") Long intentId,
@@ -85,4 +97,49 @@ public interface PurchaseIntentMapper extends BaseMapper<PurchaseIntent> {
             @Param("expectedVersion") Long expectedVersion,
             @Param("quoteHash") String quoteHash,
             @Param("confirmedAt") Date confirmedAt);
+
+    @Update("""
+            UPDATE d_agent_purchase_intent
+            SET intent_state = 'SUBMITTING', order_number = #{orderNumber},
+                version = version + 1, edit_time = #{now}
+            WHERE id = #{intentId} AND program_id = #{programId}
+              AND tenant_id = #{tenantId} AND user_id = #{userId}
+              AND session_key = #{sessionKey} AND version = #{expectedVersion}
+              AND intent_state = 'CONFIRMED'
+            """)
+    int startSubmission(
+            @Param("tenantId") String tenantId,
+            @Param("userId") String userId,
+            @Param("sessionKey") String sessionKey,
+            @Param("intentId") Long intentId,
+            @Param("programId") Long programId,
+            @Param("expectedVersion") Long expectedVersion,
+            @Param("orderNumber") Long orderNumber,
+            @Param("now") Date now);
+
+    @Update("""
+            UPDATE d_agent_purchase_intent
+            SET intent_state = 'SUBMITTED', submitted_at = #{submittedAt},
+                version = version + 1, edit_time = #{submittedAt}
+            WHERE id = #{intentId} AND program_id = #{programId}
+              AND order_number = #{orderNumber} AND intent_state = 'SUBMITTING'
+            """)
+    int markSubmitted(
+            @Param("intentId") Long intentId,
+            @Param("programId") Long programId,
+            @Param("orderNumber") Long orderNumber,
+            @Param("submittedAt") Date submittedAt);
+
+    @Update("""
+            UPDATE d_agent_purchase_intent
+            SET intent_state = #{intentState}, version = version + 1, edit_time = #{now}
+            WHERE id = #{intentId} AND program_id = #{programId}
+              AND order_number = #{orderNumber} AND intent_state = 'SUBMITTING'
+            """)
+    int markSubmissionTerminal(
+            @Param("intentId") Long intentId,
+            @Param("programId") Long programId,
+            @Param("orderNumber") Long orderNumber,
+            @Param("intentState") String intentState,
+            @Param("now") Date now);
 }

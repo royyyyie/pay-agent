@@ -87,12 +87,51 @@ class AgentToolWatchDelegationFilterTest {
         filter.doFilter(get, queried, (servletRequest, servletResponse) -> getInvoked.set(true));
         assertTrue(getInvoked.get());
 
+        MockHttpServletRequest attendees = request(
+                "/internal/agent/v1/tools/purchase-intents/attendees");
+        sign(attendees, "tenant-1", "READ_ONLY", "purchase:intent:read");
+        MockHttpServletResponse attendeeResponse = new MockHttpServletResponse();
+        AtomicBoolean attendeeInvoked = new AtomicBoolean(false);
+        filter.doFilter(
+                attendees,
+                attendeeResponse,
+                (servletRequest, servletResponse) -> attendeeInvoked.set(true));
+        assertTrue(attendeeInvoked.get());
+
         MockHttpServletRequest denied = request(
                 "/internal/agent/v1/tools/purchase-intents/cancel");
         sign(denied, "tenant-1", "READ_ONLY", "purchase:intent:write");
         MockHttpServletResponse rejected = new MockHttpServletResponse();
         filter.doFilter(denied, rejected, (servletRequest, servletResponse) -> {});
         assertEquals(401, rejected.getStatus());
+    }
+
+    @Test
+    void orderSubmissionRequiresExactOrderScopeAndCeiling() throws Exception {
+        MockHttpServletRequest accepted = request(
+                "/internal/agent/v1/tools/purchase-intents/submit");
+        sign(accepted, "tenant-1", "ORDER_WRITE", "order:submit");
+        MockHttpServletResponse acceptedResponse = new MockHttpServletResponse();
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        filter.doFilter(
+                accepted,
+                acceptedResponse,
+                (servletRequest, servletResponse) -> invoked.set(true));
+        assertTrue(invoked.get());
+
+        MockHttpServletRequest wrongCeiling = request(
+                "/internal/agent/v1/tools/purchase-intents/submit");
+        sign(wrongCeiling, "tenant-1", "REVERSIBLE_WRITE", "order:submit");
+        MockHttpServletResponse rejectedCeiling = new MockHttpServletResponse();
+        filter.doFilter(wrongCeiling, rejectedCeiling, (servletRequest, servletResponse) -> {});
+        assertEquals(401, rejectedCeiling.getStatus());
+
+        MockHttpServletRequest wrongScope = request(
+                "/internal/agent/v1/tools/purchase-intents/submit");
+        sign(wrongScope, "tenant-1", "ORDER_WRITE", "purchase:intent:write");
+        MockHttpServletResponse rejectedScope = new MockHttpServletResponse();
+        filter.doFilter(wrongScope, rejectedScope, (servletRequest, servletResponse) -> {});
+        assertEquals(401, rejectedScope.getStatus());
     }
 
     private MockHttpServletRequest request(String path) {

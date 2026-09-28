@@ -21,6 +21,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.util.List;
+import java.util.Objects;
 
 /** Java-authoritative purchase intent, quote snapshot, and confirmation grant service. */
 @Service
@@ -31,61 +32,75 @@ public class PurchaseIntentService {
     private final PurchaseIntentMapper intentMapper;
     private final ConfirmationGrantMapper grantMapper;
     private final TicketCategoryService ticketCategoryService;
+    private final PurchaseAttendeeService attendeeService;
     private final UidGenerator uidGenerator;
     private final Duration quoteTtl;
     private final Duration grantTtl;
     private final Clock clock;
+    private final PurchaseSecurityMetrics metrics;
 
     @Autowired
     public PurchaseIntentService(
             PurchaseIntentMapper intentMapper,
             ConfirmationGrantMapper grantMapper,
             TicketCategoryService ticketCategoryService,
+            PurchaseAttendeeService attendeeService,
             UidGenerator uidGenerator,
+            PurchaseSecurityMetrics metrics,
             @Value("${agent.purchase-intents.quote-ttl-seconds:120}") long quoteTtlSeconds,
             @Value("${agent.purchase-intents.grant-ttl-seconds:90}") long grantTtlSeconds) {
         this(
                 intentMapper,
                 grantMapper,
                 ticketCategoryService,
+                attendeeService,
                 uidGenerator,
                 Duration.ofSeconds(Math.max(30, quoteTtlSeconds)),
                 Duration.ofSeconds(Math.max(15, grantTtlSeconds)),
-                Clock.systemUTC());
+                Clock.systemUTC(),
+                metrics);
     }
 
     PurchaseIntentService(
             PurchaseIntentMapper intentMapper,
             ConfirmationGrantMapper grantMapper,
             TicketCategoryService ticketCategoryService,
+            PurchaseAttendeeService attendeeService,
             UidGenerator uidGenerator,
             Duration quoteTtl,
-            Duration grantTtl) {
+            Duration grantTtl,
+            PurchaseSecurityMetrics metrics) {
         this(
                 intentMapper,
                 grantMapper,
                 ticketCategoryService,
+                attendeeService,
                 uidGenerator,
                 quoteTtl,
                 grantTtl,
-                Clock.systemUTC());
+                Clock.systemUTC(),
+                metrics);
     }
 
     PurchaseIntentService(
             PurchaseIntentMapper intentMapper,
             ConfirmationGrantMapper grantMapper,
             TicketCategoryService ticketCategoryService,
+            PurchaseAttendeeService attendeeService,
             UidGenerator uidGenerator,
             Duration quoteTtl,
             Duration grantTtl,
-            Clock clock) {
+            Clock clock,
+            PurchaseSecurityMetrics metrics) {
         this.intentMapper = intentMapper;
         this.grantMapper = grantMapper;
         this.ticketCategoryService = ticketCategoryService;
+        this.attendeeService = attendeeService;
         this.uidGenerator = uidGenerator;
         this.quoteTtl = quoteTtl;
         this.grantTtl = grantTtl;
         this.clock = clock;
+        this.metrics = metrics;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -101,6 +116,8 @@ public class PurchaseIntentService {
             requireSameRequest(existing, sessionKey, request);
             return toVo(existing, Date.from(clock.instant()));
         }
+
+        attendeeService.requireOwned(userId, request.getTicketUserIds());
 
         TicketCategoryDetailVo ticket = requireAvailableTicket(
                 request.getProgramId(), request.getTicketCategoryId(), request.getQuantity());
@@ -121,6 +138,8 @@ public class PurchaseIntentService {
         intent.setProgramId(request.getProgramId());
         intent.setTicketCategoryId(request.getTicketCategoryId());
         intent.setQuantity(request.getQuantity());
+        intent.setTicketUserRefs(PurchaseTicketUserRefs.canonical(
+                request.getTicketUserIds(), request.getQuantity()));
         intent.setUnitAmountFen(unitAmountFen);
         intent.setTotalAmountFen(totalAmountFen);
         intent.setCurrency(CURRENCY);
@@ -190,10 +209,12 @@ public class PurchaseIntentService {
         ConfirmationGrant replay = grantMapper.selectByProof(
                 intentId, programId, proof.proofHash());
         if (replay != null) {
+            metrics.grantReplay("idempotent");
             requireGrantOwner(replay, tenantId, userId, sessionKey, quoteHash);
             return toVo(requireOwned(tenantId, userId, intentId, programId), proof.confirmedAt());
         }
         if (grantMapper.selectByNonce(programId, proof.nonceHash()) != null) {
+            metrics.grantReplay("nonce");
             throw new PurchaseIntentException(409, "购买确认 nonce 已使用");
         }
 
@@ -302,7 +323,11 @@ public class PurchaseIntentService {
             AgentPurchaseIntentPrepareRequest request) {
         if (!existing.getSessionKey().equals(sessionKey)
                 || !existing.getTicketCategoryId().equals(request.getTicketCategoryId())
-                || !existing.getQuantity().equals(request.getQuantity())) {
+                || !existing.getQuantity().equals(request.getQuantity())
+                || !Objects.equals(
+                        existing.getTicketUserRefs(),
+                        PurchaseTicketUserRefs.canonical(
+                                request.getTicketUserIds(), request.getQuantity()))) {
             throw new PurchaseIntentException(409, "同一幂等键不能变更购买意向参数");
         }
     }
@@ -333,6 +358,9 @@ public class PurchaseIntentService {
         view.setProgramId(intent.getProgramId());
         view.setTicketCategoryId(intent.getTicketCategoryId());
         view.setQuantity(intent.getQuantity());
+        view.setTicketUserIds(intent.getTicketUserRefs() == null || intent.getTicketUserRefs().isBlank()
+                ? List.of()
+                : PurchaseTicketUserRefs.parse(intent.getTicketUserRefs()));
         view.setUnitAmountFen(intent.getUnitAmountFen());
         view.setTotalAmountFen(intent.getTotalAmountFen());
         view.setCurrency(intent.getCurrency());
@@ -342,6 +370,10 @@ public class PurchaseIntentService {
         view.setVersion(intent.getVersion());
         view.setCreatedAt(format(intent.getCreateTime()));
         view.setUpdatedAt(format(intent.getEditTime()));
+        view.setOrderNumber(intent.getOrderNumber());
+        if (intent.getSubmittedAt() != null) {
+            view.setSubmittedAt(format(intent.getSubmittedAt()));
+        }
         return view;
     }
 

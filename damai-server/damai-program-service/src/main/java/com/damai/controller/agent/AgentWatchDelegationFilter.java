@@ -112,21 +112,28 @@ public class AgentWatchDelegationFilter extends OncePerRequestFilter {
             String path = request.getRequestURI();
             boolean purchaseIntent = path.startsWith(
                     AgentToolRequestContextFilter.PURCHASE_INTENT_PATH_PREFIX);
-            boolean writeOperation = purchaseIntent
-                    ? !path.endsWith("/get")
-                    : !path.endsWith("/list");
-            String requiredScope = purchaseIntent
-                    ? (writeOperation ? "purchase:intent:write" : "purchase:intent:read")
-                    : (writeOperation ? "watch:write" : "watch:read");
+            boolean orderSubmission = purchaseIntent && path.endsWith("/submit");
+            boolean readOperation = purchaseIntent
+                    ? (path.endsWith("/get") || path.endsWith("/attendees"))
+                    : path.endsWith("/list");
+            boolean writeOperation = !readOperation;
+            String requiredScope = orderSubmission
+                    ? "order:submit"
+                    : purchaseIntent
+                            ? (writeOperation ? "purchase:intent:write" : "purchase:intent:read")
+                            : (writeOperation ? "watch:write" : "watch:read");
             boolean hasScope = claims.path("toolScopes").isArray()
                     && StreamSupport.stream(claims.path("toolScopes").spliterator(), false)
                             .map(JsonNode::asText)
                             .anyMatch(requiredScope::equals);
             String riskCeiling = claims.path("riskCeiling").asText();
-            boolean riskAllowed = writeOperation
-                    ? "REVERSIBLE_WRITE".equals(riskCeiling)
+            boolean riskAllowed = orderSubmission
+                    ? "ORDER_WRITE".equals(riskCeiling)
+                    : writeOperation
+                            ? "REVERSIBLE_WRITE".equals(riskCeiling)
                     : ("READ_ONLY".equals(riskCeiling)
-                            || "REVERSIBLE_WRITE".equals(riskCeiling));
+                            || "REVERSIBLE_WRITE".equals(riskCeiling)
+                            || "ORDER_WRITE".equals(riskCeiling));
             return validLifetime && boundContext && hasScope && riskAllowed;
         } catch (IllegalArgumentException | IOException exception) {
             return false;

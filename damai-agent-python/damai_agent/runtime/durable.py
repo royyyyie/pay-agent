@@ -137,6 +137,7 @@ class DurableTurnService:
         max_tool_rounds: int = 6,
         max_tool_calls: int = 12,
         max_history_turns: int = 20,
+        allow_order_write: bool = False,
     ) -> None:
         if not 100 <= lease_ttl_ms <= 300_000:
             raise ValueError("invalid session lease TTL")
@@ -153,6 +154,12 @@ class DurableTurnService:
         self._max_tool_rounds = max_tool_rounds
         self._max_tool_calls = max_tool_calls
         self._max_history_turns = max_history_turns
+        self._allow_order_write = allow_order_write
+
+    def _risk_allowed(self, context: TicketTurnContext) -> bool:
+        return context.risk_ceiling in {ToolRisk.READ_ONLY, ToolRisk.REVERSIBLE_WRITE} or (
+            self._allow_order_write and context.risk_ceiling is ToolRisk.ORDER_WRITE
+        )
 
     async def run(
         self,
@@ -163,8 +170,8 @@ class DurableTurnService:
     ) -> AgentRunResult:
         if not user_text:
             raise ValueError("user text is required")
-        if context.risk_ceiling not in {ToolRisk.READ_ONLY, ToolRisk.REVERSIBLE_WRITE}:
-            raise ValueError("durable runtime only accepts read or reversible-write turns")
+        if not self._risk_allowed(context):
+            raise ValueError("durable runtime risk ceiling is not enabled")
         fingerprint = self._request_fingerprint(user_text, context)
         pending_token = RedisPendingTurnQueue.token_for(idempotency_key, fingerprint)
         if self._pending_queue is not None:
@@ -207,7 +214,7 @@ class DurableTurnService:
                 messages=(*history, ChatMessage(role="user", content=user_text)),
                 tool_specs=tool_specs,
                 system_prompt=SYSTEM_PROMPT,
-                prompt_version="ticket-assistant@2",
+                prompt_version="ticket-assistant@3",
                 toolset_version=toolset_version(tool_specs),
                 policy_version=policy_version(context),
                 model_route=self._runner.model_route,
@@ -297,11 +304,8 @@ class DurableTurnService:
 
         if self._pending_queue is None:
             raise ValueError("pending queue is not configured")
-        if not user_text or context.risk_ceiling not in {
-            ToolRisk.READ_ONLY,
-            ToolRisk.REVERSIBLE_WRITE,
-        }:
-            raise ValueError("pending request must be nonempty and safely reversible")
+        if not user_text or not self._risk_allowed(context):
+            raise ValueError("pending request must be nonempty and use an enabled risk ceiling")
         token = RedisPendingTurnQueue.token_for(
             idempotency_key, self._request_fingerprint(user_text, context)
         )
@@ -317,8 +321,8 @@ class DurableTurnService:
 
         if user_text == "":
             raise ValueError("user text cannot be empty")
-        if context.risk_ceiling not in {ToolRisk.READ_ONLY, ToolRisk.REVERSIBLE_WRITE}:
-            raise ValueError("durable runtime only accepts read or reversible-write turns")
+        if not self._risk_allowed(context):
+            raise ValueError("durable runtime risk ceiling is not enabled")
         lease = await self._leases.acquire(
             context.tenant_id, context.session_key, ttl_ms=self._lease_ttl_ms
         )

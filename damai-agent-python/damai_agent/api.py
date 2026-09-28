@@ -143,6 +143,10 @@ def build_runner(
             for tool in java_tools
             if not tool.spec.required_scope.startswith("purchase:intent:")
         ]
+    if not settings.order_submission_enabled:
+        java_tools = [
+            tool for tool in java_tools if not tool.spec.required_scope.startswith("order:")
+        ]
     registry = ToolRegistry(java_tools)
     resolved_knowledge_rag = knowledge_rag or build_knowledge_rag(settings)
     return AgentRunner(
@@ -268,6 +272,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             cancellations=RedisTurnCancellationStore(durable_redis),
             pending_queue=RedisPendingTurnQueue(durable_redis),
             max_tool_rounds=resolved_settings.max_tool_rounds,
+            allow_order_write=resolved_settings.order_submission_enabled,
         )
     else:
         runner = build_runner(resolved_settings, metrics, tracing, knowledge_rag=knowledge_rag)

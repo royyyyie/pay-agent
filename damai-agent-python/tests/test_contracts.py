@@ -47,10 +47,12 @@ class ContractGenerationTest(unittest.TestCase):
                 "prepare_purchase_intent",
                 "get_purchase_intent",
                 "cancel_purchase_intent",
+                "list_purchase_attendees",
+                "submit_confirmed_order",
             },
         )
         for spec in registry.specs:
-            self.assertEqual(spec.version, "1.2.0")
+            self.assertEqual(spec.version, "1.3.0")
             self.assertFalse(spec.parameters["additionalProperties"])
             self.assertIs(spec.request_model, REQUEST_MODELS[spec.name])
             self.assertIs(spec.response_model, RESPONSE_MODELS[spec.name])
@@ -74,10 +76,16 @@ class ContractGenerationTest(unittest.TestCase):
                 self.assertEqual(spec.max_calls_per_turn, 1)
                 self.assertFalse(spec.concurrency_safe)
                 self.assertTrue(spec.exclusive)
-            elif spec.name == "get_purchase_intent":
+            elif spec.name in {"get_purchase_intent", "list_purchase_attendees"}:
                 self.assertEqual(spec.risk, "READ_ONLY")
                 self.assertEqual(spec.required_scope, "purchase:intent:read")
                 self.assertTrue(spec.concurrency_safe)
+            elif spec.name == "submit_confirmed_order":
+                self.assertEqual(spec.risk, "ORDER_WRITE")
+                self.assertEqual(spec.required_scope, "order:submit")
+                self.assertEqual(spec.max_calls_per_turn, 1)
+                self.assertFalse(spec.concurrency_safe)
+                self.assertTrue(spec.exclusive)
             else:
                 self.assertEqual(spec.risk, "READ_ONLY")
                 self.assertEqual(spec.required_scope, "programs:read")
@@ -103,7 +111,22 @@ class ContractGenerationTest(unittest.TestCase):
         self.assertIn("prepare_purchase_intent", enabled_runner.tool_names)
         self.assertIn("get_purchase_intent", enabled_runner.tool_names)
         self.assertIn("cancel_purchase_intent", enabled_runner.tool_names)
+        self.assertIn("list_purchase_attendees", enabled_runner.tool_names)
+        self.assertNotIn("submit_confirmed_order", enabled_runner.tool_names)
         self.assertNotIn("create_watch_rule", enabled_runner.tool_names)
+
+        order_runner = build_runner(
+            Settings(
+                runtime_backend="durable",
+                postgres_dsn="postgresql://user:pass@db.example/test",
+                redis_url="rediss://cache.example:6379/0",
+                delegation_hmac_key="d" * 32,
+                persist_tool_audit=True,
+                purchase_intents_enabled=True,
+                order_submission_enabled=True,
+            )
+        )
+        self.assertIn("submit_confirmed_order", order_runner.tool_names)
 
     def test_generated_request_model_applies_defaults_and_rejects_unknown_fields(self) -> None:
         request_model = REQUEST_MODELS["search_programs"]
@@ -133,13 +156,22 @@ class ContractGenerationTest(unittest.TestCase):
 
     def test_purchase_intent_contract_never_accepts_price_or_confirmation(self) -> None:
         prepare_model = REQUEST_MODELS["prepare_purchase_intent"]
-        prepared = prepare_model.model_validate({"programId": 1001, "ticketCategoryId": 3001})
+        prepared = prepare_model.model_validate(
+            {
+                "programId": 1001,
+                "ticketCategoryId": 3001,
+                "quantity": 1,
+                "ticketUserIds": [9001],
+            }
+        )
         self.assertEqual(prepared.quantity, 1)
         with self.assertRaises(ValidationError):
             prepare_model.model_validate(
                 {
                     "programId": 1001,
                     "ticketCategoryId": 3001,
+                    "quantity": 1,
+                    "ticketUserIds": [9001],
                     "unitAmountFen": 1,
                 }
             )
@@ -148,12 +180,19 @@ class ContractGenerationTest(unittest.TestCase):
                 {
                     "programId": 1001,
                     "ticketCategoryId": 3001,
+                    "quantity": 1,
+                    "ticketUserIds": [9001],
                     "confirmationGrant": "forged",
                 }
             )
         with self.assertRaises(ValidationError):
             prepare_model.model_validate(
-                {"programId": 1001, "ticketCategoryId": 3001, "quantity": 7}
+                {
+                    "programId": 1001,
+                    "ticketCategoryId": 3001,
+                    "quantity": 7,
+                    "ticketUserIds": list(range(7)),
+                }
             )
 
     def test_recommendation_contract_is_bounded_and_defaults_to_relevance(self) -> None:

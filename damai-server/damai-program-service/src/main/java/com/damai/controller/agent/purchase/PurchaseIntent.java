@@ -20,6 +20,7 @@ public class PurchaseIntent {
     private Long programId;
     private Long ticketCategoryId;
     private Integer quantity;
+    private String ticketUserRefs;
     private Long unitAmountFen;
     private Long totalAmountFen;
     private String currency;
@@ -29,6 +30,7 @@ public class PurchaseIntent {
     private Long version;
     private Date confirmedAt;
     private Date submittedAt;
+    private Long orderNumber;
     private Date createTime;
     private Date editTime;
 }

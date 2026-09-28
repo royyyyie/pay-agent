@@ -380,7 +380,9 @@ public class ProgramOrderService {
         ProgramVo programVo = programService.simpleGetProgramAndShowMultipleCache(programOrderCreateDto.getProgramId());
         //构建订单基础信息
         OrderCreateDto orderCreateDto = new OrderCreateDto();
-        orderCreateDto.setOrderNumber(uidGenerator.getOrderNumber(programOrderCreateDto.getUserId(),ORDER_TABLE_COUNT));// 设置基本信息
+        orderCreateDto.setOrderNumber(Optional.ofNullable(programOrderCreateDto.getTrustedOrderNumber())
+                .orElseGet(() -> uidGenerator.getOrderNumber(
+                        programOrderCreateDto.getUserId(), ORDER_TABLE_COUNT)));// 设置基本信息
         orderCreateDto.setProgramId(programOrderCreateDto.getProgramId());
         orderCreateDto.setProgramItemPicture(programVo.getItemPicture());
         orderCreateDto.setUserId(programOrderCreateDto.getUserId());

@@ -57,6 +57,7 @@ _ENV_FIELDS = {
     "persist_tool_audit": "DAMAI_AGENT_PERSIST_TOOL_AUDIT",
     "watch_rules_enabled": "DAMAI_AGENT_WATCH_RULES_ENABLED",
     "purchase_intents_enabled": "DAMAI_AGENT_PURCHASE_INTENTS_ENABLED",
+    "order_submission_enabled": "DAMAI_AGENT_ORDER_SUBMISSION_ENABLED",
     "rag_enabled": "DAMAI_AGENT_RAG_ENABLED",
     "rag_backend": "DAMAI_AGENT_RAG_BACKEND",
     "knowledge_catalog_path": "DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH",
@@ -158,6 +159,7 @@ class Settings(BaseModel):
     persist_tool_audit: bool = False
     watch_rules_enabled: bool = False
     purchase_intents_enabled: bool = False
+    order_submission_enabled: bool = False
     rag_enabled: bool = False
     rag_backend: Literal["local", "elasticsearch"] = "local"
     knowledge_catalog_path: str = ""
@@ -274,6 +276,12 @@ class Settings(BaseModel):
             self.runtime_backend != "durable" or not self.persist_tool_audit
         ):
             raise ValueError("购买意向需要 durable runtime 和持久化 Tool 审计")
+        if self.order_submission_enabled and (
+            not self.purchase_intents_enabled
+            or self.runtime_backend != "durable"
+            or not self.persist_tool_audit
+        ):
+            raise ValueError("订单提交需要购买意向、durable runtime 和持久化 Tool 审计")
         if self.rag_enabled and self.rag_backend == "local" and not self.knowledge_catalog_path:
             raise ValueError("本地 RAG 必须配置 DAMAI_AGENT_KNOWLEDGE_CATALOG_PATH")
         if self.rag_enabled and not self.knowledge_source_hosts:

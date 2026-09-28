@@ -5,6 +5,7 @@ import com.damai.controller.agent.purchase.ConfirmationProof;
 import com.damai.controller.agent.purchase.ConfirmationProofVerifier;
 import com.damai.controller.agent.purchase.PurchaseIntentException;
 import com.damai.controller.agent.purchase.PurchaseIntentService;
+import com.damai.controller.agent.purchase.PurchaseSecurityMetrics;
 import com.damai.controller.agent.vo.AgentPurchaseIntentVo;
 import com.damai.controller.agent.vo.AgentToolResponse;
 import jakarta.validation.Valid;
@@ -37,11 +38,15 @@ public class AgentPurchaseConfirmationController {
 
     private final ConfirmationProofVerifier proofVerifier;
     private final PurchaseIntentService service;
+    private final PurchaseSecurityMetrics metrics;
 
     public AgentPurchaseConfirmationController(
-            ConfirmationProofVerifier proofVerifier, PurchaseIntentService service) {
+            ConfirmationProofVerifier proofVerifier,
+            PurchaseIntentService service,
+            PurchaseSecurityMetrics metrics) {
         this.proofVerifier = proofVerifier;
         this.service = service;
+        this.metrics = metrics;
     }
 
     @PostMapping("/issue")
@@ -71,13 +76,19 @@ public class AgentPurchaseConfirmationController {
     public AgentToolResponse<Void> handleBusinessError(
             PurchaseIntentException exception,
             @RequestHeader(value = TOOL_CALL_ID, required = false) String requestId) {
-        return AgentToolResponse.error(requestId, exception.getCode(), exception.getMessage(), false);
+        metrics.confirmationRejected("business");
+        return AgentToolResponse.error(
+                requestId,
+                exception.getCode(),
+                exception.getMessage(),
+                exception.getCode() >= 500);
     }
 
     @ExceptionHandler({MethodArgumentNotValidException.class, BindException.class})
     public AgentToolResponse<Void> handleValidationError(
             Exception exception,
             @RequestHeader(value = TOOL_CALL_ID, required = false) String requestId) {
+        metrics.confirmationRejected("validation");
         return AgentToolResponse.error(requestId, 400, "购买确认参数不合法", false);
     }
 
@@ -85,6 +96,7 @@ public class AgentPurchaseConfirmationController {
     public AgentToolResponse<Void> handleUnexpectedError(
             Throwable exception,
             @RequestHeader(value = TOOL_CALL_ID, required = false) String requestId) {
+        metrics.confirmationRejected("unexpected");
         log.error("Purchase confirmation failed, requestId={}", requestId, exception);
         return AgentToolResponse.error(requestId, -100, "购买确认服务暂时不可用", true);
     }

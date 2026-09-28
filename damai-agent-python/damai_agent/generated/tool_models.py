@@ -45,7 +45,17 @@ class PurchaseIntentPrepareRequest(BaseModel):
     model_config = ConfigDict(extra='forbid', populate_by_name=True)
     programId: int = Field(..., ge=1, description='已由实时节目工具确认的节目 ID，也是购买意向分片键')
     ticketCategoryId: int = Field(..., ge=1, description='必须属于 programId 且由实时票档工具确认')
-    quantity: int = Field(1, ge=1, le=6, description='购票数量；价格和库存由 Java 重新读取，模型不得提供金额')
+    quantity: int = Field(..., ge=1, le=6, description='购票数量；价格和库存由 Java 重新读取，模型不得提供金额')
+    ticketUserIds: List[int] = Field(..., min_length=1, max_length=6, description='只能使用 list_purchase_attendees 返回的 Java 管理引用，数量必须与 quantity 相同')
+
+class PurchaseAttendeeListRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    pass
+
+class PurchaseAttendeeRef(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    ticketUserId: int = Field(..., ge=1, description='Java 用户服务管理的不透明购票人引用')
+    displayLabel: str = Field(..., min_length=1, max_length=64, description='仅用于确认选择的脱敏标签')
 
 class PurchaseIntentGetRequest(BaseModel):
     model_config = ConfigDict(extra='forbid', populate_by_name=True)
@@ -58,21 +68,30 @@ class PurchaseIntentCancelRequest(BaseModel):
     programId: int = Field(..., ge=1, description='创建意向时返回的不可变分片键')
     expectedVersion: int = Field(..., ge=1, description='乐观锁版本；冲突后必须重新查询')
 
+class PurchaseOrderSubmitRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    intentId: int = Field(..., ge=1)
+    programId: int = Field(..., ge=1, description='创建意向时返回的不可变分片键')
+    expectedVersion: int = Field(..., ge=1, description='必须是 CONFIRMED 意向的当前版本；凭证在 Java 侧消费')
+
 class PurchaseIntent(BaseModel):
     model_config = ConfigDict(extra='allow', populate_by_name=True)
     intentId: int = Field(...)
     programId: int = Field(...)
     ticketCategoryId: int = Field(...)
     quantity: int = Field(..., ge=1, le=6)
+    ticketUserIds: List[int] = Field(..., min_length=0, max_length=6, description='已绑定到报价摘要的 Java 管理购票人引用')
     unitAmountFen: int = Field(..., ge=0, description='Java 从实时票档价格生成的单价，单位为人民币分')
     totalAmountFen: int = Field(..., ge=0, description='Java 计算的总金额，单位为人民币分')
     currency: Literal['CNY'] = Field(...)
     quoteHash: str = Field(..., pattern='^[0-9a-f]{64}$', description='绑定归属、节目、票档、数量、金额和有效期的报价摘要，不是确认凭据')
     quoteExpiresAt: datetime = Field(...)
-    intentStatus: Literal['PENDING_CONFIRMATION', 'CONFIRMED', 'CANCELLED', 'EXPIRED', 'SUBMITTED'] = Field(...)
+    intentStatus: Literal['PENDING_CONFIRMATION', 'CONFIRMED', 'CANCELLED', 'EXPIRED', 'SUBMITTING', 'SUBMITTED', 'SUBMISSION_FAILED', 'SUBMISSION_UNKNOWN'] = Field(...)
     version: int = Field(..., ge=1)
     createdAt: datetime = Field(...)
     updatedAt: datetime = Field(...)
+    orderNumber: Optional[int] = Field(None, ge=1, description='Java 订单状态机生成并持久化的稳定订单号；为空表示尚未受理提交')
+    submittedAt: Optional[datetime] = Field(None, description='订单服务事实被确认的时间')
 
 class WatchRuleCreateRequest(BaseModel):
     model_config = ConfigDict(extra='forbid', populate_by_name=True)
@@ -171,6 +190,16 @@ class PurchaseIntentResponse(BaseModel):
     code: int = Field(...)
     message: str = Field(...)
     data: PurchaseIntent = Field(...)
+    retryable: bool = Field(...)
+    freshnessAt: datetime = Field(...)
+
+class PurchaseAttendeeListResponse(BaseModel):
+    model_config = ConfigDict(extra='allow', populate_by_name=True)
+    requestId: str = Field(...)
+    success: bool = Field(...)
+    code: int = Field(...)
+    message: str = Field(...)
+    data: List[PurchaseAttendeeRef] = Field(..., max_length=20)
     retryable: bool = Field(...)
     freshnessAt: datetime = Field(...)
 
@@ -283,7 +312,7 @@ class ListTicketCategoriesResponse(BaseModel):
     retryable: bool = Field(...)
     freshnessAt: datetime = Field(...)
 
-GENERATED_MODELS = (ProgramSearchRequest, ProgramIdRequest, ProgramRecommendationRequest, PurchaseIntentPrepareRequest, PurchaseIntentGetRequest, PurchaseIntentCancelRequest, PurchaseIntent, WatchRuleCreateRequest, WatchRuleUpdateRequest, WatchRuleStatusRequest, WatchRuleListRequest, WatchRule, WatchRulePage, ToolResponse, ProgramSearchResponse, WatchRuleResponse, PurchaseIntentResponse, WatchRulePageResponse, ProgramPage, ProgramSummary, ProgramRecommendationCandidate, ProgramRecommendationPage, ProgramDetail, TicketCategory, ProgramRecommendationResponse, GetProgramDetailResponse, ListTicketCategoriesResponse,)
+GENERATED_MODELS = (ProgramSearchRequest, ProgramIdRequest, ProgramRecommendationRequest, PurchaseIntentPrepareRequest, PurchaseAttendeeListRequest, PurchaseAttendeeRef, PurchaseIntentGetRequest, PurchaseIntentCancelRequest, PurchaseOrderSubmitRequest, PurchaseIntent, WatchRuleCreateRequest, WatchRuleUpdateRequest, WatchRuleStatusRequest, WatchRuleListRequest, WatchRule, WatchRulePage, ToolResponse, ProgramSearchResponse, WatchRuleResponse, PurchaseIntentResponse, PurchaseAttendeeListResponse, WatchRulePageResponse, ProgramPage, ProgramSummary, ProgramRecommendationCandidate, ProgramRecommendationPage, ProgramDetail, TicketCategory, ProgramRecommendationResponse, GetProgramDetailResponse, ListTicketCategoriesResponse,)
 for _model in GENERATED_MODELS:
     _model.model_rebuild()
 
@@ -292,9 +321,11 @@ REQUEST_MODELS: Dict[str, type[BaseModel]] = {
     'recommend_programs': ProgramRecommendationRequest,
     'search_programs': ProgramSearchRequest,
     'list_ticket_categories': ProgramIdRequest,
+    'list_purchase_attendees': PurchaseAttendeeListRequest,
     'cancel_purchase_intent': PurchaseIntentCancelRequest,
     'get_purchase_intent': PurchaseIntentGetRequest,
     'prepare_purchase_intent': PurchaseIntentPrepareRequest,
+    'submit_confirmed_order': PurchaseOrderSubmitRequest,
     'create_watch_rule': WatchRuleCreateRequest,
     'list_watch_rules': WatchRuleListRequest,
     'set_watch_rule_status': WatchRuleStatusRequest,
@@ -306,9 +337,11 @@ RESPONSE_MODELS: Dict[str, type[BaseModel]] = {
     'recommend_programs': ProgramRecommendationResponse,
     'search_programs': ProgramSearchResponse,
     'list_ticket_categories': ListTicketCategoriesResponse,
+    'list_purchase_attendees': PurchaseAttendeeListResponse,
     'cancel_purchase_intent': PurchaseIntentResponse,
     'get_purchase_intent': PurchaseIntentResponse,
     'prepare_purchase_intent': PurchaseIntentResponse,
+    'submit_confirmed_order': PurchaseIntentResponse,
     'create_watch_rule': WatchRuleResponse,
     'list_watch_rules': WatchRulePageResponse,
     'set_watch_rule_status': WatchRuleResponse,

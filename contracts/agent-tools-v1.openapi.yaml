@@ -1,10 +1,11 @@
 openapi: 3.0.3
 info:
   title: Damai Java Agent Tool Gateway
-  version: 1.2.0
+  version: 1.3.0
   description: >-
     Python Agent 调用 Java 购票业务的内部契约。除节目查询、实时推荐、节目详情和
-    票档余量外，阶段 5 开放受信身份下的监控规则控制面；仍不包含下单、锁座和支付。
+    票档余量外，支持受信身份下的监控与购买意向控制面。订单提交默认关闭，只有
+    Java 已持有未过期的一次性确认授权时才可执行；模型永远不能传递支付或身份凭据。
 servers:
   - url: http://127.0.0.1:6086
     description: 本地 Program Service
@@ -350,6 +351,41 @@ paths:
                 $ref: '#/components/schemas/PurchaseIntentResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /internal/agent/v1/tools/purchase-intents/attendees:
+    post:
+      operationId: listPurchaseAttendees
+      summary: 查询本人可用的安全购票人引用
+      x-agent-tool-name: list_purchase_attendees
+      x-agent-description: 返回 Java 用户服务管理的购票人引用和脱敏标签，不返回证件号码、手机号或完整实名信息。
+      x-agent-risk: READ_ONLY
+      x-agent-scope: purchase:intent:read
+      x-agent-timeout-ms: 8000
+      x-agent-max-calls-per-turn: 2
+      x-agent-concurrency-safe: true
+      x-agent-exclusive: false
+      parameters:
+        - $ref: '#/components/parameters/ToolCallId'
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/SessionKey'
+        - $ref: '#/components/parameters/TraceParent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseAttendeeListRequest'
+      responses:
+        '200':
+          description: 当前受信用户拥有的安全购票人引用
+          headers:
+            traceparent:
+              $ref: '#/components/headers/TraceParent'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseAttendeeListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /internal/agent/v1/tools/purchase-intents/get:
     post:
       operationId: getPurchaseIntent
@@ -419,6 +455,41 @@ paths:
       responses:
         '200':
           description: 已取消的购买意向
+          headers:
+            traceparent:
+              $ref: '#/components/headers/TraceParent'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseIntentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /internal/agent/v1/tools/purchase-intents/submit:
+    post:
+      operationId: submitConfirmedOrder
+      summary: 提交已由可信 UI 明确确认的购买意向
+      x-agent-tool-name: submit_confirmed_order
+      x-agent-description: 仅请求 Java 消费服务器侧一次性确认授权并进入可恢复订单状态机。没有有效 Grant 时必定拒绝；未知结果不得盲目重试。
+      x-agent-risk: ORDER_WRITE
+      x-agent-scope: order:submit
+      x-agent-timeout-ms: 12000
+      x-agent-max-calls-per-turn: 1
+      x-agent-concurrency-safe: false
+      x-agent-exclusive: true
+      parameters:
+        - $ref: '#/components/parameters/ToolCallId'
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/SessionKey'
+        - $ref: '#/components/parameters/TraceParent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseOrderSubmitRequest'
+      responses:
+        '200':
+          description: 已受理或已经完成的幂等订单提交事实
           headers:
             traceparent:
               $ref: '#/components/headers/TraceParent'
@@ -653,7 +724,7 @@ components:
           description: 最多返回候选数量；服务端最多扫描前 10 个搜索结果
     PurchaseIntentPrepareRequest:
       type: object
-      required: [programId, ticketCategoryId]
+      required: [programId, ticketCategoryId, quantity, ticketUserIds]
       additionalProperties: false
       properties:
         programId:
@@ -670,8 +741,36 @@ components:
           type: integer
           minimum: 1
           maximum: 6
-          default: 1
           description: 购票数量；价格和库存由 Java 重新读取，模型不得提供金额
+        ticketUserIds:
+          type: array
+          minItems: 1
+          maxItems: 6
+          uniqueItems: true
+          items:
+            type: integer
+            format: int64
+            minimum: 1
+          description: 只能使用 list_purchase_attendees 返回的 Java 管理引用，数量必须与 quantity 相同
+    PurchaseAttendeeListRequest:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
+    PurchaseAttendeeRef:
+      type: object
+      required: [ticketUserId, displayLabel]
+      additionalProperties: false
+      properties:
+        ticketUserId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Java 用户服务管理的不透明购票人引用
+        displayLabel:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 仅用于确认选择的脱敏标签
     PurchaseIntentGetRequest:
       type: object
       required: [intentId, programId]
@@ -705,6 +804,25 @@ components:
           format: int64
           minimum: 1
           description: 乐观锁版本；冲突后必须重新查询
+    PurchaseOrderSubmitRequest:
+      type: object
+      required: [intentId, programId, expectedVersion]
+      additionalProperties: false
+      properties:
+        intentId:
+          type: integer
+          format: int64
+          minimum: 1
+        programId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 创建意向时返回的不可变分片键
+        expectedVersion:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 必须是 CONFIRMED 意向的当前版本；凭证在 Java 侧消费
     PurchaseIntent:
       type: object
       required:
@@ -712,6 +830,7 @@ components:
         - programId
         - ticketCategoryId
         - quantity
+        - ticketUserIds
         - unitAmountFen
         - totalAmountFen
         - currency
@@ -735,6 +854,16 @@ components:
           type: integer
           minimum: 1
           maximum: 6
+        ticketUserIds:
+          type: array
+          minItems: 0
+          maxItems: 6
+          uniqueItems: true
+          items:
+            type: integer
+            format: int64
+            minimum: 1
+          description: 已绑定到报价摘要的 Java 管理购票人引用
         unitAmountFen:
           type: integer
           format: int64
@@ -757,7 +886,7 @@ components:
           format: date-time
         intentStatus:
           type: string
-          enum: [PENDING_CONFIRMATION, CONFIRMED, CANCELLED, EXPIRED, SUBMITTED]
+          enum: [PENDING_CONFIRMATION, CONFIRMED, CANCELLED, EXPIRED, SUBMITTING, SUBMITTED, SUBMISSION_FAILED, SUBMISSION_UNKNOWN]
         version:
           type: integer
           format: int64
@@ -768,6 +897,17 @@ components:
         updatedAt:
           type: string
           format: date-time
+        orderNumber:
+          type: integer
+          format: int64
+          minimum: 1
+          nullable: true
+          description: Java 订单状态机生成并持久化的稳定订单号；为空表示尚未受理提交
+        submittedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: 订单服务事实被确认的时间
     WatchRuleCreateRequest:
       type: object
       required: [programId]
@@ -1013,6 +1153,17 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/PurchaseIntent'
+    PurchaseAttendeeListResponse:
+      allOf:
+        - $ref: '#/components/schemas/ToolResponse'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: array
+              maxItems: 20
+              items:
+                $ref: '#/components/schemas/PurchaseAttendeeRef'
     WatchRulePageResponse:
       allOf:
         - $ref: '#/components/schemas/ToolResponse'
