@@ -1,0 +1,5 @@
+/.github/workflows/ @royyyyie
+/.github/dependabot.yml @royyyyie
+/damai-agent-python/Dockerfile @royyyyie
+/damai-agent-python/deploy/ @royyyyie
+/damai-agent-python/damai_agent/phase7_release.py @royyyyie

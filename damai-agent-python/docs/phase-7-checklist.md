@@ -18,14 +18,16 @@
 
 ## 第二批：供应链与安全门禁
 
-- [ ] CI 构建镜像并以不可变 digest 发布，生成 SBOM 和来源证明
-- [ ] 镜像、Python 依赖、Secret 和 IaC 扫描达到零 Critical/High 未豁免项
+- [x] CI 在 PR 构建镜像并生成 SPDX SBOM；仅 `main` 以不可变 SHA 标签发布 GHCR，并生成 GitHub 来源证明
+- [x] Docker 基础镜像和 GitHub Action 均锁定 digest/SHA；CI 对镜像、Python 依赖、Secret 和 IaC 执行 Critical/High 阻断扫描
+- [x] Dependabot 覆盖 Python、Docker 和 GitHub Actions，关键供应链文件配置 CODEOWNERS
 - [ ] 完成威胁模型联合评审，所有 High 风险有负责人、截止时间和验证证据
 - [ ] 验证 NetworkPolicy、云防火墙、出站域名代理、数据库最小权限与 Secret 轮换
 - [ ] 验证日志、Trace、审计和告警均无 Prompt、购票人、证件、密钥或完整 Tool Payload
 
 ## 第三批：Staging 容量、故障与灰度
 
+- [x] 提供机器可验证、默认拒绝的发布证据门禁，绑定提交、镜像 digest、配置哈希、证据文件哈希和固定灰度序列
 - [ ] 在与生产同拓扑的 Staging 持续压测至少 30 分钟，保存吞吐、成功率、P50/P95/P99、CPU、内存和连接池报告
 - [ ] 注入 Provider、Java Gateway、Redis、PostgreSQL、Elasticsearch、Kafka 和实例强杀故障
 - [ ] 验证扩缩容、滚动更新、节点驱逐和排空超时；重复副作用及未知写入盲重放均为 0
@@ -39,5 +41,9 @@
 - 未授权 Tool 成功数、跨租户成功数、重复订单数、未知写入盲重放数、PII/Secret 泄漏数必须全部为 0。
 - 任一关键 SLO 超阈、证据缺失或审批过期，立即停止放量并回滚。
 - 阶段 7 只有在第二、三批及阶段 3～6 遗留外部验收全部完成后，才能标记为“企业生产准入完成”。
+
+## 当前完成状态
+
+阶段 7 的仓库工程开发已经完成：生命周期、部署安全基线、供应链流水线、SBOM/来源证明、扫描门禁和可验证发布证据协议均已落地。上方未勾选项只能在真实 Staging、云网络、日志平台和审批系统中产生，当前保持未完成；因此结论是“阶段 7 代码完成，生产准入待外部验收”，不是“已获生产批准”。
 
 执行顺序见[阶段 7 灰度与回滚 Runbook](phase-7-operations.md)，风险清单见[阶段 7 威胁模型](phase-7-threat-model.md)。

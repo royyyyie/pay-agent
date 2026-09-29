@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -33,6 +34,46 @@ class Phase7AssetsTest(unittest.TestCase):
             dockerfile,
         )
         self.assertNotIn("USER root", dockerfile)
+
+        from_lines = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
+        self.assertGreaterEqual(len(from_lines), 3)
+        self.assertTrue(all("@sha256:" in line for line in from_lines))
+
+    def test_supply_chain_workflow_is_immutable_and_least_privileged(self) -> None:
+        workflows = ROOT.parent / ".github" / "workflows"
+        workflow_path = workflows / "damai-agent-supply-chain.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+        parsed = yaml.safe_load(workflow)
+
+        self.assertEqual(set(parsed["jobs"]), {"source-security", "image-security", "publish"})
+        self.assertEqual(parsed["permissions"], {"contents": "read"})
+        self.assertEqual(
+            parsed["jobs"]["publish"]["permissions"],
+            {
+                "contents": "read",
+                "packages": "write",
+                "id-token": "write",
+                "attestations": "write",
+            },
+        )
+        action_refs = re.findall(r"^\s*uses:\s*[^@\s]+@([^\s#]+)", workflow, re.MULTILINE)
+        self.assertGreaterEqual(len(action_refs), 10)
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in action_refs))
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("provenance: mode=max", workflow)
+        self.assertIn("sbom: true", workflow)
+        self.assertNotRegex(workflow, r"type=raw,value=latest|tags:\s*latest")
+
+        for path in workflows.glob("damai-agent-*.yml"):
+            action_refs = re.findall(
+                r"^\s*uses:\s*[^@\s]+@([^\s#]+)",
+                path.read_text(encoding="utf-8"),
+                re.MULTILINE,
+            )
+            self.assertTrue(
+                all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in action_refs),
+                f"workflow action references must be immutable in {path.name}",
+            )
 
     def test_kubernetes_baseline_has_probes_resources_and_restricted_context(self) -> None:
         documents = list(

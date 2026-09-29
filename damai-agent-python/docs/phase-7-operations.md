@@ -2,7 +2,7 @@
 
 ## 1. 部署前
 
-1. 使用已合并提交构建镜像，完成测试、SBOM、漏洞扫描和签名；部署时把模板镜像替换成不可变 digest。
+1. 合并到 `main` 后等待 `Damai Agent Supply Chain` 全绿。`publish` Job 会发布 `ghcr.io/<owner>/<repo>/damai-agent:sha-<40位提交>`，并输出不可变 digest、SBOM 和 GitHub 来源证明；部署时只使用 digest。
 2. 由 Secret Manager 注入 `damai-agent-secrets`，不要提交 `secret.example.yaml` 的实际副本。
 3. 把 ConfigMap 中 `.example.invalid` 地址和模型名替换成已经验收的内部端点。
 4. 生产固定 `durable` runtime 和持久化审计；先执行阶段 2、3 数据库迁移。
@@ -51,3 +51,42 @@ Remove-Item Env:DAMAI_AGENT_LOADTEST_API_KEY
 ## 6. 证据包
 
 归档 CI 链接、镜像 digest、SBOM/签名、扫描结果、压测原始报告、指标窗口、脱敏 Trace、故障注入、排空、备份恢复、回滚、阶段 3～6 外部报告和审批回执。任何报告必须可追溯到同一提交和配置版本。
+
+先复制 `docs/phase7-release-manifest.example.json`，填入真实 Staging 数据。示例中的零提交、零 digest、失败场景和未批准状态是有意设计，不能直接用于放量。阶段 3～6 文件必须与 Manifest 中的 SHA-256 完全一致。生成证据声明：
+
+```powershell
+uv run --frozen python scripts/attest_phase7_release.py `
+  --manifest artifacts/phase7-release-manifest.json `
+  --metrics-evidence artifacts/metrics.json `
+  --traces-evidence artifacts/traces.json `
+  --faults-evidence artifacts/faults.json `
+  --rollback-evidence artifacts/rollback.json `
+  --security-evidence artifacts/security.json `
+  --approvals-evidence artifacts/approvals.json `
+  --phase3-evidence artifacts/phase3.json `
+  --phase4-evidence artifacts/phase4.json `
+  --phase5-evidence artifacts/phase5.json `
+  --phase6-evidence artifacts/phase6.json `
+  --report-out artifacts/phase7-release-attestation.json
+```
+
+生成成功不等于可放量：脚本只有在 30 分钟/1000 请求、成功率、P95、Trace、供应链、七类故障、四类回滚、安全红线、阶段 3～6 继承证据和四方审批全部通过时才返回 0。部署控制器必须再次绑定即将部署的提交和镜像 digest：
+
+```powershell
+uv run --frozen python scripts/verify_phase7_release.py `
+  --attestation artifacts/phase7-release-attestation.json `
+  --expected-commit '<40位小写提交 SHA>' `
+  --expected-image-digest 'sha256:<64位镜像 digest>' `
+  --metrics-evidence artifacts/metrics.json `
+  --traces-evidence artifacts/traces.json `
+  --faults-evidence artifacts/faults.json `
+  --rollback-evidence artifacts/rollback.json `
+  --security-evidence artifacts/security.json `
+  --approvals-evidence artifacts/approvals.json `
+  --phase3-evidence artifacts/phase3.json `
+  --phase4-evidence artifacts/phase4.json `
+  --phase5-evidence artifacts/phase5.json `
+  --phase6-evidence artifacts/phase6.json
+```
+
+把验证命令作为 `production-canary` 环境的前置 Job，并在 GitHub 仓库 Settings → Environments 中为该环境配置必需审批人。仓库 CODEOWNERS 不能代替分支保护；`main` 应要求 `quality`、`java-contract`、`source-security`、`image-security` 全部通过并禁止绕过。

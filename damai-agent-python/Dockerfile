@@ -1,19 +1,19 @@
-FROM python:3.11.14-slim-bookworm AS builder
+FROM ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 AS uv
 
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1 \
-    UV_COMPILE_BYTECODE=1 \
+FROM python:3.11.14-slim-bookworm@sha256:65a93d69fa75478d554f4ad27c85c1e69fa184956261b4301ebaf6dbb0a3543d AS builder
+
+ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
 WORKDIR /opt/damai-agent
-RUN python -m pip install uv==0.12.10
+COPY --from=uv /uv /uvx /bin/
 
 COPY pyproject.toml uv.lock README.md ./
 COPY damai_agent ./damai_agent
 RUN uv sync --frozen --no-dev --no-editable \
     --extra postgres --extra redis --extra observability
 
-FROM python:3.11.14-slim-bookworm AS runtime
+FROM python:3.11.14-slim-bookworm@sha256:65a93d69fa75478d554f4ad27c85c1e69fa184956261b4301ebaf6dbb0a3543d AS runtime
 
 ENV PATH=/opt/damai-agent/.venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
