@@ -29,6 +29,7 @@ class Phase7AssetsTest(unittest.TestCase):
         self.assertIn("uv sync --frozen", dockerfile)
         self.assertIn("USER 10001:10001", dockerfile)
         self.assertIn("PYTHONDONTWRITEBYTECODE=1", dockerfile)
+        self.assertIn("site-packages/setuptools*", dockerfile)
         self.assertIn(
             "COPY --from=builder --chown=10001:10001 /opt/damai-agent/.venv ./.venv",
             dockerfile,

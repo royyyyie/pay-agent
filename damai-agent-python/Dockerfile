@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 AS uv
 
-FROM python:3.11.14-slim-bookworm@sha256:65a93d69fa75478d554f4ad27c85c1e69fa184956261b4301ebaf6dbb0a3543d AS builder
+FROM python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
@@ -13,14 +13,17 @@ COPY damai_agent ./damai_agent
 RUN uv sync --frozen --no-dev --no-editable \
     --extra postgres --extra redis --extra observability
 
-FROM python:3.11.14-slim-bookworm@sha256:65a93d69fa75478d554f4ad27c85c1e69fa184956261b4301ebaf6dbb0a3543d AS runtime
+FROM python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b AS runtime
 
 ENV PATH=/opt/damai-agent/.venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HOME=/tmp
 
-RUN groupadd --gid 10001 damai-agent \
+RUN rm -rf /usr/local/lib/python3.11/site-packages/pip* \
+        /usr/local/lib/python3.11/site-packages/setuptools* \
+        /usr/local/lib/python3.11/site-packages/wheel* \
+    && groupadd --gid 10001 damai-agent \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin damai-agent
 
 WORKDIR /opt/damai-agent
