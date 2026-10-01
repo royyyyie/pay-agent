@@ -27,12 +27,14 @@
 $env:DAMAI_AGENT_LOADTEST_API_KEY = "<从 Secret Manager 临时注入>"
 uv run --frozen python scripts/load_readonly.py `
   --url https://staging-agent.example.com/api/v1/chat `
-  --requests 1000 --concurrency 25 `
-  --min-success-rate 0.995 --max-p95-ms 3000
+  --requests 100000 --concurrency 25 `
+  --duration-seconds 1800 --rate-rps 20 --min-requests 1000 `
+  --min-success-rate 0.995 --max-p95-ms 3000 `
+  --report-out artifacts/readonly-probe.json
 Remove-Item Env:DAMAI_AGENT_LOADTEST_API_KEY
 ```
 
-脚本不打印正文和凭据。正式 durable 入口必须从 Java BFF 发起，每个请求生成新的短时 Delegation、Turn ID 和 Idempotency-Key；不要复用静态签名模拟业务流量。报告至少保留提交、镜像 digest、配置版本、请求数、并发、持续时间、成功率、吞吐和 P50/P95/P99。
+脚本不打印正文和凭据。持续时间模式在时间窗结束后停止发送新请求，已发出的请求完成后生成起止时间、吞吐和分位数；提前用完 `--requests` 上限会判为失败。该脚本仅适用于仍启用的只读兼容入口，不能作为正式 durable 链路的主验收证据。正式入口必须从 Java BFF 发起，每个请求生成新的短时 Delegation、Turn ID 和 Idempotency-Key；不要复用静态签名模拟业务流量。主验收报告还需保留提交、镜像 digest、配置版本、CPU、内存、连接池和 BFF 到 Python 的端到端结果。
 
 ## 4. 排空验收
 
