@@ -26,6 +26,8 @@ _ENV_FIELDS = {
     "provider": "DAMAI_AGENT_PROVIDER",
     "host": "DAMAI_AGENT_HOST",
     "port": "DAMAI_AGENT_PORT",
+    "shutdown_timeout_seconds": "DAMAI_AGENT_SHUTDOWN_TIMEOUT_SECONDS",
+    "max_concurrent_requests": "DAMAI_AGENT_MAX_CONCURRENT_REQUESTS",
     "java_base_url": "DAMAI_JAVA_BASE_URL",
     "java_tool_api_key": "DAMAI_JAVA_TOOL_API_KEY",
     "java_timeout_seconds": "DAMAI_JAVA_TIMEOUT_SECONDS",
@@ -128,6 +130,8 @@ class Settings(BaseModel):
     provider: Literal["demo", "openai_compatible"] = "demo"
     host: str = Field(default="127.0.0.1", min_length=1)
     port: int = Field(default=9010, ge=1, le=65535)
+    shutdown_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    max_concurrent_requests: int = Field(default=200, ge=1, le=10000)
     java_base_url: str = "http://127.0.0.1:6086"
     java_tool_api_key: str = Field(default="change-me-local", repr=False, max_length=4096)
     java_timeout_seconds: float = Field(default=5.0, gt=0, le=120)

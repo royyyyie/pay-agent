@@ -1,0 +1,152 @@
+{
+  "schema_version": "damai.phase7.release/v1",
+  "environment_id": "staging-ap-southeast",
+  "environment_tier": "staging",
+  "git_commit": "0000000000000000000000000000000000000000",
+  "image_repository": "ghcr.io/royyyyie/pay-agent/damai-agent",
+  "image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "configuration_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "window_start": "2026-09-29T00:00:00Z",
+  "window_end": "2026-09-29T00:30:00Z",
+  "request_count": 1,
+  "peak_concurrency": 1,
+  "success_rate": 0,
+  "throughput_rps": 0,
+  "p50_turn_latency_ms": 0,
+  "p95_turn_latency_ms": 0,
+  "p99_turn_latency_ms": 0,
+  "trace_sample_count": 0,
+  "trace_continuity_rate": 0,
+  "supply_chain": {
+    "sbom_generated": false,
+    "provenance_attested": false,
+    "immutable_base_images": true,
+    "action_refs_pinned": true,
+    "critical_vulnerabilities": 0,
+    "high_vulnerabilities": 0,
+    "secrets_detected": 0,
+    "iac_critical_findings": 0,
+    "iac_high_findings": 0
+  },
+  "fault_scenarios": {
+    "provider": {
+      "passed": false,
+      "evidence_reference": "fault:provider-pending",
+      "recovery_time_seconds": 0,
+      "duplicate_side_effects": 0,
+      "blind_write_retries": 0,
+      "cross_tenant_successes": 0
+    },
+    "java_gateway": {
+      "passed": false,
+      "evidence_reference": "fault:java-pending",
+      "recovery_time_seconds": 0,
+      "duplicate_side_effects": 0,
+      "blind_write_retries": 0,
+      "cross_tenant_successes": 0
+    },
+    "redis": {
+      "passed": false,
+      "evidence_reference": "fault:redis-pending",
+      "recovery_time_seconds": 0,
+      "duplicate_side_effects": 0,
+      "blind_write_retries": 0,
+      "cross_tenant_successes": 0
+    },
+    "postgresql": {
+      "passed": false,
+      "evidence_reference": "fault:postgresql-pending",
+      "recovery_time_seconds": 0,
+      "duplicate_side_effects": 0,
+      "blind_write_retries": 0,
+      "cross_tenant_successes": 0
+    },
+    "elasticsearch": {
+      "passed": false,
+      "evidence_reference": "fault:elasticsearch-pending",
+      "recovery_time_seconds": 0,
+      "duplicate_side_effects": 0,
+      "blind_write_retries": 0,
+      "cross_tenant_successes": 0
+    },
+    "kafka": {
+      "passed": false,
+      "evidence_reference": "fault:kafka-pending",
+      "recovery_time_seconds": 0,
+      "duplicate_side_effects": 0,
+      "blind_write_retries": 0,
+      "cross_tenant_successes": 0
+    },
+    "instance_kill": {
+      "passed": false,
+      "evidence_reference": "fault:instance-kill-pending",
+      "recovery_time_seconds": 0,
+      "duplicate_side_effects": 0,
+      "blind_write_retries": 0,
+      "cross_tenant_successes": 0
+    }
+  },
+  "rollback_drills": {
+    "application": {
+      "passed": false,
+      "evidence_reference": "rollback:application-pending",
+      "data_loss_events": 0
+    },
+    "database": {
+      "passed": false,
+      "evidence_reference": "rollback:database-pending",
+      "data_loss_events": 0
+    },
+    "knowledge_index": {
+      "passed": false,
+      "evidence_reference": "rollback:knowledge-pending",
+      "data_loss_events": 0
+    },
+    "backup_restore": {
+      "passed": false,
+      "evidence_reference": "rollback:backup-pending",
+      "data_loss_events": 0
+    }
+  },
+  "safety_counters": {
+    "unauthorized_tool_successes": 0,
+    "cross_tenant_successes": 0,
+    "duplicate_orders": 0,
+    "blind_unknown_write_replays": 0,
+    "pii_or_secret_leaks": 0
+  },
+  "carryover_evidence_sha256": {
+    "phase3": "0000000000000000000000000000000000000000000000000000000000000000",
+    "phase4": "0000000000000000000000000000000000000000000000000000000000000000",
+    "phase5": "0000000000000000000000000000000000000000000000000000000000000000",
+    "phase6": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "approvals": {
+    "security": {
+      "approved": false,
+      "approver_id": "security.pending",
+      "approval_reference": "approval:security-pending",
+      "approved_at": "2026-09-29T00:30:00Z"
+    },
+    "sre": {
+      "approved": false,
+      "approver_id": "sre.pending",
+      "approval_reference": "approval:sre-pending",
+      "approved_at": "2026-09-29T00:30:00Z"
+    },
+    "business": {
+      "approved": false,
+      "approver_id": "business.pending",
+      "approval_reference": "approval:business-pending",
+      "approved_at": "2026-09-29T00:30:00Z"
+    },
+    "transaction": {
+      "approved": false,
+      "approver_id": "transaction.pending",
+      "approval_reference": "approval:transaction-pending",
+      "approved_at": "2026-09-29T00:30:00Z"
+    }
+  },
+  "canary_percentages": [1, 5, 25, 50, 100],
+  "automatic_rollback_enabled": false
+}

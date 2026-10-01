@@ -18,5 +18,7 @@ ADR 记录 Damai Agent 的长期约束。已接受的决策只能通过新的 AD
 | [012](012-watch-rule-ownership.md) | 监控规则由 Java 持久化和调度 | Accepted |
 | [013](013-purchase-intent-confirmation.md) | 购买意向、报价与确认授权分离 | Accepted |
 | [014](014-durable-order-submission.md) | 持久化订单提交与查询优先恢复 | Accepted |
+| [015](015-production-lifecycle-and-draining.md) | 生产生命周期、探针与排空语义 | Accepted |
+| [016](016-supply-chain-and-release-evidence.md) | 供应链与发布证据门禁 | Accepted |
 
 新 ADR 使用下一个三位编号，并包含 Context、Decision、Consequences 和 Supersedes（如适用）。

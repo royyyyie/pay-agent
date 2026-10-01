@@ -69,9 +69,21 @@ class SettingsTest(unittest.TestCase):
             Settings(java_base_url="https://user:password@example.com")
 
     def test_stream_idle_timeout_loads_from_environment(self) -> None:
-        settings = Settings.from_env(env={"DAMAI_AGENT_STREAM_IDLE_TIMEOUT_SECONDS": "2.5"})
+        settings = Settings.from_env(
+            env={
+                "DAMAI_AGENT_STREAM_IDLE_TIMEOUT_SECONDS": "2.5",
+                "DAMAI_AGENT_SHUTDOWN_TIMEOUT_SECONDS": "45",
+                "DAMAI_AGENT_MAX_CONCURRENT_REQUESTS": "333",
+            }
+        )
 
         self.assertEqual(settings.stream_idle_timeout_seconds, 2.5)
+        self.assertEqual(settings.shutdown_timeout_seconds, 45)
+        self.assertEqual(settings.max_concurrent_requests, 333)
+        with self.assertRaises(ValidationError):
+            Settings(shutdown_timeout_seconds=0)
+        with self.assertRaises(ValidationError):
+            Settings(max_concurrent_requests=0)
 
     def test_provider_retry_and_fallback_require_complete_safe_configuration(self) -> None:
         base = {"provider": "openai_compatible", "llm_api_key": "p" * 32, "llm_model": "m"}
