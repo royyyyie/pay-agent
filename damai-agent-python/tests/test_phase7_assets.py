@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import argparse
+import asyncio
 import importlib.util
 import re
 import sys
 import unittest
 from pathlib import Path
 from types import ModuleType
+from unittest.mock import patch
 
+import httpx
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,6 +114,48 @@ class Phase7AssetsTest(unittest.TestCase):
 
         self.assertEqual(module.percentile([1.0, 2.0, 3.0, 100.0], 0.95), 100.0)
         self.assertEqual(module.percentile([], 0.95), 0.0)
+
+    def test_load_probe_duration_and_request_cap_are_reported(self) -> None:
+        module = load_script()
+
+        async def response(_request: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(0.005)
+            return httpx.Response(200, json={"ok": True})
+
+        def run(*, duration: float, requests: int, rate: float = 0) -> dict[str, object]:
+            args = argparse.Namespace(
+                url="https://staging.example.invalid/api/v1/chat",
+                concurrency=2,
+                requests=requests,
+                duration_seconds=duration,
+                rate_rps=rate,
+                min_requests=1,
+                min_success_rate=0.995,
+                max_p95_ms=5000,
+                timeout=2,
+                message="read only",
+                api_key_env="UNSET_PHASE7_KEY",
+            )
+            client = httpx.AsyncClient(transport=httpx.MockTransport(response))
+            with patch.object(module.httpx, "AsyncClient", return_value=client):
+                return asyncio.run(module.execute(args))
+
+        completed = run(duration=0.04, requests=100)
+        self.assertTrue(completed["passed"])
+        self.assertTrue(completed["completedWindow"])
+        self.assertGreater(completed["requests"], 2)
+        self.assertIn("windowStart", completed)
+        self.assertIn("windowEnd", completed)
+
+        paced = run(duration=0.11, requests=100, rate=20)
+        self.assertTrue(paced["passed"])
+        self.assertTrue(paced["completedWindow"])
+        self.assertLessEqual(paced["requests"], 3)
+
+        capped = run(duration=0.2, requests=2)
+        self.assertFalse(capped["passed"])
+        self.assertFalse(capped["completedWindow"])
+        self.assertEqual(capped["requests"], 2)
 
 
 if __name__ == "__main__":
